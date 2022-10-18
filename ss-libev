@@ -1,0 +1,112 @@
+#!/bin/bash
+
+# this function is borrowed from https://stackoverflow.com/a/30948155
+function _pwgen() {
+	chars='!%^&-()_+='
+	{ </dev/urandom LC_ALL=C grep -ao '[A-Za-z0-9]' \
+		| head -n$((RANDOM % 8 + 9))
+			echo ${chars:$((RANDOM % ${#chars})):1}   # Random special char.
+	} | shuf | tr -d '\n'
+}
+
+service_exists() {
+    local n=$1
+    if [[ $(systemctl list-units --all -t service --full --no-legend "$n.service" | cut -f1 -d' ' 2>/dev/null) == $n.service ]]; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+POSITIONAL=()
+password=""
+libsodium_version="1.0.18"
+mbedtls_version="2.28.1"
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -p | --password ) password="$2"; shift 2 ;;
+        -lsv | --libsodium-version ) libsodium_version="$2"; shift 2 ;;
+        -mv | --mbedtls-version ) mbedtls_version="$2"; shift 2 ;;
+        * ) POSITIONAL+=("$1"); shift ;;
+    esac
+done
+
+set -- "${POSITIONAL[@]}" # restore positional parameters
+
+[[ -n "$libsodium_version" ]] || echo "use libsodium 1.0.18" && libsodium_version="1.0.18"
+[[ -n "$mbedtls_version" ]] || echo "use mbedtls 2.28.1" && mbedtls_version="2.28.1"
+
+wd=$(mktemp -t "ss-libev.XXXXXXXXXXXXXXXX" -d 2>/dev/null)
+
+[[ -d "$wd" ]] || wd=/tmp/$(date +%s) && mkdir -p "$wd"
+[[ ! -d "$wd" ]] && echo "failed to create working directory" && exit 1
+
+pushd "$wd" >> /dev/null 2>&1 || exit
+
+sudo apt -y update && sudo apt -y --no-install-recommends install gettext build-essential autoconf libtool libpcre3-dev \
+    asciidoc xmlto libev-dev libc-ares-dev automake libmbedtls-dev libsodium-dev python2 pkg-config
+
+# Installation of Libsodium
+rm -rf "libsodium-$libsodium_version"
+rm -rf "libsodium-$libsodium_version.tar.gz"
+wget "https://download.libsodium.org/libsodium/releases/libsodium-$libsodium_version.tar.gz"
+tar xvf "libsodium-$libsodium_version.tar.gz"
+pushd "libsodium-$libsodium_version" || exit
+./configure --prefix=/usr && make
+sudo make install
+popd || exit
+sudo ldconfig
+
+# Installation of MbedTLS
+rm -rf "mbed-tls-mbedtls-$mbedtls_version"
+rm -rf "mbed-tls-mbedtls-$mbedtls_version.tar.gz"
+wget "https://git.trustedfirmware.org/mirror/mbed-tls.git/snapshot/mbed-tls-mbedtls-$mbedtls_version.tar.gz"
+tar xvf "mbed-tls-mbedtls-$mbedtls_version.tar.gz"
+pushd "mbed-tls-mbedtls-$mbedtls_version" || exit
+make SHARED=1 CFLAGS=-fPIC
+sudo make DESTDIR=/usr install
+popd || exit
+sudo ldconfig
+
+rm -rf simple-obfs
+git clone https://github.com/shadowsocks/simple-obfs.git
+pushd simple-obfs || exit
+git submodule update --init --recursive
+./autogen.sh
+./configure --prefix=/usr && make
+sudo make install
+popd || exit
+
+rm -rf shadowsocks-libev
+git clone https://github.com/shadowsocks/shadowsocks-libev.git
+pushd shadowsocks-libev || exit
+git submodule update --init --recursive
+./autogen.sh && ./configure --prefix=/usr && make
+sudo make install
+if [ ! -e "/etc/shadowsocks-libev/config.json" ]; then
+    [[ ! -d "/etc/shadowsocks-libev/" ]] && sudo mkdir -p /etc/shadowsocks-libev/
+    [[ -z "$password" ]] && password=$(_pwgen)
+    cat << EOF > config.json
+{
+        "server"      : "0.0.0.0",
+        "server_port" : 15527,
+        "password"    : "${password}",
+        "timeout"     : 300,
+        "method"      : "chacha20-ietf-poly1305",
+        "mode"        : "tcp_and_udp",
+        "fast_open"   : true,
+        "plugin"      : "obfs-server",
+        "plugin_opts" : "obfs=http;obfs-host=cloudfront.net"
+}
+EOF
+    sudo mv config.json  /etc/shadowsocks-libev/
+fi
+sudo cp debian/shadowsocks-libev.default /etc/default/shadowsocks-libev
+if ! service_exists shadowsocks-libev; then
+    sudo cp debian/shadowsocks-libev.service /lib/systemd/system
+    sudo systemctl enable shadowsocks-libev.service
+fi
+sudo systemctl start shadowsocks-libev
+popd || exit
+popd || exit
