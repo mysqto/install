@@ -1,0 +1,211 @@
+#!/usr/bin/env bash
+
+# check sudo installed
+if ! command -v sudo &> /dev/null; then
+    echo "sudo could not be found"
+    ((EUID == 0)) && apt update && apt install -y sudo || echo "Please install sudo first" && exit 1
+fi
+
+if ((EUID != 0)); then
+	echo "Granting root privileges for ""$(basename "$0")"
+	if [[ -t 1 ]]; then
+		sudo "$0" "$@"
+	else
+		exec 1>output_file
+		gksu "$0" "$@"
+	fi
+	exit
+fi
+
+nopassword=(
+    apt 
+    apt-get
+    aptitude
+    dpkg-reconfigure
+    dpkg-divert
+    dpkg-preconfigure
+    dpkg-query
+    dpkg-split 
+    dpkg-statoverride
+    dpkg-trigger
+    dpkg-deb 
+    dpkg
+    do-release-upgrade
+    systemctl
+    service
+    reboot
+    shutdown
+    halt
+    poweroff
+    init
+    ls
+    grep
+    uname
+    make
+)
+
+# this function is borrowed from https://stackoverflow.com/a/30948155
+function _pwgen() {
+	chars='!$%^&-()_+='
+	{ </dev/urandom LC_ALL=C grep -ao '[A-Za-z0-9]' \
+		| head -n$((RANDOM % 8 + 9))
+			echo ${chars:$((RANDOM % ${#chars})):1}   # Random special char.
+	} | shuf | tr -d '\n'
+}
+
+provision_user=""
+ss_password=""
+shadowsocks_config="/etc/shadowsocks-libev/config.json"
+ssh_authorized_keys=""
+setup_shadowsocks=false
+distribution="$(lsb_release -is 2>/dev/null)"
+
+POSITIONAL=()
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -s | --setup-shadowsocks)
+            setup_shadowsocks=true
+            shift
+            ;;
+        -ssp | --shadowsocks-password ) 
+            ss_password="$2"; 
+            shift 2 ;;
+        -u | --user ) 
+            provision_user="$2"; 
+            shift 2 ;;
+        -k | --ssh-authorized-keys ) 
+            ssh_authorized_keys="$2"; 
+            shift 2 ;;
+        * ) POSITIONAL+=("$1"); shift ;;
+    esac
+done
+
+set -- "${POSITIONAL[@]}" # restore positional parameters
+
+# enable PPA for fish and install software
+apt update && apt upgrade -y
+if [[ "$distribution" == "Ubuntu" ]]; then
+    apt install -y software-properties-common
+    add-apt-repository -y ppa:fish-shell/release-3
+elif [[ "$distribution" == "Debian" ]]; then
+    debian_codename="$(lsb_release -cs 2>/dev/null)"
+    #use backports for debian
+    apt_source_list="/etc/apt/sources.list"
+    grep -q "$debian_codename-backports" "$apt_source_list" || cat >> "$apt_source_list" <<EOF
+deb http://deb.debian.org/debian $debian_codename-backports main
+deb-src http://deb.debian.org/debian $debian_codename-backports main
+EOF
+    backports_pirority_file="/etc/apt/preferences.d/backports"
+    [[ -f "$backports_pirority_file" ]] && rm -f "$backports_pirority_file"
+    cat >> "$backports_pirority_file" <<EOF
+Package: *
+Pin: release a=$debian_codename-backports
+Pin-Priority: 900
+EOF
+
+    debian_release="$(lsb_release -rs 2>/dev/null)"
+    echo "deb http://download.opensuse.org/repositories/shells:/fish:/release:/3/Debian_$debian_release/ /" \
+        | tee /etc/apt/sources.list.d/shells:fish:release:3.list
+    curl -fsSL "https://download.opensuse.org/repositories/shells:fish:release:3/Debian_$debian_release/Release.key" \
+        | gpg --dearmor | tee /etc/apt/trusted.gpg.d/shells_fish_release_3.gpg > /dev/null
+    apt -y update
+fi
+
+# force to use old config
+echo 'DPkg::options { "--force-confdef"; "--force-confold"; }' > /etc/apt/apt.conf.d/local
+apt -y --no-install-recommends install fish byobu wget curl net-tools build-essential git vim \
+    openssh-server tig
+
+# install shadowsocks
+if [[ "$setup_shadowsocks" == "true" ]]; then
+    [[ -f "shadowsocks_config" ]] && ss_password="$(<"$shadowsocks_config" grep "password" 2>/dev/null | cut -d'"' -f4)"
+    [[ -z "$ss_password" ]] && ss_password="$(_pwgen)"
+    curl -sL install.lol/ss-libev | bash -s -- -p "$ss_password"
+fi
+
+#enable bbr
+if ! grep -q "bbr" /etc/sysctl.conf; then
+    echo "net.core.default_qdisc=fq" >> /etc/sysctl.conf
+    echo "net.ipv4.tcp_congestion_control=bbr" >> /etc/sysctl.conf
+fi
+sysctl -p
+
+# update sshd config
+sed -ri 's/^#?PasswordAuthentication.*/PasswordAuthentication no/g' /etc/ssh/sshd_config
+# disable root login
+sed -ri 's/^#?PermitRootLogin.*/PermitRootLogin no/g' /etc/ssh/sshd_config
+
+# install neofetch
+pushd /tmp >> /dev/null 2>&1 || exit
+rm -rf neofetch
+git clone https://github.com/dylanaraps/neofetch
+if [[ -d neofetch ]]; then
+    pushd neofetch >> /dev/null 2>&1 || exit
+    make install
+    popd >> /dev/null 2>&1 || exit
+fi
+popd >> /dev/null 2>&1 || exit
+
+# install go
+curl -sL install.lol/go | bash
+
+# install iss and im
+curl -sL install.lol/iss -o /usr/bin/iss && chmod +x /usr/bin/iss
+curl -sL install.lol/im -o /usr/bin/im && chmod +x /usr/bin/im
+installed=()
+[[ -f /usr/bin/iss ]] && installed+=("/usr/bin/iss")
+[[ -f /usr/bin/im ]] && installed+=("/usr/bin/im")
+
+if [[ -n "$provision_user" ]]; then
+    # create user if not exists
+    if ! id -u "$provision_user" >/dev/null 2>&1; then
+        group_id=1024
+        while id -g "$group_id" >/dev/null 2>&1; do
+            group_id=$((group_id + 1))
+        done
+        groupadd -g "$group_id" "$provision_user"
+
+        user_id=1024
+        while id -u "$user_id" >/dev/null 2>&1; do
+            user_id=$((user_id + 1))
+        done
+
+        shell="$(which fish)"
+        [[ -z "$shell" ]] && shell="$(which bash)"
+        useradd -m -u "$user_id" -g "$group_id" -s "$shell" -G sudo "$provision_user"
+    fi
+    if [[ -n "$ssh_authorized_keys" ]]; then
+        [[ -d "/home/$provision_user/.ssh" ]] && rm -rf "/home/$provision_user/.ssh"
+        mkdir -p "/home/$provision_user/.ssh"
+        echo "$ssh_authorized_keys" > "/home/$provision_user/.ssh/authorized_keys"
+        chown -R "$provision_user:$provision_user" "/home/$provision_user/.ssh"
+        chmod 700 /home/"$provision_user"/.ssh
+        chmod 600 /home/"$provision_user"/.ssh/authorized_keys
+    fi
+    current_shell="$(getent passwd "$provision_user" | cut -d: -f7)"
+    fish_shell="$(which fish)"
+    if [[ "$current_shell" != "$fish_shell" ]]; then
+        chsh -s "$fish_shell" "$provision_user"
+    fi
+
+    [[ -f "/etc/sudoers.d/$provision_user" ]] && rm -f "/etc/sudoers.d/$provision_user"
+    for cmd in "${nopassword[@]}"; do
+        cmd_path="$(which "$cmd")"
+        if [[ -n "$cmd_path" ]]; then
+            echo "$provision_user ALL=(ALL) NOPASSWD: $cmd_path" >> "/etc/sudoers.d/$provision_user"
+        fi
+    done
+
+    for cmd in "${installed[@]}"; do
+        cmd_path="$(which "$cmd")"
+        if [[ -n "$cmd_path" ]]; then
+            echo "$provision_user ALL=(ALL) NOPASSWD: $cmd_path" >> "/etc/sudoers.d/$provision_user"
+        fi
+    done
+    
+    # install fisher
+    su - "$provision_user" -c 'curl -sL https://git.io/fisher | source && fisher install jorgebucaran/fisher && fisher install mysqto/flash'
+    echo "wait 5 seconds for fisher to install plugins" && sleep 5
+    su - "$provision_user" -c 'byobu-enable'
+fi

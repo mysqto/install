@@ -1,0 +1,610 @@
+#!/usr/bin/env bash
+
+username=""
+full_name=""
+hostname=""
+uid=""
+timezone=""
+ntp_server=""
+password=""
+kernel=""
+shadowsocks_password=""
+arch=""
+ssh_authorized_keys=""
+efi=false
+gpt=false
+esp=128
+boot=512
+filesystem="ext4"
+wd="$(mktemp -t "ubuntu.XXXXXXXXXXXXXXXX" -d 2>/dev/null)"
+disk=""
+interface="auto"
+shadowsocks_config="/etc/shadowsocks-libev/config.json"
+grub_d="/etc/grub.d"
+vmlinuz="vmlinuz$(date '+%Y%m%d%H%M%S')"
+initrd="initrd.img$(date '+%Y%m%d%H%M%S')"
+boot_options="auto=true hostname=ubuntu domain= quiet"
+title="Install Ubuntu 20.04 LTS"
+cloud=""
+manual_partition=false
+
+[[ -d "$wd" ]] || wd=/tmp/ubuntu.$(date +%s) && mkdir -p "$wd"
+[[ ! -d "$wd" ]] && echo "failed to create working directory" && exit 1
+
+if ((EUID != 0)); then
+	echo "Granting root privileges for ""$(basename "$0")"
+	if [[ -t 1 ]]; then
+		sudo "$0" "$@"
+	else
+		exec 1>output_file
+		gksu "$0" "$@"
+	fi
+	exit
+fi
+
+function warn() {
+    echo -e "\033[1;33m$1\033[0m"
+}
+
+function download() {
+    local url="$1"
+    local target="$2"
+    if [[ -z "$target" ]]; then
+        target="$(basename "$url")"
+    fi
+    target_dir="$(dirname "$target")"
+    if [[ ! -d "$target_dir" ]]; then
+        mkdir -p "$target_dir"
+    fi
+    [[ -f "$target" ]] && rm -rf "$target"
+    echo "Downloading $url to $target"
+    curl --progress-bar -Lo "$target" "$url"
+}
+
+function cidr_to_netmask() {
+   set -- $(( 5 - ($1 / 8) )) 255 255 255 255 $(( (255 << (8 - ($1 % 8))) & 255 )) 0 0 0
+   # shellcheck disable=SC2015
+   [ "$1" -gt 1 ] && shift "$1" || shift
+   echo "${1-0}"."${2-0}"."${3-0}"."${4-0}"
+}
+
+# shellcheck disable=SC2120
+function ip_address() {
+    if="$1"
+    type="$2"
+    [[ -z "$type" ]] && type="4"
+        # shellcheck disable=SC2119
+    [[ -z "$if" ]] && if="$(default_interface)"
+    ip -"$type" -o addr show "$if" | awk '{split($4,a,"/"); print a[1]}'
+}
+# shellcheck disable=SC2120
+function netmask() {
+    if="$1"
+    type="$2"
+    [[ -z "$type" ]] && type="4"
+    # shellcheck disable=SC2119
+    [[ -z "$if" ]] && if="$(default_interface)"
+    if  [[ "$type" == "6" ]]; then
+        ip -"$type" -o addr show "$if" | awk '{split($4,a,"/"); print a[2]}'
+    else
+        cidr_to_netmask "$(ip -"$type" -o addr show "$if" | awk '{split($4,a,"/"); print a[2]}')"
+    fi
+}
+
+# shellcheck disable=SC2120
+function default_gateway() {
+    type="$1"
+    [[ -z "$type" ]] && type="4"
+    ip -"$type" route show default | awk '{print $3}' | head -n1
+}
+
+# shellcheck disable=SC2120
+function default_interface() {
+    type="$1"
+    [[ -z "$type" ]] && type="4"
+    ip -"$type" route show default | awk '{print $5}' | head -n1
+}
+
+# get current dns server
+function dns() {
+    resolvectl dns -i "$(default_interface)" 2>/dev/null | awk '{print $4}'
+}
+
+function get_disk() {
+    lsblk -oMOUNTPOINT,PKNAME -P | grep 'MOUNTPOINT="/"' |cut -d'"' -f4
+}
+
+function partition_type() {
+    local disk="$1"
+    fdisk -l "$disk" | awk '/Disklabel type:/ {print $3}'
+}
+
+function grub_config() {
+    grub_dir=$(find /boot -type d -name "grub*" 2>/dev/null |head -n1)
+    [[ -z "$grub_dir" ]] && return
+    find "$grub_dir" -regextype posix-egrep -regex ".*/(grub.conf|grub.cfg)"
+}
+
+# this function is borrowed from https://stackoverflow.com/a/30948155
+function _pwgen() {
+	chars='!$%^&-()_+='
+	{ </dev/urandom LC_ALL=C grep -ao '[A-Za-z0-9]' \
+		| head -n$((RANDOM % 8 + 9))
+			echo ${chars:$((RANDOM % ${#chars})):1}   # Random special char.
+	} | shuf | tr -d '\n'
+}
+
+function salt() {
+    # generate a random string with special characters
+    </dev/urandom  tr -dc 'a-zA-Z0-9!%^&-()+=' | fold -w 16 | head -n 1
+}
+
+POSITIONAL=()
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -d | --disk)
+            disk="$2"
+            shift 2 ;;
+        -e | --efi)
+            efi=true
+            shift;;
+        -es | --esp-size)
+            esp="$2"
+            shift 2 ;;
+        -bs | --boot-size)
+            boot="$2"
+            shift 2 ;;
+        -f | --fullname)
+            full_name="$2"; 
+            shift 2 ;;
+        -fs | --filesystem)
+            filesystem="$2"; 
+            shift 2 ;;
+        -u | --user )
+            username="$2"; 
+            shift 2 ;;
+        -uid | --uid )
+            uid="$2"; 
+            shift 2 ;;
+        -p | --password )
+            password="$2"; 
+            shift 2 ;;
+        -g | --gpt )
+            gpt=true; 
+            shift ;;
+        -i | --interface )
+            interface="$2"; 
+            shift 2 ;;
+        -h | --hostname )
+            hostname="$2"; 
+            shift 2 ;;
+        -t | --timezone )
+            timezone="$2"; 
+            shift 2 ;;
+        -n | --ntp-server )
+            ntp_server="$2"; 
+            shift 2 ;;
+        -k | --kernel ) 
+            ssh_authorized_keys="$2"; 
+            shift 2 ;;
+        -sk | --ssh-authorized-keys ) 
+            ssh_authorized_keys="$2"; 
+            shift 2 ;;
+        -ssp | --shadowsocks-password )
+            shadowsocks_password="$2";
+            shift 2 ;;
+        -c | --cloud )
+            cloud="$2";
+            shift 2 ;;
+        -m | --manual-partition )
+            manual_partition=true;
+            shift ;;
+        * ) POSITIONAL+=("$1"); shift ;;
+    esac
+done
+
+set -- "${POSITIONAL[@]}" # restore positional parameters
+
+case $(uname -m) in
+    amd64|x86_64|x64|64 ) arch=amd64 ;;
+    aarch64|arm64 ) arch=arm64 ;;
+    * ) echo "unsupported arch $(uname -m)"; exit 1 ;;
+esac
+
+UCF_FORCE_CONFFOLD=1 apt -y update && apt -y --no-install-recommends install systemd pwgen whois curl cpio openssh-client
+
+[ -z "$efi" ] && {
+    efi=false
+    [[ -d /sys/firmware/efi ]] && efi=true
+}
+
+[[ ! -d /sys/firmware/efi ]] && {
+    if [[ "$efi" == "true" ]]; then
+        echo "efi is not supported on this machine, fallback to legacy boot"
+        efi=false
+    fi
+}
+
+[[ "$efi" == "true" ]] && {
+    [[ "$gpt" == "false" ]] && {
+        echo "efi is only supported on gpt partition table, force to use gpt"
+        gpt=true
+    }
+}
+
+# random if not specified
+[[ -z "$username" ]] && username=$(</dev/urandom LC_ALL=C tr -dc 'a-zA-Z0-9' | head -c 8)
+
+[[ -z "$full_name" ]] && full_name="$(</etc/passwd grep "^$username:" | cut -d: -f5 | cut -d, -f1)"
+[[ -z "$full_name" ]] && full_name="$username"
+
+[[ -z "$hostname" ]] && hostname="$(hostname)"
+[[ -z "$hostname" ]] && hostname=$(</dev/urandom LC_ALL=C tr -dc 'a-zA-Z0-9' | head -c 8)
+
+[[ -z "$uid" ]] && uid=$(id -u "$username" 2>/dev/null)
+[[ -z "$uid" ]] && uid=$(</dev/urandom LC_ALL=C tr -dc '0-9' | head -c 4)
+
+[[ -z "$timezone" ]] && timezone="$(timedatectl 2>/dev/null | awk '/Time zone:/ {print $3}')"
+[[ -z "$timezone" ]] && timezone="UTC"
+[[ -z "$ntp_server" ]] && ntp_server="$(timedatectl 2>/dev/null | awk '/NTP:/ {print $3}')"
+[[ -z "$ntp_server" ]] && ntp_server="time.cloudflare.com"
+# random password if not specified
+[[ -z "$password" ]] && enctypted_password=$(</etc/shadow grep "^$username:" | cut -d: -f2)
+
+if [[ -z "$enctypted_password" ]]; then
+     [[ -z "$password" ]] && password="$(_pwgen)" 
+    enctypted_password="$(mkpasswd -m sha-512 -S "$(pwgen -ns 16 1)" "$password")"
+fi
+
+[[ -z "$enctypted_password" ]] && echo "failed to get encrypted password" && exit 1
+
+[[ -z "$kernel" ]] && kernel="linux-generic-hwe-20.04-edge"
+
+[[ -z "$disk" ]]
+
+[[ -z "$filesystem" ]] && filesystem="ext4"
+
+[[ -z "$esp" ]] && esp="106"
+
+if [[ -z "$shadowsocks_password" ]]; then 
+    [[ -f "$shadowsocks_config" ]] && shadowsocks_password="$(<"$shadowsocks_config" grep "password" 2>/dev/null | cut -d'"' -f4)"
+fi
+[[ -z "$shadowsocks_password" ]] && shadowsocks_password=$(_pwgen)
+[[ -z "$ssh_authorized_keys" ]] && ssh_authorized_keys="$(grep "ssh-rsa" "/home/$username/.ssh/authorized_keys" 2>/dev/null)"
+ssh_key_file="$wd/ssh_key"
+if [[ -z "$ssh_authorized_keys" ]]; then
+    rm -f "$ssh_key_file"
+    ssh-keygen -t rsa -b 4096 -C "$username@$hostname" -f "$ssh_key_file" -q -N "" > /dev/null 2>&1
+    [[ -f "$ssh_key_file" ]] && ssh_authorized_keys="$(cat "$ssh_key_file.pub")"
+fi
+
+ip_address="$(ip_address)"
+netmask="$(netmask)"
+gateway="$(default_gateway)"
+dns="$(dns)"
+[[ -z "$ip_address" ]] && echo "failed to get ip address" && exit 1
+[[ -z "$netmask" ]] && echo "failed to get netmask" && exit 1
+[[ -z "$gateway" ]] && echo "failed to get gateway" && exit 1
+[[ -z "$dns" ]] && dns="1.1.1.1"
+
+warn "#######################################################################"
+warn "username:             $username"
+[[ -n "$password" ]] && warn "password:             $password"
+warn "interface:            $interface"
+warn "ip:                   $ip_address"
+warn "netmask:              $netmask"
+warn "gateway:              $gateway"
+warn "dns:                  $dns"
+ssh_private_key="$(cat "$ssh_key_file" 2>/dev/null)"
+[[ -n "$ssh_private_key" ]] && warn "ssh private key     : \n$ssh_private_key"
+warn "#######################################################################"
+
+mirror="http://ports.ubuntu.com"
+[[ "$arch" == "amd64" ]] && mirror="http://archive.ubuntu.com/ubuntu"
+if [[ -n "$cloud" ]]; then
+    mirror="http://$cloud.ports.ubuntu.com"
+    [[ "$arch" == "amd64" ]] && mirror="http://$cloud.archive.ubuntu.com/ubuntu"
+fi
+initrd_url="$mirror/dists/focal-proposed/main/installer-$arch/current/legacy-images/netboot/ubuntu-installer/$arch/initrd.gz"
+linux_url="$mirror/dists/focal-proposed/main/installer-$arch/current/legacy-images/netboot/ubuntu-installer/$arch/linux"
+
+initrd_gz="$wd/initrd.gz"
+vmlinuz_img="$wd/vmlinuz"
+initrd_img="$wd/initrd.img"
+boot_dir="$wd/boot"
+preseed_file="$boot_dir/preseed.cfg"
+
+[[ -d "$wd" ]] && rm -rf "$wd"
+mkdir -p "$boot_dir"
+if [[ ! -d "$wd" ]] || [[ ! -d "$boot_dir" ]] ; then
+    echo "failed to create $wd or $boot_dir"
+    exit 1
+fi
+
+mirror_host="$(echo "$mirror" |awk -F'://|/' '{print $2}')"
+mirror_folder="$(echo "$mirror" |awk -F''"${mirror_host}"'' '{print $2}')"
+[ -n "$mirror_folder" ] || mirror_folder="/"
+
+download "$initrd_url" "$initrd_gz"
+download "$linux_url" "$vmlinuz_img"
+
+[[ ! -f "$initrd_gz" ]] && echo "initrd image not downloadded" && exit 1
+[[ ! -f "$vmlinuz_img" ]] && echo "vmlinuz not downloadded" && exit 1
+
+cat > "$preseed_file"<<EOF
+### Localization
+# Preseeding only locale sets language, country and locale.
+d-i debian-installer/locale string en_US.UTF-8
+
+# Keyboard selection.
+# Disable automatic (interactive) keymap detection.
+d-i console-setup/ask_detect boolean false
+d-i keyboard-configuration/xkb-keymap select us
+
+d-i base-installer/kernel/override-image string $kernel
+
+# Network configuration
+# netcfg will choose an interface that has link if possible. This makes it
+# skip displaying a list if there is more than one interface.
+d-i netcfg/choose_interface select $interface
+
+# increase dhcp timeout
+d-i netcfg/dhcp_timeout string 30
+d-i netcfg/dhcpv6_timeout string 30
+
+d-i netcfg/dhcp_failed note
+d-i netcfg/dhcp_options select Configure network manually
+d-i netcfg/get_ipaddress string $ip_address
+d-i netcfg/get_netmask string $netmask
+d-i netcfg/get_gateway string $gateway
+d-i netcfg/get_nameservers string $dns
+d-i netcfg/hostname string $hostname
+d-i netcfg/no_default_route boolean true
+d-i netcfg/confirm_static boolean true
+
+d-i hw-detect/load_firmware boolean true
+
+# Mirror settings
+d-i mirror/country string manual
+d-i mirror/http/hostname string $mirror_host
+d-i mirror/http/directory string $mirror_folder
+d-i mirror/http/proxy string
+d-i apt-setup/services-select multiselect
+
+#Account setup
+d-i passwd/root-login boolean false
+# To create a normal user account.
+d-i passwd/user-fullname string $full_name
+d-i passwd/username string $username
+d-i passwd/user-password-crypted password $enctypted_password
+# Create the first user with the specified UID instead of the default.
+d-i passwd/user-uid string $uid
+d-i user-setup/allow-password-weak boolean false
+d-i user-setup/encrypt-home boolean false
+
+#Clock and time zone setup
+d-i clock-setup/utc boolean true
+d-i time/zone string $timezone
+#d-i clock-setup/ntp-server string $ntp_server
+#d-i clock-setup/ntp boolean true
+
+EOF
+
+cat >> "$preseed_file"<<EOF
+# Partitioning
+d-i partman/early_command string umount /media || true;
+EOF
+
+if [[ "$manual_partition" == "false" ]]; then
+    cat >> "$preseed_file"<<EOF
+d-i partman-partitioning/confirm_write_new_label boolean true
+d-i partman/mount_style select uuid
+d-i partman/choose_partition select finish
+d-i partman-auto/method string regular
+d-i partman-auto/init_automatically_partition select Guided - use entire disk
+d-i partman-auto/choose_recipe select All files in one partition (recommended for new users)
+d-i partman-md/device_remove_md boolean true
+d-i partman-lvm/device_remove_lvm boolean true
+d-i partman-lvm/confirm boolean true
+d-i partman-lvm/confirm_nooverwrite boolean true
+d-i partman/confirm boolean true
+d-i partman/confirm_nooverwrite boolean true
+EOF
+else
+    echo "d-i partman-auto/method string regular" >> "$preseed_file"
+
+    [[ -z "$disk" ]] && disk="$(get_disk)"
+    if [[ -z "$disk" ]]; then
+        # shellcheck disable=SC2016
+        echo 'd-i partman/early_command string debconf-set partman-auto/disk "$(list-devices disk | head -n 1)"' >> "$preseed_file"
+    else 
+        [[ "$disk" =~ ^/dev/ ]] || disk="/dev/$disk"
+        echo "d-i partman-auto/disk string $disk" >> "$preseed_file"
+    fi
+
+    [[ "$gpt" == "true" ]] && {
+        cat >> "$preseed_file"<<EOF
+d-i partman-basicfilesystems/choose_label string gpt
+d-i partman-basicfilesystems/default_label string gpt
+d-i partman-partitioning/choose_label string gpt
+d-i partman-partitioning/default_label string gpt
+d-i partman/choose_label string gpt
+d-i partman/default_label string gpt
+EOF
+    }
+    cat >> "$preseed_file"<<EOF
+d-i partman/default_filesystem string $filesystem
+EOF
+
+    cat >> "$preseed_file"<<'EOF'
+d-i partman-auto/expert_recipe string           \
+    naive ::                                    \
+EOF
+    if [[ "$efi" = true ]]; then
+        # shellcheck disable=SC2129
+        cat >> "$preseed_file"<<EOF
+        $esp $esp $esp fat32                       \\
+EOF
+        cat >> "$preseed_file"<<"EOF"
+            $iflabel{ gpt }                     \
+            $primary{ }                         \
+            $reusemethod{ }                     \
+            method{ efi }                       \
+            format{ }                           \
+            .                                   \
+EOF
+
+        cat >> "$preseed_file"<<EOF
+        $boot $boot $boot ext4                        \\
+EOF
+
+        cat >> "$preseed_file"<<"EOF"
+            $primary{ }                         \
+            $bootable{ }                        \
+            method{ format }                    \
+            format{ }                           \
+            use_filesystem{ }                   \
+            filesystem{ ext4 }                  \
+            mountpoint{ /boot }                 \
+            .                                   \
+EOF
+    else
+        cat >> "$preseed_file"<<"EOF"
+        1 1 1 free                              \
+            $primary{ }                         \
+            $bios_boot{ }                       \
+            $reusemethod{ }                     \
+EOF
+
+        [[ "$gpt" == true ]] && {
+            cat >> "$preseed_file"<<"EOF"
+            $iflabel{ gpt }                     \
+EOF
+        }
+        cat >> "$preseed_file"<<"EOF"
+            method{ biosgrub }                  \
+        .                                       \
+EOF
+    fi
+
+    cat >> "$preseed_file"<<"EOF"
+        1024 1024 -1 $default_filesystem        \
+            method{ format }                    \
+            format{ }                           \
+            use_filesystem{ }                   \
+            $default_filesystem{ }              \
+            mountpoint{ / }                     \
+    .
+EOF
+    if [[ "$efi" = true ]]; then
+        cat >> "$preseed_file"<<"EOF"
+d-i partman-efi/non_efi_system boolean true
+EOF
+    fi
+
+    cat >> "$preseed_file"<<EOF
+d-i partman-auto/choose_recipe select naive
+d-i partman-basicfilesystems/no_swap boolean false
+d-i partman-partitioning/confirm_write_new_label boolean true
+d-i partman/choose_partition select finish
+d-i partman/confirm boolean true
+d-i partman/confirm_nooverwrite boolean true
+EOF
+fi
+
+
+cat >> "$preseed_file"<<EOF
+d-i debian-installer/allow_unauthenticated boolean true
+
+tasksel tasksel/first multiselect minimal
+d-i pkgsel/update-policy select none
+d-i pkgsel/include string openssh-server net-tools curl wget git tig build-essential software-properties-common vim
+d-i pkgsel/upgrade select none
+
+popularity-contest popularity-contest/participate boolean false
+
+d-i grub-installer/only_debian boolean true
+
+d-i grub-installer/bootdev  string default
+
+# Avoid that last message about the install being complete.
+d-i finish-install/reboot_in_progress note
+d-i debian-installer/exit/reboot boolean true
+# Verbose output and no boot splash screen.
+d-i debian-installer/quiet boolean false
+d-i debian-installer/splash boolean false
+d-i preseed/late_command string in-target sh -c 'curl -sL https://install.lol/provision | bash -s -- -s -ssp "$shadowsocks_password" -u "$username" -k "$ssh_authorized_keys"'
+EOF
+
+pushd "$boot_dir" > /dev/null 2>&1 || exit 1
+# extract initrd
+gzip -d < "$initrd_gz" | cpio --extract --verbose --make-directories --no-absolute-filenames >>/dev/null 2>&1
+# add preseed.cfg
+find . | cpio -H newc --create --verbose | gzip -9 > "$initrd_img"
+popd > /dev/null 2>&1 || exit 1
+
+[[ ! -f "$initrd_img" ]] && echo "updated initrd image not found" && exit 1
+
+cp -f "$initrd_img" "/boot/$initrd" || sudo cp -f "$initrd_img" "/boot/$initrd"
+cp -f "$vmlinuz_img" "/boot/$vmlinuz" || sudo cp -f "$vmlinuz_img" "/boot/$vmlinuz"
+
+grub_cfg=$(grub_config)
+cp "$grub_cfg" "$grub_cfg.bak$(date +%s)"
+grub_custom_file="$grub_d/40_custom"
+
+rm -f "$grub_custom_file" || sudo rm -f "$grub_custom_file"
+# try to update grub.cfg before adding custom entry
+grub-mkconfig -o "$grub_cfg" || sudo grub-mkconfig -o "$grub_cfg"
+menu_entries=$(<"$grub_cfg" sed -n '1h;1!H;$g;s/\n/%%%%%%%/g;$p' | grep -Pom 1 'menuentry\ [^{]*({(((?>[^{}]+)|(?1))*)})' | sed 's/%%%%%%%/\n/g')
+second_menuentry_start=$(awk '/menuentry/{print NR}' <<< "$menu_entries" | sed -n 2p)
+if [[ -z "$second_menuentry_start" ]]; then
+    default_menu_entry=$menu_entries
+else
+    default_menuentry_ends=$((second_menuentry_start - 1))
+    default_menu_entry=$(sed -n "1,${default_menuentry_ends}p" <<< "$menu_entries")
+fi
+
+boot_options="auto=true hostname=ubuntu domain= quiet"
+install_menu_entry=$(sed "/menuentry.*/c\menuentry\ \'$title\'\ --class debian\ --class\ gnu-linux\ --class\ gnu\ --class\ os\ \{" <<< "$default_menu_entry")
+
+old_kernels=$(grep 'linux.*/\|kernel.*/' <<< "$install_menu_entry" | awk '{print $2}')
+for old_kernel in $old_kernels; do
+    old_kernel=$(basename "$old_kernel")
+    echo "replace $old_kernel with $vmlinuz" 
+    # shellcheck disable=SC2001
+    install_menu_entry=$(echo "$install_menu_entry" | sed "s|$old_kernel.*|$vmlinuz\ $boot_options|g")
+done
+
+old_initrds=$(grep 'initrd.*/' <<< "$install_menu_entry" | awk '{print $2}')
+for old_initrd in $old_initrds; do
+    old_initrd=$(basename "$old_initrd")
+    echo "replace $old_initrd with $initrd"
+    install_menu_entry=${install_menu_entry//$old_initrd/$initrd}
+done
+
+cat > "$grub_custom_file"<<"EOF"
+#!/bin/sh
+exec tail -n +3 $0
+# This file provides an easy way to add custom menu entries.  Simply type the
+# menu entries you want to add after this comment.  Be careful not to change
+# the 'exec tail' line above.
+EOF
+
+if grep -q "initrdfail" <<< "$install_menu_entry"; then
+    echo "initrdfail=1" >> "$grub_custom_file"
+fi
+
+echo "$install_menu_entry" >> "$grub_custom_file"
+
+[[ ! -f "$grub_custom_file" ]] && echo "grub menu not generated" && exit 1
+
+chmod +x "$grub_custom_file"
+grub-mkconfig -o "$grub_cfg" || sudo grub-mkconfig -o "$grub_cfg"
+! grep -q "$title" "$grub_cfg" && echo "grub menu not updated" && exit 1
+
+echo "grub menu updated"
+grub-reboot "$title" || sudo grub-reboot "$title"
+echo "rebooting..."
+sleep 3
+reboot || sudo reboot
