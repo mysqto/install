@@ -21,7 +21,7 @@ service_exists() {
 POSITIONAL=()
 password=""
 libsodium_version="1.0.18"
-mbedtls_version="2.28.1"
+mbedtls_version="2.28.2"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
