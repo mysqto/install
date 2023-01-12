@@ -58,8 +58,10 @@ function update_ss() {
 function install_speedtest() {
     prefix=/usr/local
     manpath=$prefix/share/man/man5
-    pkg_url=$(curl -sL https://www.speedtest.net/apps/cli | grep -Pom 1 'https:\/\/([^"]*)-linux-'"$(uname -m)"'\.tgz')
-    [[ -z "$pkg_url" ]] && echo "failed to get the latest speedtest-cli package" && return 1
+    pkg_info_url='https://raw.githubusercontent.com/teamookla/homebrew-speedtest/master/speedtest.rb'
+    pkg_version="$(curl -sL "$pkg_info_url" | grep 'version \".*\"' | cut -d'"' -f2)"
+    [[ -z "$pkg_version" ]] && echo "failed to get the latest speedtest-cli versuib" && return 1
+    pkg_url="https://install.speedtest.net/app/cli/ookla-speedtest-$pkg_version-linux-$(uname -m).tgz"
     pkg_url=${pkg_url//\\/}
     pkg_name=$(basename "$pkg_url")
     tmp_dir=$(mktemp -d -t speedtest-cli-XXXXXXXXXX 2>/dev/null)
