@@ -75,7 +75,7 @@ function ip_address() {
     [[ -z "$type" ]] && type="4"
         # shellcheck disable=SC2119
     [[ -z "$if" ]] && if="$(default_interface)"
-    ip -"$type" -o addr show "$if" | awk '{split($4,a,"/"); print a[1]}'
+    ip -"$type" -o addr show "$if" | head -1 | awk '{split($4,a,"/"); print a[1]}'
 }
 # shellcheck disable=SC2120
 function netmask() {
@@ -87,7 +87,7 @@ function netmask() {
     if  [[ "$type" == "6" ]]; then
         ip -"$type" -o addr show "$if" | awk '{split($4,a,"/"); print a[2]}'
     else
-        cidr_to_netmask "$(ip -"$type" -o addr show "$if" | awk '{split($4,a,"/"); print a[2]}')"
+        cidr_to_netmask "$(ip -"$type" -o addr show "$if" | head -1 | awk '{split($4,a,"/"); print a[2]}')"
     fi
 }
 
