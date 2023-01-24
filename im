@@ -127,6 +127,25 @@ function cleanup() {
     apt -y autoremove && apt -y autoclean
 }
 
+function netflix_test() {
+    wd=$(mktemp -d -t netflix-XXXXXXXXXXXXXXXX 2>/dev/null)
+    [[ -z "$wd" ]] && echo "failed to create a temp dir" && return 1
+    pushd "$wd" > /dev/null 2>&1 || return 1
+    rm -rf netflix-verify && git clone https://github.com/sjlleo/netflix-verify.git > /dev/null 2>&1 && \
+        cd netflix-verify && go run main.go && cd .. && rm -rf netflix-verify
+    popd > /dev/null 2>&1 || return 1
+    rm -rf "$wd"
+}
+
+function midea_unlock_test() {
+    wd=$(mktemp -d -t midea-XXXXXXXXXXXXXXXX 2>/dev/null)
+    [[ -z "$wd" ]] && echo "failed to create a temp dir" && return 1
+    pushd "$wd" > /dev/null 2>&1 || return 1
+    # TODO: add midea unlock test
+    popd > /dev/null 2>&1 || return 1
+    rm -rf "$wd"
+}
+
 if ((EUID != 0)); then
 	echo "Granting root privileges for ""$(basename "$0")"
 	if [[ -t 1 ]]; then
@@ -150,6 +169,8 @@ _reboot=false
 _provision=false
 _self_update=false
 _cleanup=false
+_unlock_test=false
+_netflix_test=false
 username=""
 _host=""
 
@@ -168,9 +189,11 @@ function usage() {
     echo "  -a, --auto,                   auto update or upgrade the server"
     echo "  -rr, --reset,                 reset the server, need -u to specify the username"
     echo "  -r, --reboot,                 reboot the server"
+    echo "  -s, --midea-unlock-test,      stream media unlock test"
     echo "  -p, --provision,              provision the server, need -u to specify the username"
     echo "  -u, --username,               specify the username when reseting or provisioning the server"
-} 
+    echo "  -nf, --netflix-test,          netflix unlock test"
+}
 
 POSITIONAL=()
 
@@ -183,12 +206,14 @@ while [[ $# -gt 0 ]]; do
         -ro | --remove-old-kernels ) _remove_old_kernels=true; shift 1 ;;
         -rr | --reset ) _reset=true; shift 1 ;;
         -r | --reboot ) _reboot=true; shift 1 ;;
+        -s | --midea-unlock-test ) _unlock_test=true; shift 1 ;;
         -a | --auto ) _auto=true; shift 1 ;;
         -p | --provision ) _provision=true; shift 1 ;;
         -u | --username ) username="$2"; shift 2 ;;
         -c | --cleanup ) _cleanup=true; shift 1 ;;
         -ist | --install-speedtest ) _install_speedtest=true; shift 1 ;;
         -ipe | --install-pyenv ) _install_pyenv=true; shift 1 ;;
+        -nf | --netflix-test ) _netflix_test=true; shift 1 ;;
         * ) POSITIONAL+=("$1"); shift ;;
     esac
 done
@@ -219,6 +244,10 @@ action() {
     elif [[ "$_install_pyenv" == true ]]; then
         [[ -z "$username" ]] && echo "username is required when installing pyenv" && return 1
         install_pyenv "$username"
+    elif [[ "$_unlock_test" == true ]]; then
+        midea_unlock_test
+    elif [[ "$_netflix_test" == true ]]; then
+        netflix_test
     elif [[ "$_auto" == true ]]; then
         do_all
     else
