@@ -1,5 +1,12 @@
 #!/usr/bin/env bash
 
+distribution="$(lsb_release -is 2>/dev/null)"
+
+if [[ "$distribution" != "Ubuntu" && "$distribution" != "Debian" ]]; then
+    echo "This script only works on Ubuntu and Debian"
+    exit 1
+fi
+
 # check sudo installed
 if ! command -v sudo &> /dev/null; then
     echo "sudo could not be found"

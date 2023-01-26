@@ -91,6 +91,7 @@ function netmask() {
         mask=$(cidr_to_netmask "$(ip -"$type" -o addr show "$if" | head -1 | awk '{split($4,a,"/"); print a[2]}')")
     fi
     [[ -z "$mask" ]] && echo "failed to get netmask" && exit 1
+    # dirty hack for google cloud
     if [[ "$type" == "4" && "$mask" == "255.255.255.255" ]]; then
         asn=$(curl -s "https://ipconfig.io/json" | jq -r '.asn_org' 2>/dev/null)
         if [[ "$asn" == "GOOGLE-CLOUD-PLATFORM" ]]; then
