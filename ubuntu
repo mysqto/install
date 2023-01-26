@@ -84,11 +84,21 @@ function netmask() {
     [[ -z "$type" ]] && type="4"
     # shellcheck disable=SC2119
     [[ -z "$if" ]] && if="$(default_interface)"
+    local mask=""
     if  [[ "$type" == "6" ]]; then
-        ip -"$type" -o addr show "$if" | awk '{split($4,a,"/"); print a[2]}'
+        mask=$(ip -"$type" -o addr show "$if" | awk '{split($4,a,"/"); print a[2]}')
     else
-        cidr_to_netmask "$(ip -"$type" -o addr show "$if" | head -1 | awk '{split($4,a,"/"); print a[2]}')"
+        mask=$(cidr_to_netmask "$(ip -"$type" -o addr show "$if" | head -1 | awk '{split($4,a,"/"); print a[2]}')")
     fi
+    [[ -z "$mask" ]] && echo "failed to get netmask" && exit 1
+    if [[ "$type" == "4" && "$mask" == "255.255.255.255" ]]; then
+        asn=$(curl -s "https://ipconfig.io/json" | jq -r '.asn_org' 2>/dev/null)
+        if [[ "$asn" == "GOOGLE-CLOUD-PLATFORM" ]]; then
+            mask="255.255.255.0"
+        fi
+    fi
+    [[ -z "$mask" ]] && echo "failed to get netmask" && exit 1
+    echo "$mask"
 }
 
 # shellcheck disable=SC2120
@@ -212,7 +222,7 @@ case $(uname -m) in
     * ) echo "unsupported arch $(uname -m)"; exit 1 ;;
 esac
 
-UCF_FORCE_CONFFOLD=1 apt -y update && apt -y --no-install-recommends install systemd pwgen whois curl cpio openssh-client
+UCF_FORCE_CONFFOLD=1 apt -y update && apt -y --no-install-recommends install systemd pwgen whois curl cpio openssh-client jq
 
 [ -z "$efi" ] && {
     efi=false
