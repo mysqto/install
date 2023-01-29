@@ -20,8 +20,12 @@ service_exists() {
 
 POSITIONAL=()
 password=""
-libsodium_version="1.0.18"
-mbedtls_version="2.28.2"
+libsodium_version=""
+libsodium_default_version="1.0.18"
+mbedtls_version=""
+mbedtls_default_version="2.28.2"
+mbed_releases_url="https://api.github.com/repos/ARMmbed/mbedtls/releases"
+libsodium_releases_url="https://api.github.com/repos/jedisct1/libsodium/releases"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -34,8 +38,15 @@ done
 
 set -- "${POSITIONAL[@]}" # restore positional parameters
 
-[[ -n "$libsodium_version" ]] || echo "use libsodium 1.0.18" && libsodium_version="1.0.18"
-[[ -n "$mbedtls_version" ]] || echo "use mbedtls 2.28.1" && mbedtls_version="2.28.1"
+[[ -n "$libsodium_version" ]] || {
+    libsodium_version=$(curl -sL "$libsodium_releases_url" 2>/dev/null | grep "tag_name" | head -n 1 | cut -d '"' -f4 | cut -d'-' -f1)
+}
+[[ -n "$mbedtls_version" ]] || {
+    mbedtls_version=$(curl -sL "$mbed_releases_url" 2>/dev/null | grep "tag_name" | grep 'v2.' | head -n 1 | cut -d '"' -f 4)
+}
+
+[[ -z "$libsodium_version" ]] && echo "use libsodium $libsodium_default_version" && libsodium_version="$libsodium_default_version"
+[[ -z "$mbedtls_version" ]] && echo "use mbedtls $mbedtls_default_version" && mbedtls_version="$mbedtls_default_version"
 
 wd=$(mktemp -t "ss-libev.XXXXXXXXXXXXXXXX" -d 2>/dev/null)
 
@@ -52,35 +63,35 @@ rm -rf "libsodium-$libsodium_version"
 rm -rf "libsodium-$libsodium_version.tar.gz"
 wget "https://download.libsodium.org/libsodium/releases/libsodium-$libsodium_version.tar.gz"
 tar xvf "libsodium-$libsodium_version.tar.gz"
-pushd "libsodium-$libsodium_version" || exit
+pushd "libsodium-$libsodium_version" >> /dev/null 2>&1 || exit
 ./configure --prefix=/usr && make
 sudo make install
-popd || exit
+popd >> /dev/null 2>&1 || exit
 sudo ldconfig
 
 # Installation of MbedTLS
-rm -rf "mbed-tls-mbedtls-$mbedtls_version"
-rm -rf "mbed-tls-mbedtls-$mbedtls_version.tar.gz"
-wget "https://git.trustedfirmware.org/mirror/mbed-tls.git/snapshot/mbed-tls-mbedtls-$mbedtls_version.tar.gz"
-tar xvf "mbed-tls-mbedtls-$mbedtls_version.tar.gz"
-pushd "mbed-tls-mbedtls-$mbedtls_version" || exit
+rm -rf "mbedtls"
+git clone https://github.com/ARMmbed/mbedtls.git "mbedtls"
+[[ ! -d "mbedtls" ]] && echo "failed to clone mbedtls" && exit 1
+pushd "mbedtls" >> /dev/null 2>&1 || exit
+git checkout "$mbedtls_version"
 make SHARED=1 CFLAGS=-fPIC
 sudo make DESTDIR=/usr install
-popd || exit
+popd >> /dev/null 2>&1 || exit
 sudo ldconfig
 
 rm -rf simple-obfs
 git clone https://github.com/shadowsocks/simple-obfs.git
-pushd simple-obfs || exit
+pushd simple-obfs >> /dev/null 2>&1 || exit
 git submodule update --init --recursive
 ./autogen.sh
 ./configure --prefix=/usr && make
 sudo make install
-popd || exit
+popd >> /dev/null 2>&1 || exit
 
 rm -rf shadowsocks-libev
 git clone https://github.com/shadowsocks/shadowsocks-libev.git
-pushd shadowsocks-libev || exit
+pushd shadowsocks-libev >> /dev/null 2>&1 || exit
 git submodule update --init --recursive
 ./autogen.sh && ./configure --prefix=/usr && make
 sudo make install
@@ -108,5 +119,5 @@ if ! service_exists shadowsocks-libev; then
     sudo systemctl enable shadowsocks-libev.service
 fi
 sudo systemctl start shadowsocks-libev
-popd || exit
-popd || exit
+popd >> /dev/null 2>&1 || exit
+popd >> /dev/null 2>&1 || exit
