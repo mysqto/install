@@ -146,6 +146,20 @@ function midea_unlock_test() {
     rm -rf "$wd"
 }
 
+function install_edge_kernel() {
+    current_version=$(lsb_release -r | awk '{print $2}')
+    apt -y update 2>/dev/null
+    edge_kernel=$(apt-cache search -q linux-image-generic-hwe-"$(lsb_release -r | awk '{print $2}')"-edge 2>/dev/null | cut -d' ' -f1)
+    [[ -z "$edge_kernel" ]] && echo "failed to get the edge kernel" && return 1
+    if dpkg -s "$edge_kernel" > /dev/null 2>&1; then
+        echo "edge kernel already installed"
+        return 0
+    fi
+    apt -y install "$edge_kernel" && echo "edge kernel installed"
+    echo "rebooting the server"
+    /sbin/reboot
+}
+
 if ((EUID != 0)); then
 	echo "Granting root privileges for ""$(basename "$0")"
 	if [[ -t 1 ]]; then
@@ -171,6 +185,7 @@ _self_update=false
 _cleanup=false
 _unlock_test=false
 _netflix_test=false
+_edge_kernel=false
 username=""
 _host=""
 
@@ -181,6 +196,7 @@ function usage() {
     echo "  -ist, --install-speedtest,    install speedtest-cli"
     echo "  -ipe, --install-pyenv,        install pyenv"
     echo "  -c, --cleanup,                cleanup the server"
+    echo "  -e, --edge-kernel,            install edge kernel"
     echo "  -uu, --update,                update the server"
     echo "  -uuu, --ugrade,               upgrade the server if needed"
     echo "  -ui, --self-update,           update $(basename "$0")"
@@ -211,6 +227,7 @@ while [[ $# -gt 0 ]]; do
         -p | --provision ) _provision=true; shift 1 ;;
         -u | --username ) username="$2"; shift 2 ;;
         -c | --cleanup ) _cleanup=true; shift 1 ;;
+        -e | --edge-kernel ) _edge_kernel=true; shift 1 ;;
         -ist | --install-speedtest ) _install_speedtest=true; shift 1 ;;
         -ipe | --install-pyenv ) _install_pyenv=true; shift 1 ;;
         -nf | --netflix-test ) _netflix_test=true; shift 1 ;;
@@ -248,6 +265,8 @@ action() {
         midea_unlock_test
     elif [[ "$_netflix_test" == true ]]; then
         netflix_test
+    elif [[ "$_edge_kernel" == true ]]; then
+        install_edge_kernel
     elif [[ "$_auto" == true ]]; then
         do_all
     else
