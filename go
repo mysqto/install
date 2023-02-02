@@ -14,10 +14,14 @@ function getgo() {
 	prefix=$2
 
 	gopkg="$(basename "$url")"
+	os="$(uname | tr '[:upper:]' '[:lower:]')"
 
 	[[ -z "$gopkg" ]] && echo "Fatal: invalid url $url" && return 255
 
-	[[ -z "$prefix" ]] && prefix=/opt
+	[[ -z "$prefix" ]] && {
+		[[ "$os" == "linux" ]] && prefix=/opt
+		[[ "$os" == "darwin" ]] && prefix=/usr/local/opt
+	}
     go_root="$prefix/go"
     [[ -d "$go_root" ]] && echo "removing old $go_root" && rm -rf "$go_root"
     wd="$(mktemp -t "go.XXXXXXXXXXXXXXXX" -d 2>/dev/null)"
@@ -29,30 +33,34 @@ function getgo() {
 	echo "extracting $gopkg to $prefix/go ... " && tar xf "$pkg"
 	popd >/dev/null 2>&1 || return 255
 
-	for file in "$prefix"/go/bin/*; do
+	[[ ! -d "$go_root" ]] && echo "Fatal: installation failed, go root not found" && return 255
+	[[ ! -d "$go_root/bin" ]] && echo "Fatal: installation failed, go bin not found" && return 255
+
+	for file in "$go_root"/bin/*; do
 		bin="$(basename "$file")"
 		if installed update-alternatives; then
 			update-alternatives --install /usr/bin/"$bin" "$bin" "$(_realpath "$file")" 1
 		else
-			rm -rf /usr/bin/"${bin:?}" &&  ln -s "$(_realpath "$file")" /usr/bin/"${bin:?}"
+			rm -rf /usr/bin/"${bin:?}" && ln -s "$(_realpath "$file")" /usr/local/bin/"${bin:?}"
 		fi
 	done
 }
 
 if ((EUID != 0)); then
 	echo "Granting root privileges for ""$(basename "$0")"
+	script=$(_realpath "$0")
 	if [[ -t 1 ]]; then
-		sudo "$0" "$@"
+		sudo "$script" "$@"
 	else
 		exec 1>output_file
-		gksu "$0" "$@"
+		gksu "$script" "$@"
 	fi
 	exit
 fi
 
-os="$(uname)"
-if [ "$os" != "Linux" ]; then
-	echo "this script is linux only" && exit 255
+os="$(uname | tr '[:upper:]' '[:lower:]')"
+if [ "$os" != "linux" ] && [ "$os" != "darwin" ]; then
+	echo "this script is linux/macOS only" && exit 255
 fi
 
 arch=""
@@ -67,7 +75,7 @@ esac
 
 go_dl_base="https://go.dev/dl/"
 go_dl_root="https://go.dev"
-go_url="$(curl -s "$go_dl_base" | grep -Eo "a class=\"download\" href=.*go.*linux-$arch.tar.gz\"" | head -n1 | cut -d'"' -f4)"
+go_url="$(curl -s "$go_dl_base" | grep -Eo "a class=\"download\" href=.*go.*$os-$arch.tar.gz\"" | head -n1 | cut -d'"' -f4)"
 go_version="$(go version 2>/dev/null | awk '{print $3}')"
-remote_version="$(basename "$go_url" | sed -e 's/.linux-.*.tar.gz//')"
+remote_version="$(basename "$go_url" | sed -e 's/.'"$os"'-.*.tar.gz//')"
 [[ -n "$go_url" ]] && [[ "$go_version" != "$remote_version" ]] && getgo "$go_dl_root$go_url"
