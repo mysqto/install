@@ -1,5 +1,34 @@
 #!/usr/bin/env bash
 
+lookbusy_base="http://www.devin.com/lookbusy/"
+
+function add_cronjob() {
+    username="$1"
+    # all the other arguments are the command
+    cron="${*:2}"
+
+    # check if the user exists
+    if ! id -u "$username" >/dev/null 2>&1; then
+        echo "user $username does not exist"
+        return 1
+    fi
+
+    cron_checksum=$(echo "$cron" | md5sum | cut -d' ' -f1)
+
+    # check cron whether exists with the same checksum
+    if crontab -u "$username" -l 2>/dev/null | grep -q "$cron_checksum"; then
+        echo "command already exists"
+        return 0
+    fi
+
+    # add the job to crontab
+    (crontab -u "$username" -l 2>/dev/null; echo "$cron # $cron_checksum") | crontab -u "$username" -
+}
+
+function installed() {
+    command -v "$1" >/dev/null 2>&1
+}
+
 function updateable() {
     apt-get update > /dev/null 2>&1
     available=$(apt list --upgradable 2>/dev/null | grep -c upgradable)
@@ -77,6 +106,20 @@ function install_speedtest() {
     [[ -d "$manpath" ]] && mv "$tmp_dir/speedtest.5" "$manpath"
     rm -rf "$tmp_dir"
     echo "speedtest-cli installed"
+}
+
+function run_speedtest() {
+    if ! installed speedtest; then
+        echo "speedtest-cli not installed, installing it"
+        install_speedtest
+    fi
+    if ! installed speedtest; then
+        echo "failed to install speedtest-cli"
+        return 1
+    fi
+
+    echo "running speedtest"
+    speedtest --accept-license --accept-gdpr --format=json-pretty
 }
 
 function install_pyenv() {
@@ -160,6 +203,56 @@ function install_edge_kernel() {
     /sbin/reboot
 }
 
+function install_lookbusy() {
+    remote_url=$(curl -sL $lookbusy_base | grep -oP 'href="\K[^"]+.tar.gz' | head -n 1 | sed 's/ //g')
+    [[ -z "$remote_url" ]] && echo "failed to get the remote url" && return 1
+    remote_version=$(echo "$remote_url" | grep -oP 'lookbusy-\K[^"]+.tar.gz' | sed 's/\.tar\.gz//g')
+    [[ -z "$remote_version" ]] && echo "failed to get the remote version" && return 1
+    local_version=$(lookbusy -V 2>/dev/null | grep -oP 'lookbusy ([0-9]+([.][0-9]+)+)' | awk '{print $2}')
+    [[ -z "$local_version" ]] || [[ "$local_version" != "$remote_version" ]] && {
+        tmp_dir=$(mktemp -d -t lookbusy-XXXXXXXXXXXXXXXX 2>/dev/null)
+        [[ -z "$tmp_dir" ]] && echo "failed to create a temp dir" && return 1
+        pushd "$tmp_dir" > /dev/null 2>&1 || return 1
+        curl -sL "$lookbusy_base$remote_url" -o lookbusy.tar.gz || return 1
+        tar -xvf lookbusy.tar.gz --strip-components=1 --exclude=.svn || return 1
+        ./configure && make && make install
+        popd > /dev/null 2>&1 || return 1
+        rm -rf "$tmp_dir"
+    }
+}
+
+function enable_lookbusy() {
+    username="$1"
+    [[ -z "$username" ]] && echo "username is required when enabling lookbusy" && return 1
+    if ! installed lookbusy; then
+        echo "lookbusy is not installed"
+        echo "installing lookbusy"
+        install_lookbusy
+    fi
+    if ! installed lookbusy; then
+        echo "failed to install lookbusy"
+        return 1
+    fi
+
+    # get 10% of the available memory
+    mem=$(free -m | grep Mem | awk '{print $2}')
+    mem=$((mem / 10))
+    # create a cron job to run lookbusy every day from 02:30 GMT+8 with user $username
+    add_cronjob "$username" "30 2 * * * timeout 4h lookbusy -c 10-20 -r curve -m $mem""mb -M 100"
+
+    if ! installed speedtest; then
+        echo "speedtest is not installed"
+        echo "installing speedtest"
+        install_speedtest
+    fi
+    if ! installed speedtest; then
+        echo "failed to install speedtest"
+        return 1
+    fi
+    # create a cron job to run speedtest every day at 02:00 GMT+8 with user $username
+    add_cronjob "$username" "0 2 * * * speedtest --accept-license --accept-gdpr"
+}
+
 if ((EUID != 0)); then
 	echo "Granting root privileges for ""$(basename "$0")"
 	if [[ -t 1 ]]; then
@@ -173,6 +266,7 @@ fi
 
 _install_pyenv=false
 _install_speedtest=false
+_install_lookbusy=false
 _update=false
 _update_ss=false
 _upgrade=false
@@ -186,6 +280,8 @@ _cleanup=false
 _unlock_test=false
 _netflix_test=false
 _edge_kernel=false
+_enable_lookbusy=false
+_speedtest=false
 username=""
 _host=""
 
@@ -194,9 +290,11 @@ function usage() {
     echo "Options:"
     echo "  -h, --help                    show this help message and exit"
     echo "  -ist, --install-speedtest,    install speedtest-cli"
+    echo "  -ilb, --install-lookbusy,     install lookbusy"
     echo "  -ipe, --install-pyenv,        install pyenv"
     echo "  -c, --cleanup,                cleanup the server"
     echo "  -e, --edge-kernel,            install edge kernel"
+    echo "  -l, --lookbusy,               enable lookbusy"
     echo "  -uu, --update,                update the server"
     echo "  -uuu, --ugrade,               upgrade the server if needed"
     echo "  -ui, --self-update,           update $(basename "$0")"
@@ -206,6 +304,7 @@ function usage() {
     echo "  -rr, --reset,                 reset the server, need -u to specify the username"
     echo "  -r, --reboot,                 reboot the server"
     echo "  -s, --midea-unlock-test,      stream media unlock test"
+    echo "  -st, --speedtest,             run speedtest"
     echo "  -p, --provision,              provision the server, need -u to specify the username"
     echo "  -u, --username,               specify the username when reseting or provisioning the server"
     echo "  -nf, --netflix-test,          netflix unlock test"
@@ -223,12 +322,15 @@ while [[ $# -gt 0 ]]; do
         -rr | --reset ) _reset=true; shift 1 ;;
         -r | --reboot ) _reboot=true; shift 1 ;;
         -s | --midea-unlock-test ) _unlock_test=true; shift 1 ;;
+        -st | --speedtest ) _speedtest=true; shift 1 ;;
         -a | --auto ) _auto=true; shift 1 ;;
         -p | --provision ) _provision=true; shift 1 ;;
         -u | --username ) username="$2"; shift 2 ;;
         -c | --cleanup ) _cleanup=true; shift 1 ;;
         -e | --edge-kernel ) _edge_kernel=true; shift 1 ;;
+        -l | --lookbusy ) _enable_lookbusy=true; shift 1 ;;
         -ist | --install-speedtest ) _install_speedtest=true; shift 1 ;;
+        -ilb | --install-lookbusy ) _install_lookbusy=true; shift 1 ;;
         -ipe | --install-pyenv ) _install_pyenv=true; shift 1 ;;
         -nf | --netflix-test ) _netflix_test=true; shift 1 ;;
         * ) POSITIONAL+=("$1"); shift ;;
@@ -258,9 +360,16 @@ action() {
         cleanup
     elif [[ "$_install_speedtest" == true ]]; then
         install_speedtest
+    elif [[ "$_speedtest" == true ]]; then
+        run_speedtest
+    elif [[ "$_install_lookbusy" == true ]]; then
+        install_lookbusy
     elif [[ "$_install_pyenv" == true ]]; then
         [[ -z "$username" ]] && echo "username is required when installing pyenv" && return 1
         install_pyenv "$username"
+    elif [[ "$_enable_lookbusy" == true ]]; then
+        [[ -z "$username" ]] && echo "username is required when enabling lookbusy" && return 1
+        enable_lookbusy "$username"
     elif [[ "$_unlock_test" == true ]]; then
         midea_unlock_test
     elif [[ "$_netflix_test" == true ]]; then
