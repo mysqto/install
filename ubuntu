@@ -42,8 +42,22 @@ if ((EUID != 0)); then
 	exit
 fi
 
+function update_dpkg_config() {
+    [[ ! -d "/etc/apt/apt.conf.d" ]] && mkdir -p "/etc/apt/apt.conf.d"
+    [[ -f /etc/apt/apt.conf.d/local ]] && mv /etc/apt/apt.conf.d/local /etc/apt/apt.conf.d/local.bak
+    echo 'DPkg::options { "--force-confdef"; "--force-confold"; }' > /etc/apt/apt.conf.d/local
+}
+
+function restore_dpkg_config() {
+    [[ -f /etc/apt/apt.conf.d/local.bak ]] && mv /etc/apt/apt.conf.d/local.bak /etc/apt/apt.conf.d/local
+}
+
 function warn() {
-    echo -e "\033[1;33m$1\033[0m"
+    echo -e "\033[1;33m${*}\033[0m"
+}
+
+function error() {
+    echo -e "\033[1;31m${*}\033[0m"
 }
 
 function download() {
@@ -223,7 +237,12 @@ case $(uname -m) in
     * ) echo "unsupported arch $(uname -m)"; exit 1 ;;
 esac
 
-UCF_FORCE_CONFFOLD=1 apt -y update && apt -y --no-install-recommends install systemd pwgen whois curl cpio openssh-client jq
+update_dpkg_config && {
+    apt -y update && apt -y --no-install-recommends install systemd pwgen \
+    whois curl cpio openssh-client jq
+}
+
+restore_dpkg_config
 
 [ -z "$efi" ] && {
     efi=false
@@ -311,12 +330,12 @@ ssh_private_key="$(cat "$ssh_key_file" 2>/dev/null)"
 [[ -n "$ssh_private_key" ]] && warn "ssh private key     : \n$ssh_private_key"
 warn "#######################################################################"
 
-mirror="http://ports.ubuntu.com"
-[[ "$arch" == "amd64" ]] && mirror="http://archive.ubuntu.com/ubuntu"
-if [[ -n "$cloud" ]]; then
-    mirror="http://$cloud.ports.ubuntu.com"
-    [[ "$arch" == "amd64" ]] && mirror="http://$cloud.archive.ubuntu.com/ubuntu"
-fi
+    mirror="http://ports.ubuntu.com"
+    [[ "$arch" == "amd64" ]] && mirror="http://archive.ubuntu.com/ubuntu"
+    if [[ -n "$cloud" ]]; then
+        mirror="http://$cloud.ports.ubuntu.com"
+        [[ "$arch" == "amd64" ]] && mirror="http://$cloud.archive.ubuntu.com/ubuntu"
+    fi
 initrd_url="$mirror/dists/focal-proposed/main/installer-$arch/current/legacy-images/netboot/ubuntu-installer/$arch/initrd.gz"
 linux_url="$mirror/dists/focal-proposed/main/installer-$arch/current/legacy-images/netboot/ubuntu-installer/$arch/linux"
 
@@ -332,6 +351,10 @@ if [[ ! -d "$wd" ]] || [[ ! -d "$boot_dir" ]] ; then
     echo "failed to create $wd or $boot_dir"
     exit 1
 fi
+
+# should remove the trailing slash if any
+mirror_source="$(grep restricted /etc/apt/sources.list 2>/dev/null | grep -v '^#' | head -n1 | awk '{print $2}' | sed 's/\/$//')"
+[[ -n "$mirror_source" ]] && mirror="$mirror_source"
 
 mirror_host="$(echo "$mirror" |awk -F'://|/' '{print $2}')"
 mirror_folder="$(echo "$mirror" |awk -F''"${mirror_host}"'' '{print $2}')"
