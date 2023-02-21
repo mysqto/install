@@ -28,7 +28,7 @@ title="Install Ubuntu 20.04 LTS"
 cloud=""
 manual_partition=false
 
-[[ -d "$wd" ]] || wd=/tmp/ubuntu.$(date +%s) && mkdir -p "$wd"
+[[ ! -d "$wd" ]] && wd=/tmp/ubuntu.$(date +%s) && mkdir -p "$wd"
 [[ ! -d "$wd" ]] && echo "failed to create working directory" && exit 1
 
 if ((EUID != 0)); then
