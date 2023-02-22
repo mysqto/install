@@ -330,12 +330,12 @@ ssh_private_key="$(cat "$ssh_key_file" 2>/dev/null)"
 [[ -n "$ssh_private_key" ]] && warn "ssh private key     : \n$ssh_private_key"
 warn "#######################################################################"
 
-    mirror="http://ports.ubuntu.com"
-    [[ "$arch" == "amd64" ]] && mirror="http://archive.ubuntu.com/ubuntu"
-    if [[ -n "$cloud" ]]; then
-        mirror="http://$cloud.ports.ubuntu.com"
-        [[ "$arch" == "amd64" ]] && mirror="http://$cloud.archive.ubuntu.com/ubuntu"
-    fi
+mirror="http://ports.ubuntu.com"
+[[ "$arch" == "amd64" ]] && mirror="http://archive.ubuntu.com/ubuntu"
+if [[ -n "$cloud" ]]; then
+    mirror="http://$cloud.ports.ubuntu.com"
+    [[ "$arch" == "amd64" ]] && mirror="http://$cloud.archive.ubuntu.com/ubuntu"
+fi
 initrd_url="$mirror/dists/focal-proposed/main/installer-$arch/current/legacy-images/netboot/ubuntu-installer/$arch/initrd.gz"
 linux_url="$mirror/dists/focal-proposed/main/installer-$arch/current/legacy-images/netboot/ubuntu-installer/$arch/linux"
 
@@ -366,7 +366,7 @@ download "$linux_url" "$vmlinuz_img"
 [[ ! -f "$initrd_gz" ]] && echo "initrd image not downloadded" && exit 1
 [[ ! -f "$vmlinuz_img" ]] && echo "vmlinuz not downloadded" && exit 1
 
-cat > "$preseed_file"<<EOF
+cat >> "$preseed_file"<<EOF
 ### Localization
 # Preseeding only locale sets language, country and locale.
 d-i debian-installer/locale string en_US.UTF-8
@@ -617,7 +617,7 @@ for old_initrd in $old_initrds; do
     install_menu_entry=${install_menu_entry//$old_initrd/$initrd}
 done
 
-cat > "$grub_custom_file"<<"EOF"
+cat >> "$grub_custom_file"<<"EOF"
 #!/bin/sh
 exec tail -n +3 $0
 # This file provides an easy way to add custom menu entries.  Simply type the

@@ -48,7 +48,7 @@ function kernal_updateable() {
 }
 
 function remove_old_kernels() {
-    old_kernels=$(dpkg -l "linux-"{image,headers}"-*" | awk '/^ii/{print $2}' | grep -E '[0-9]+\.[0-9]+\.[0-9]+' | grep -v "$(uname -r | cut -d- -f-2)")
+    old_kernels=$(dpkg -l "linux-"{image,headers}"-*" 2>/dev/null | awk '/^ii/{print $2}' | grep -E '[0-9]+\.[0-9]+\.[0-9]+' | grep -v "$(uname -r | cut -d- -f-2)")
     [[ -z "$old_kernels" ]] && echo "no old kernels to remove" && return 0
     for kernel in $old_kernels; do
         apt -y purge "$kernel"

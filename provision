@@ -1,8 +1,25 @@
 #!/usr/bin/env bash
 
+function warn() {
+    echo -e "\033[1;33m${*}\033[0m"
+}
+
+function error() {
+    echo -e "\033[1;31m${*}\033[0m"
+    exit 1
+}
+
 distribution="$(lsb_release -is 2>/dev/null)"
 
-if [[ "$distribution" != "Ubuntu" && "$distribution" != "Debian" ]]; then
+[ -z "$distribution" ] && distribution="$(cat /etc/*-release 2>/dev/null | grep -Eo 'ID=\w+' | cut -d'=' -f2 | head -n1)"
+
+[ -z "$distribution" ] && distribution="$(cat /etc/*-release 2>/dev/null | grep -Eo 'ID_LIKE=\w+' | cut -d'=' -f2 | head -n1)"
+
+[ -z "$distribution" ] && error "Could not detect distribution"
+
+distribution="$(echo "$distribution" | tr '[:upper:]' '[:lower:]')"
+
+if [[ "$distribution" != "ubuntu" && "$distribution" != "debian" ]]; then
     echo "This script only works on Ubuntu and Debian"
     exit 1
 fi
@@ -92,10 +109,10 @@ set -- "${POSITIONAL[@]}" # restore positional parameters
 
 # enable PPA for fish and install software
 apt update && apt upgrade -y
-if [[ "$distribution" == "Ubuntu" ]]; then
+if [[ "$distribution" == "ubuntu" ]]; then
     apt install -y software-properties-common
     add-apt-repository -y ppa:fish-shell/release-3
-elif [[ "$distribution" == "Debian" ]]; then
+elif [[ "$distribution" == "debian" ]]; then
     debian_codename="$(lsb_release -cs 2>/dev/null)"
     #use backports for debian
     apt_source_list="/etc/apt/sources.list"
