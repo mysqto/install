@@ -1,0 +1,981 @@
+#!/usr/bin/env bash
+
+function installed() {
+    command -v "$1" >/dev/null 2>&1
+}
+
+function update_dpkg_config() {
+    [ ! -d "/etc/apt/apt.conf.d" ] && mkdir -p "/etc/apt/apt.conf.d"
+    [ -f /etc/apt/apt.conf.d/local ] && mv /etc/apt/apt.conf.d/local /etc/apt/apt.conf.d/local.bak
+    echo 'DPkg::options { "--force-confdef"; "--force-confold"; }' >/etc/apt/apt.conf.d/local
+}
+
+function restore_dpkg_config() {
+    [ -f /etc/apt/apt.conf.d/local.bak ] && mv /etc/apt/apt.conf.d/local.bak /etc/apt/apt.conf.d/local
+}
+
+function warn() {
+    echo -e "\033[1;33m${*}\033[0m"
+}
+
+function error() {
+    echo -e "\033[1;31m${*}\033[0m"
+    exit 1
+}
+
+function download() {
+    local url="$1"
+    local target="$2"
+    if [ -z "$target" ]; then
+        target="$(basename "$url")"
+    fi
+    target_dir="$(dirname "$target")"
+    if [ ! -d "$target_dir" ]; then
+        mkdir -p "$target_dir"
+    fi
+    [ -f "$target" ] && rm -rf "$target"
+    echo "Downloading $url to $target"
+    curl --progress-bar -Lo "$target" "$url"
+}
+
+function cidr_to_netmask() {
+    set -- $((5 - ($1 / 8))) 255 255 255 255 $(((255 << (8 - ($1 % 8))) & 255)) 0 0 0
+    # shellcheck disable=SC2015
+    [ "$1" -gt 1 ] && shift "$1" || shift
+    echo "${1-0}"."${2-0}"."${3-0}"."${4-0}"
+}
+
+# shellcheck disable=SC2120
+function ip_address() {
+    if="$1"
+    type="$2"
+    [ -z "$type" ] && type="4"
+    # shellcheck disable=SC2119
+    [ -z "$if" ] && if="$(default_interface)"
+    ip -"$type" -o addr show "$if" | head -1 | awk '{split($4,a,"/"); print a[1]}'
+}
+# shellcheck disable=SC2120
+function netmask() {
+    if="$1"
+    type="$2"
+    [ -z "$type" ] && type="4"
+    # shellcheck disable=SC2119
+    [ -z "$if" ] && if="$(default_interface)"
+    local mask=""
+    if [ "$type" == "6" ]; then
+        mask=$(ip -"$type" -o addr show "$if" | awk '{split($4,a,"/"); print a[2]}')
+    else
+        mask=$(cidr_to_netmask "$(ip -"$type" -o addr show "$if" | head -1 | awk '{split($4,a,"/"); print a[2]}')")
+    fi
+    [ -z "$mask" ] && echo "failed to get netmask" && exit 1
+    # dirty hack for google cloud
+    if [ "$type" == "4" ] && [ "$mask" == "255.255.255.255" ]; then
+        asn=$(curl -s "https://ipconfig.io/json" | jq -r '.asn_org' 2>/dev/null)
+        if [ "$asn" == "GOOGLE-CLOUD-PLATFORM" ]; then
+            mask="255.255.255.0"
+        fi
+    fi
+    [ -z "$mask" ] && echo "failed to get netmask" && exit 1
+    echo "$mask"
+}
+
+# shellcheck disable=SC2120
+function default_gateway() {
+    type="$1"
+    [ -z "$type" ] && type="4"
+    ip -"$type" route show default | awk '{print $3}' | head -n1
+}
+
+# shellcheck disable=SC2120
+function default_interface() {
+    type="$1"
+    [ -z "$type" ] && type="4"
+    ip -"$type" route show default | awk '{print $5}' | head -n1
+}
+
+# get current dns server
+function dns() {
+    resolvectl dns -i "$(default_interface)" 2>/dev/null | awk '{print $4}'
+}
+
+function get_disk() {
+    lsblk -oMOUNTPOINT,PKNAME -P | grep 'MOUNTPOINT="/"' | cut -d'"' -f4
+}
+
+has_cloud_kernel() {
+    local suite="$1"
+    local arch="$2"
+    local use_bpo_kernel="$3"
+    case $suite in
+        stretch|oldoldstable)
+            [ "$arch" = amd64 ] && [ "$use_bpo_kernel" = true ] && return
+            ;;
+        buster|oldstable)
+            [ "$arch" = amd64 ] && return
+            [ "$arch" = arm64 ] && [ "$use_bpo_kernel" = true ] && return
+            ;;
+        bullseye|stable|bookworm|testing|sid|unstable)
+            [ "$arch" = amd64 ] || [ "$arch" = arm64 ] && return
+    esac
+
+    local tmp; tmp=''; [ "$use_bpo_kernel" = true ] && tmp='-backports'
+    warn "No cloud kernel is available for $arch/$suite$tmp"
+
+    return 1
+}
+
+has_backports() {
+    local suite="$1"
+    case $suite in
+        stretch|oldoldstable|buster|oldstable|bullseye|stable|bookworm|testing) return
+    esac
+
+    warn "No backports kernel is available for $suite"
+
+    return 1
+}
+# Sets variable:
+late_command=
+in_target() {
+    local command=
+
+    for argument in "$@"; do
+        command="$command $argument"
+    done
+
+    if [ -n "$command" ]; then
+        [ -z "$late_command" ] && late_command='true'
+        late_command="$late_command;$command"
+    fi
+}
+
+in_target_backup() {
+    in_target "if [ ! -e \"$1.backup\" ]; then cp \"$1\" \"$1.backup\"; fi"
+}
+
+configure_sshd() {
+    # !isset($sshd_config_backup)
+    [ -z "${sshd_config_backup+1s}" ] && in_target_backup /etc/ssh/sshd_config
+    sshd_config_backup=
+    in_target sed -Ei \""s/^#?$1 .+/$1 $2/"\" /etc/ssh/sshd_config
+}
+
+function grub_config() {
+    grub_dir=$(find /boot -type d -name "grub*" 2>/dev/null | head -n1)
+    find "$grub_dir" -regextype posix-egrep -regex ".*/(grub.conf|grub.cfg)" 2>/dev/null
+}
+
+[ ! -d "$wd" ] && wd=/tmp/ubuntu.$(date +%s) && mkdir -p "$wd"
+[ ! -d "$wd" ] && echo "failed to create working directory" && exit 1
+
+if ((EUID != 0)); then
+    echo "Granting root privileges for ""$(basename "$0")"
+    if [ -t 1 ]; then
+        sudo "$0" "$@"
+    else
+        exec 1>output_file
+        gksu "$0" "$@"
+    fi
+    exit
+fi
+
+# debug flag
+dry_run=false
+# systen related
+arch=
+version=stable
+suite=
+# mirror related
+mirror_protocol=https
+mirror_host=deb.debian.org
+mirror_directory=/debian
+mirror_proxy=
+security_repository=http://security.debian.org/debian-security
+security_archive=
+daily=
+# account related
+username=
+uid=
+password=
+password_hash=
+authorized_keys=
+authorized_keys_url=
+# network related
+interface=auto
+hostname=
+domain=
+timezone=
+ntp_server=
+network_console=false
+shadowsocks_password=
+bbr=true
+# partition related
+filesystem=ext4
+firmware=false
+disk=
+efi=false
+gpt=false
+esp=
+boot_size=
+# boot related
+force_efi_extra_removable=false
+#kernel and upgrade related
+upgrade=safe-upgrade
+kernel=
+bpo_kernel=true
+cloud_kernel=false
+kernel_params=
+packages="net-tools curl wget git tig build-essential vim"
+
+provision=false
+shadowsocks_config="/etc/shadowsocks-libev/config.json"
+wd="$(mktemp -t "debian.XXXXXXXXXXXXXXXX" -d 2>/dev/null)"
+boot_dir="/boot"
+grub_d="/etc/grub.d"
+grub_custom_file="$grub_d/40_custom"
+
+# prepare for dpkg and install necessary packages
+update_dpkg_config && {
+    apt -y update && apt -y --no-install-recommends install systemd pwgen \
+        whois curl cpio openssh-client jq
+}
+
+restore_dpkg_config
+
+[ -z "$arch" ] && {
+    arch=$(dpkg --print-architecture 2>/dev/null) || {
+        case $(uname -m) in
+        x86_64)
+            arch=amd64
+            ;;
+        aarch64)
+            arch=arm64
+            ;;
+        i386)
+            arch=i386
+            ;;
+        *)
+            err 'No "--architecture" specified'
+            ;;
+        esac
+    }
+}
+
+[ -z "$arch" ] && {
+    echo "failed to detect architecture, please specify it with --architecture"
+    exit 1
+}
+
+POSITIONAL=()
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+    -v | --version)
+        version="$2"
+        shift 2
+        ;;
+    --cdn | --aws)
+        mirror_protocol=https
+        [ "$1" = '--aws' ] && mirror_host=cdn-aws.deb.debian.org
+        security_repository=mirror
+        ;;
+    -cn | --china)
+        dns='223.5.5.5 223.6.6.6'
+        mirror_protocol=https
+        mirror_host=mirrors.aliyun.com
+        ntp_server=ntp.aliyun.com
+        security_repository=mirror
+        ;;
+    -a | --architecture)
+        arch="$2"
+        shift 2
+        ;;
+    -bbr | --bbr)
+        bbr=true
+        shift
+        ;;
+    -boot | --boot-size)
+        boot_size="$2"
+        shift 2
+        ;;
+    -d | --disk)
+        disk="$2"
+        shift 2
+        ;;
+    -e | --efi)
+        efi=true
+        shift
+        ;;
+    -esp | --esp-size)
+        esp="$2"
+        shift 2
+        ;;
+    --ethx)
+        kernel_params="$kernel_params net.ifnames=0 biosdevname=0"
+        ;;
+    -f | --filesystem)
+        filesystem="$2"
+        shift 2
+        ;;
+    -u | --user)
+        username="$2"
+        shift 2
+        ;;
+    -uid | --uid)
+        uid="$2"
+        shift 2
+        ;;
+    -p | --password)
+        password="$2"
+        shift 2
+        ;;
+    -pr | --provision)
+        provision=true
+        shift
+        ;;
+    -g | --gpt)
+        gpt=true
+        shift
+        ;;
+    -i | --interface)
+        interface="$2"
+        shift 2
+        ;;
+    -h | --hostname)
+        hostname="$2"
+        shift 2
+        ;;
+    -bpo | --backports-kernel)
+        bpo_kernel=true
+        shift
+        ;;
+    -cloud | --cloud-kernel)
+        cloud_kernel=true
+        shift
+        ;;
+    -t | --timezone)
+        timezone="$2"
+        shift 2
+        ;;
+    -n | --ntp-server)
+        ntp_server="$2"
+        shift 2
+        ;;
+    -ns | --network-console)
+        network_console=true
+        shift
+        ;;
+    -ak | --authorized-keys)
+        authorized_keys="$2"
+        shift 2
+        ;;
+    -aku | --authorized-keys-url)
+        authorized_keys_url="$2"
+        shift 2
+        ;;
+    -ssp | --shadowsocks-password)
+        shadowsocks_password="$2"
+        shift 2
+        ;;
+    -mp | --mirror-protocol)
+        if [ "$2" != "http" ] && [ "$2" != "https" ] && [ "$2" != "ftp" ]; then
+            warn "invalid mirror protocol $2, only http, https and ftp are supported, use https as default"
+            mirror_protocol="https"
+        else
+            mirror_protocol="$2"
+        fi
+        shift 2
+        ;;
+    -mh | --mirror-host)
+        mirror_host="$2"
+        shift 2
+        ;;
+    -md | --mirror-directory)
+        mirror_directory=${2%/}
+        shift 2
+        ;;
+    -sr | --security-repository)
+        security_repository="$2"
+        shift 2
+        ;;
+    --force-efi-extra-removable)
+        force_efi_extra_removable=true
+        shift
+        ;;
+    --upgrade)
+        if [ "$2" != "none" ] && [ "$2" != "safe-upgrade" ] && [ "$2" != "full-upgrade" ]; then
+            warn "invalid upgrade type $2, only none, safe-upgrade and full-upgrade are supported, use safe-upgrade as default"
+            upgrade="safe-upgrade"
+        else
+            upgrade="$2"
+        fi
+        shift 2
+        ;;
+    --daily)
+        daily=true
+        shift
+        ;;
+    --dry-run)
+        dry_run=true
+        shift
+        ;;
+    --firmware)
+        firmware=true
+        shift
+        ;;
+    *)
+        POSITIONAL+=("$1")
+        shift
+        ;;
+    esac
+done
+
+set -- "${POSITIONAL[@]}" # restore positional parameters
+
+[ -z "$version" ] && {
+    echo "version is not specified, use stable as default"
+    version=stable
+}
+
+case $version in
+    9|stretch|oldoldstable)
+        suite=stretch
+        ;;
+    10|buster|oldstable)
+        suite=buster
+        ;;
+    11|bullseye|stable)
+        suite=bullseye
+        ;;
+    12|bookworm|testing)
+        suite=bookworm
+        ;;
+    sid|unstable)
+        suite=sid
+        ;;
+    *)
+        error "Unsupported version: $version"
+        exit 1
+esac
+
+[ -z "$kernel" ] && {
+    kernel="linux-image-$arch"
+    [ "$cloud_kernel" == "true" ] && has_cloud_kernel "$suite" "$arch" "$bpo_kernel" && kernel="linux-image-cloud-$arch"
+    [ "$bpo_kernel" == "true" ] && has_backports "$suite" && packages="$kernel/$suite-backports $packages"
+}
+
+[ -z "$daily" ] && {
+    case $suite in
+        stretch|oldoldstable|buster|oldstable|bullseye|stable)
+            daily=false
+            ;;
+        bookworm|testing|sid|unstable)
+            daily=true
+            ;;
+    esac
+}
+
+[ -z "$efi" ] && {
+    efi=false
+    [ -d /sys/firmware/efi ] && efi=true
+}
+
+[ ! -d /sys/firmware/efi ] && {
+    if [ "$efi" == "true" ]; then
+        warn "efi is not supported on this machine, fallback to legacy boot"
+        efi=false
+    fi
+}
+
+[ "$efi" == "true" ] && {
+    [ "$gpt" == "false" ] && {
+        warn "efi is only supported on gpt partition table, force to use gpt"
+        gpt=true
+    }
+
+}
+
+[ -z "$filesystem" ] && filesystem="$(blkid -o value -s TYPE "/")"
+[ -z "$filesystem" ] && filesystem="ext4"
+[ -z "$esp" ] && esp="$(fdisk -l 2>/dev/null | grep -E 'EFI System|EFI' | awk '{print $5}' | head -n1 | sed 's/.$//')"
+[ -z "$esp" ] && esp="128"
+[ -z "$boot_size" ] && boot_size="$(lsblk -oMOUNTPOINT,SIZE -P | grep -E '^MOUNTPOINT="/boot"' | grep -Eo 'SIZE="[^"]+"' | grep -Eo '[0-9]+')"
+[ -z "$boot_size" ] && boot_size="512"
+
+# random if not specified
+[ -z "$username" ] && username=$(LC_ALL=C tr </dev/urandom -dc 'a-zA-Z0-9' | head -c 8)
+
+[ -z "$full_name" ] && full_name="$(grep </etc/passwd "^$username:" | cut -d: -f5 | cut -d, -f1)"
+[ -z "$full_name" ] && full_name="$username"
+
+[ -z "$uid" ] && uid=$(id -u "$username" 2>/dev/null)
+[ -z "$uid" ] && uid=$(LC_ALL=C tr </dev/urandom -dc '0-9' | head -c 4)
+
+# random password if not specified
+[ -z "$password" ] && {
+    password_hash=$(grep </etc/shadow "^$username:" | cut -d: -f2)
+}
+
+if [ -z "$password_hash" ]; then
+    [ -z "$password" ] && password="$(pwgen -ns 32 1)"
+    password_hash="$(mkpasswd -m sha-512 -S "$(pwgen -ns 16 1)" "$password" 2> /dev/null)" ||
+        password_hash="$(openssl passwd -6 "$password" 2>/dev/null)" ||
+        password_hash="$(busybox mkpasswd -m sha-512 -S "$(pwgen -ns 16 1)" "$password" 2>/dev/null)" || {
+        for python in python3 python python2; do
+            installed "$python" || continue
+            password_hash=$("$python" -c 'import crypt, sys; print(crypt.crypt(sys.argv[1], crypt.mksalt(crypt.METHOD_SHA256)))' "$password" 2>/dev/null) && break
+        done
+    }
+
+fi
+
+[ -z "$password_hash" ] && echo "failed to get password hash" && exit 1
+
+[ -z "$hostname" ] && hostname="$(hostname)"
+[ -z "$hostname" ] && hostname="$(cat /etc/hostname 2>/dev/null)"
+[ -z "$hostname" ] && hostname="$(cat /proc/sys/kernel/hostname 2>/dev/null)"
+[ -z "$hostname" ] && hostname=$(LC_ALL=C tr </dev/urandom -dc 'a-zA-Z0-9' | head -c 8)
+
+domain=$(cat </proc/sys/kernel/domainname 2>/dev/null)
+if [ "$domain" = '(none)' ]; then
+    domain=
+else
+    domain=" $domain"
+fi
+
+[ -z "$timezone" ] && timezone="$(cat /etc/timezone 2>/dev/null)"
+[ -z "$timezone" ] && timezone="$(realpath /etc/localtime 2>/dev/null | sed 's/\/usr\/share\/zoneinfo\///')"
+[ -z "$timezone" ] && timezone="$(timedatectl 2>/dev/null | awk '/Time zone:/ {print $3}')"
+[ -z "$timezone" ] && timezone="UTC"
+
+[ -z "$ntp_server" ] && ntp_server="$(timedatectl 2>/dev/null | awk '/NTP:/ {print $3}')"
+[ -z "$ntp_server" ] && ntp_server="time.cloudflare.com"
+
+if [ -z "$shadowsocks_password" ]; then
+    [ -f "$shadowsocks_config" ] && shadowsocks_password="$(grep <"$shadowsocks_config" "password" 2>/dev/null | cut -d'"' -f4)"
+fi
+[ -z "$shadowsocks_password" ] && shadowsocks_password="$(pwgen -ns 32 1)"
+
+[ -n "$authorized_keys_url" ] && {
+    authorized_keys="$(curl -sL "$authorized_keys_url" 2>/dev/null)" ||
+        authorized_keys="$(wget -qO- "$authorized_keys_url" 2>/dev/null)" ||
+        authorized_keys="$(busybox wget -qO- "$authorized_keys_url" 2>/dev/null)"
+}
+
+user_authorized_keys=$(cat /home/"$username"/.ssh/authorized_keys 2>/dev/null)
+
+[ -n "$user_authorized_keys" ] && {
+    if [ -n "$authorized_keys" ]; then
+        authorized_keys="$authorized_keys\n$user_authorized_keys"
+    else
+        authorized_keys="$user_authorized_keys"
+    fi
+}
+
+ssh_key_file="$wd/ssh_key"
+ssh_private_key=""
+[ -z "$authorized_keys" ] && {
+    rm -f "$ssh_key_file"
+    ssh-keygen -t rsa -b 4096 -C "$username@$hostname" -f "$ssh_key_file" -q -N "" >/dev/null 2>&1
+    [ -f "$ssh_key_file" ] && {
+        authorized_keys="$(cat "$ssh_key_file.pub" 2>/dev/null)"
+        ssh_private_key="$(cat "$ssh_key_file" 2>/dev/null)"
+    }
+}
+
+ip_address="$(ip_address)"
+netmask="$(netmask)"
+gateway="$(default_gateway)"
+dns="$(dns)"
+[ -z "$ip_address" ] && echo "failed to get ip address" && exit 1
+[ -z "$netmask" ] && echo "failed to get netmask" && exit 1
+[ -z "$gateway" ] && echo "failed to get gateway" && exit 1
+[ -z "$dns" ] && dns="1.1.1.1"
+
+warn "#######################################################################"
+warn "username:             $username"
+warn "uid:                  $uid"
+warn "full name:            $full_name"
+[ -n "$password" ] && warn "password:             $password"
+[ -n "$password_hash" ] && warn "password hash:        $password_hash"
+warn "hostname:             $hostname"
+warn "domain:               $domain"
+warn "timezone:             $timezone"
+warn "ntp server:           $ntp_server"
+warn "shadowsocks password: $shadowsocks_password"
+warn "interface:            $interface"
+warn "ip:                   $ip_address"
+warn "netmask:              $netmask"
+warn "gateway:              $gateway"
+warn "dns:                  $dns"
+[ -n "$ssh_private_key" ] && warn "ssh private key: \n$ssh_private_key"
+[ -n "$authorized_keys" ] && warn "ssh public key: \n$authorized_keys"
+warn "#######################################################################"
+
+preseed_file="$wd/preseed.cfg"
+
+[ ! -d "$wd" ] && mkdir -p "$wd"
+[ ! -d "$wd" ] && error "failed to create working directory"
+
+cat >> "$preseed_file" <<EOF
+# Localization
+d-i debian-installer/language string en
+d-i debian-installer/country string US
+d-i debian-installer/locale string en_US.UTF-8
+d-i keyboard-configuration/xkb-keymap select us
+
+# Network configuration
+# netcfg will choose an interface that has link if possible. This makes it
+# skip displaying a list if there is more than one interface.
+d-i netcfg/choose_interface select $interface
+
+# increase dhcp timeout
+d-i netcfg/dhcp_timeout string 60
+d-i netcfg/dhcpv6_timeout string 60
+
+d-i netcfg/dhcp_failed note
+d-i netcfg/dhcp_options select Configure network manually
+d-i netcfg/get_ipaddress string $ip_address
+d-i netcfg/get_netmask string $netmask
+d-i netcfg/get_gateway string $gateway
+d-i netcfg/get_nameservers string $dns
+d-i netcfg/hostname string $hostname
+d-i netcfg/domain string $domain
+d-i netcfg/get_hostname string $hostname
+d-i netcfg/get_domain string$domain
+d-i netcfg/no_default_route boolean true
+d-i netcfg/confirm_static boolean true
+d-i hw-detect/load_firmware boolean true
+EOF
+
+[ "$network_console" = "true" ] && {
+    cat >> "$preseed_file" <<EOF
+# Network console
+
+d-i anna/choose_modules string network-console
+d-i preseed/early_command string anna-install network-console
+EOF
+    if [ -n "$authorized_keys_url" ]; then
+        cat >> "$preseed_file" <<EOF
+d-i network-console/authorized_keys_url string $authorized_keys_url
+EOF
+    else
+        cat >> "$preseed_file" <<EOF
+d-i network-console/password password $password
+d-i network-console/password-again password $password
+EOF
+    fi
+    cat >> "$preseed_file" <<EOF
+d-i network-console/start select Continue
+EOF
+}
+
+cat >> "$preseed_file" <<EOF
+
+# Mirror settings
+d-i mirror/country string manual
+d-i mirror/protocol string $mirror_protocol
+d-i mirror/$mirror_protocol/hostname string $mirror_host
+d-i mirror/$mirror_protocol/directory string $mirror_directory
+d-i mirror/$mirror_protocol/proxy string $mirror_proxy
+d-i mirror/suite string $suite
+
+# Account setup
+d-i passwd/root-login boolean false
+# To create a normal user account.
+d-i passwd/user-fullname string $full_name
+d-i passwd/username string $username
+d-i passwd/user-password-crypted password $password_hash
+# Create the first user with the specified UID instead of the default.
+d-i passwd/user-uid string $uid
+d-i user-setup/allow-password-weak boolean false
+d-i user-setup/encrypt-home boolean false
+
+# Clock and time zone setup
+d-i time/zone string $timezone
+d-i clock-setup/utc boolean true
+d-i clock-setup/ntp boolean true
+d-i clock-setup/ntp-server string $ntp_server
+
+# Partitioning
+
+EOF
+
+echo "d-i partman-auto/method string regular" >>"$preseed_file"
+
+[ -z "$disk" ] && disk="$(get_disk)"
+if [ -z "$disk" ]; then
+    # shellcheck disable=SC2016
+    echo 'd-i partman/early_command string debconf-set partman-auto/disk "$(list-devices disk | head -n 1)"' >>"$preseed_file"
+else
+    [[ "$disk" =~ ^/dev/ ]] || disk="/dev/$disk"
+    echo "d-i partman-auto/disk string $disk" >>"$preseed_file"
+fi
+
+[ "$gpt" = "true" ] && {
+    cat >> "$preseed_file" <<EOF
+d-i partman-partitioning/choose_label string gpt
+d-i partman-partitioning/default_label string gpt
+EOF
+}
+
+cat >> "$preseed_file" <<EOF
+d-i partman/default_filesystem string $filesystem
+EOF
+
+cat >> "$preseed_file" <<'EOF'
+d-i partman-auto/expert_recipe string           \
+    naive ::                                    \
+EOF
+if [ "$efi" = true ]; then
+    # shellcheck disable=SC2129
+    cat >> "$preseed_file" <<EOF
+    $esp $esp $esp fat32                       \\
+EOF
+    cat >> "$preseed_file" <<"EOF"
+            $iflabel{ gpt }                     \
+            $primary{ }                         \
+            $reusemethod{ }                     \
+            method{ efi }                       \
+            format{ }                           \
+            .                                   \
+EOF
+
+        cat >> "$preseed_file" <<EOF
+        $boot_size $boot_size $boot_size ext4                        \\
+EOF
+
+    cat >> "$preseed_file" <<"EOF"
+            $primary{ }                         \
+            $bootable{ }                        \
+            method{ format }                    \
+            format{ }                           \
+            use_filesystem{ }                   \
+            filesystem{ ext4 }                  \
+            mountpoint{ /boot }                 \
+            .                                   \
+EOF
+else
+    cat >> "$preseed_file" <<"EOF"
+        1 1 1 free                              \
+            $primary{ }                         \
+            $bios_boot{ }                       \
+            $reusemethod{ }                     \
+EOF
+
+    [ "$gpt" == true ] && {
+        cat >> "$preseed_file" <<"EOF"
+            $iflabel{ gpt }                     \
+EOF
+    }
+    cat >> "$preseed_file" <<"EOF"
+            method{ biosgrub }                  \
+        .                                       \
+EOF
+fi
+
+cat >> "$preseed_file" <<"EOF"
+        1024 1024 -1 $default_filesystem        \
+            method{ format }                    \
+            format{ }                           \
+            use_filesystem{ }                   \
+            $default_filesystem{ }              \
+            mountpoint{ / }                     \
+    .
+EOF
+if [ "$efi" = true ]; then
+    cat >> "$preseed_file" <<"EOF"
+d-i partman-efi/non_efi_system boolean true
+EOF
+fi
+
+cat >> "$preseed_file" <<EOF
+d-i partman-auto/choose_recipe select naive
+d-i partman-basicfilesystems/no_swap boolean false
+d-i partman-partitioning/confirm_write_new_label boolean true
+d-i partman/choose_partition select finish
+d-i partman/confirm boolean true
+d-i partman/confirm_nooverwrite boolean true
+EOF
+
+cat >> "$preseed_file" <<EOF
+
+# Base system installation
+d-i base-installer/kernel/image string $kernel
+d-i base-installer/install-recommends boolean false
+EOF
+
+[ "$security_repository" = mirror ] && security_repository=$mirror_protocol://$mirror_host${mirror_directory%/*}/debian-security
+
+[ -z "$security_archive" ] && {
+    case $suite in
+        stretch|oldoldstable|buster|oldstable)
+            security_archive="$suite/updates"
+            ;;
+        bullseye|stable|bookworm|testing)
+            security_archive="$suite-security"
+            ;;
+        sid|unstable)
+            security_archive=''
+            ;;
+        *)
+            error "Unsupported suite: $suite"
+    esac
+}
+
+# If not sid/unstable
+[ -n "$security_archive" ] && {
+    cat >> "$preseed_file" <<EOF
+
+# Apt setup
+
+d-i apt-setup/services-select multiselect updates, backports
+d-i apt-setup/local0/repository string $security_repository $security_archive main
+d-i apt-setup/local0/source boolean true
+EOF
+}
+
+cat >> "$preseed_file" <<EOF
+
+# Package selection
+
+tasksel tasksel/first multiselect ssh-server
+d-i pkgsel/include string $packages
+d-i pkgsel/upgrade select $upgrade
+
+popularity-contest popularity-contest/participate boolean false
+EOF
+
+cat >> "$preseed_file" <<EOF
+# Boot loader installation
+
+d-i grub-installer/bootdev string default
+EOF
+
+[ "$force_efi_extra_removable" = true ] && {
+    cat >> "$preseed_file" <<EOF
+d-i grub-installer/force-efi-extra-removable boolean true
+EOF
+}
+
+# trim leading and trailing spaces
+kernal_params="$(echo "$kernal_params" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+[ -n "$kernal_params" ] && {
+    cat >> "$preseed_file" <<EOF
+d-i debian-installer/add-kernel-opts string $kernal_params
+EOF
+}
+
+cat >> "$preseed_file" <<EOF
+# Finishing up the installation
+# Avoid that last message about the install being complete.
+d-i finish-install/reboot_in_progress note
+d-i debian-installer/exit/reboot boolean true
+# Verbose output and no boot splash screen.
+d-i debian-installer/quiet boolean false
+d-i debian-installer/splash boolean false
+EOF
+
+[ $bbr = true ] && {
+    in_target '{ echo "net.core.default_qdisc=fq"; echo "net.ipv4.tcp_congestion_control=bbr"; } > /etc/sysctl.d/bbr.conf'
+}
+
+[[ -n "$authorized_keys" ]] && {
+    configure_sshd PermitRootLogin no
+    configure_sshd PasswordAuthentication no
+    in_target "mkdir -p /home/\"$username\"/.ssh"
+    in_target "echo '\"$authorized_keys\"' > /home/\"$username\"/.ssh/authorized_keys"
+    in_target "chmod 600 /root/.ssh/authorized_keys"
+}
+
+[ $provision = true ] && {
+    cat >> "$preseed_file" <<EOF
+# Provisioning
+d-i preseed/late_command string in-target sh -c 'curl -sL https://install.lol/provision | bash -s -- -s -ssp "$shadowsocks_password" -u "$username" -k "$authorized_keys"'
+EOF
+}
+
+pushd "$wd" >/dev/null 2>&1  || error "Failed to change directory to $wd"
+pwd
+base_url="$mirror_protocol://$mirror_host$mirror_directory/dists/$suite/main/installer-$arch/current/images/netboot/debian-installer/$arch"
+[ "$suite" = stretch ] && [ "$efi" = true ] && base_url="$mirror_protocol://$mirror_host$mirror_directory/dists/buster/main/installer-$arch/current/images/netboot/debian-installer/$arch"
+[ "$daily" = true ] && base_url="https://d-i.debian.org/daily-images/$arch/daily/netboot/debian-installer/$arch"
+firmware_url="https://cdimage.debian.org/cdimage/unofficial/non-free/firmware/$suite/current/firmware.cpio.gz"
+
+timestamp=$(date '+%Y%m%d%H%M%S')
+download "$base_url/linux" linux
+download "$base_url/initrd.gz" initrd.gz
+[ "$firmware" = true ] && download "$firmware_url" firmware.cpio.gz
+
+[ ! -f "linux" ] && error "Failed to download $base_url/linux"
+[ ! -f "initrd.gz" ] && error "Failed to download $base_url/initrd.gz"
+[ "$firmware" = true ] && [ ! -f "firmware.cpio.gz" ] && error "Failed to download $firmware_url"
+
+gzip -d initrd.gz
+# cpio reads a list of file names from the standard input
+echo preseed.cfg | cpio -o -H newc -A -F initrd
+gzip -1 initrd
+
+! [ -f initrd.gz ] && error "Failed to create initrd.gz"
+
+installer_directory="$boot_dir/debian-$suite-$arch-$timestamp"
+[ -d "$installer_directory" ] && rm -rf "$installer_directory"
+mkdir -p "$installer_directory"
+[ ! -d "$installer_directory" ] && error "Failed to create $installer_directory"
+
+mv linux "$installer_directory"
+mv initrd.gz "$installer_directory"
+[ "$firmware" = true ] && {
+    mv firmware.cpio.gz "$installer_directory"
+}
+
+mkrelpath=$installer_directory
+[ "$dry_run" = true ] && mkrelpath=/boot
+installer_directory=$(grub-mkrelpath "$mkrelpath" 2> /dev/null) ||
+installer_directory=$(grub2-mkrelpath "$mkrelpath" 2> /dev/null) || {
+    err 'Could not find "grub-mkrelpath" or "grub2-mkrelpath" command'
+}
+[ "$dry_run" = true ] && installer_directory="$installer_directory/debian-$suite"
+
+grub_dir=$(find /boot -type d -name "grub*" 2>/dev/null | head -n1)
+grub_cfg=$(find "$grub_dir" -regextype posix-egrep -regex ".*/(grub.conf|grub.cfg)" 2>/dev/null)
+[ -z "$grub_cfg" ] && error "Failed to find grub.cfg"
+[ ! -f "$grub_cfg" ] && error "Failed to find grub.cfg at $grub_cfg"
+cp "$grub_cfg" "$grub_cfg.$timestamp.bak"
+title="Install Debian $suite $arch"
+
+kernel_params="$kernel_params lowmem/low=1"
+[ -n "$force_lowmem" ] && kernel_params="$kernel_params lowmem=+$force_lowmem"
+initrd="$installer_directory/initrd.gz"
+[ "$firmware" = true ] && initrd="$initrd $installer_directory/firmware.cpio.gz"
+rm -f "$grub_custom_file" 2> /dev/null
+cat > "$grub_custom_file"<<"EOF"
+#!/bin/sh
+exec tail -n +3 $0
+# This file provides an easy way to add custom menu entries.  Simply type the
+# menu entries you want to add after this comment.  Be careful not to change
+# the 'exec tail' line above.
+EOF
+cat >> "$grub_custom_file" <<EOF
+menuentry '$title' {
+    insmod part_msdos
+    insmod part_gpt
+    insmod ext2
+    insmod xfs
+    insmod btrfs
+    linux $installer_directory/linux$kernel_params
+    initrd $initrd
+}
+EOF
+[[ ! -f "$grub_custom_file" ]] && error "grub menu not generated"
+
+chmod +x "$grub_custom_file"
+grub-mkconfig -o "$grub_cfg"
+! grep -q "$title" "$grub_cfg" && error "grub menu not updated"
+
+echo "grub menu updated"
+popd >/dev/null 2>&1 || error "Failed to change directory from $wd"
+
+grub-reboot "$title" || sudo grub-reboot "$title"
+echo "rebooting..."
+sleep 3
