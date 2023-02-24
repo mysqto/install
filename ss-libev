@@ -9,6 +9,13 @@ function _pwgen() {
 	} | shuf | tr -d '\n'
 }
 
+# shellcheck disable=SC2120
+function default_interface() {
+    type="$1"
+    [ -z "$type" ] && type="4"
+    ip -"$type" route show default | awk '{print $5}' | head -n1
+}
+
 service_exists() {
     local n=$1
     if [[ $(systemctl list-units --all -t service --full --no-legend "$n.service" | cut -f1 -d' ' 2>/dev/null) == $n.service ]]; then
@@ -55,7 +62,7 @@ wd=$(mktemp -t "ss-libev.XXXXXXXXXXXXXXXX" -d 2>/dev/null)
 
 pushd "$wd" >> /dev/null 2>&1 || exit
 
-sudo apt -y update && sudo apt -y --no-install-recommends install gettext build-essential autoconf libtool libpcre3-dev \
+sudo apt -y update && DEBIAN_FRONTEND=noninteractive sudo apt -y --no-install-recommends install gettext build-essential autoconf libtool libpcre3-dev \
     asciidoc xmlto libev-dev libc-ares-dev automake libmbedtls-dev libsodium-dev python2 pkg-config
 
 # Installation of Libsodium
@@ -100,7 +107,7 @@ if [ ! -e "/etc/shadowsocks-libev/config.json" ]; then
     [[ -z "$password" ]] && password=$(_pwgen)
     cat << EOF > config.json
 {
-        "server"      : "0.0.0.0",
+        "server"      : ["::0","0.0.0.0"],
         "server_port" : 15527,
         "password"    : "${password}",
         "timeout"     : 300,
@@ -118,6 +125,16 @@ if ! service_exists shadowsocks-libev; then
     sudo cp debian/shadowsocks-libev.service /lib/systemd/system
     sudo systemctl enable shadowsocks-libev.service
 fi
+
+# fix start error when ipv6 is enabled
+# get default interface
+default_if=$(default_interface -6 2>/dev/null)
+[ -n "$default_if" ] && {
+    if ! grep -q "net.ipv6.conf.$default_if.accept_dad" /etc/sysctl.conf; then
+        echo "net.ipv6.conf.$default_if.accept_dad = 0" | sudo tee -a /etc/sysctl.conf
+        sudo sysctl -p
+    fi
+}
 sudo systemctl start shadowsocks-libev
 popd >> /dev/null 2>&1 || exit
 popd >> /dev/null 2>&1 || exit

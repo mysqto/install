@@ -236,7 +236,7 @@ grub_custom_file="$grub_d/40_custom"
 
 # prepare for dpkg and install necessary packages
 update_dpkg_config && {
-    apt -y update && apt -y --no-install-recommends install systemd pwgen \
+    DEBIAN_FRONTEND=noninteractive apt -y update && apt -y --no-install-recommends install systemd pwgen \
         whois curl cpio openssh-client jq
 }
 
@@ -562,15 +562,7 @@ fi
         authorized_keys="$(busybox wget -qO- "$authorized_keys_url" 2>/dev/null)"
 }
 
-user_authorized_keys=$(cat /home/"$username"/.ssh/authorized_keys 2>/dev/null)
-
-[ -n "$user_authorized_keys" ] && {
-    if [ -n "$authorized_keys" ]; then
-        authorized_keys="$authorized_keys\n$user_authorized_keys"
-    else
-        authorized_keys="$user_authorized_keys"
-    fi
-}
+[ -z "$authorized_keys" ] && authorized_keys="$(cat /home/"$username"/.ssh/authorized_keys 2>/dev/null)"
 
 ssh_key_file="$wd/ssh_key"
 ssh_private_key=""
@@ -896,7 +888,6 @@ EOF
 }
 
 pushd "$wd" >/dev/null 2>&1  || error "Failed to change directory to $wd"
-pwd
 base_url="$mirror_protocol://$mirror_host$mirror_directory/dists/$suite/main/installer-$arch/current/images/netboot/debian-installer/$arch"
 [ "$suite" = stretch ] && [ "$efi" = true ] && base_url="$mirror_protocol://$mirror_host$mirror_directory/dists/buster/main/installer-$arch/current/images/netboot/debian-installer/$arch"
 [ "$daily" = true ] && base_url="https://d-i.debian.org/daily-images/$arch/daily/netboot/debian-installer/$arch"
@@ -979,3 +970,4 @@ popd >/dev/null 2>&1 || error "Failed to change directory from $wd"
 grub-reboot "$title" || sudo grub-reboot "$title"
 echo "rebooting..."
 sleep 3
+reboot
