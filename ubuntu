@@ -238,7 +238,7 @@ case $(uname -m) in
 esac
 
 update_dpkg_config && {
-    apt -y update && apt -y --no-install-recommends install systemd pwgen \
+    DEBIAN_FRONTEND=noninteractive apt -y update && apt -y --no-install-recommends install systemd pwgen \
     whois curl cpio openssh-client jq
 }
 
