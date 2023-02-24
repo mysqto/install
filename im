@@ -145,9 +145,20 @@ function provision() {
 }
 
 function reset() {
-    local user="$1"
+    [ "$#" != 2 ] && echo "usage: $0 reset <username>" && return 1
+    local system="$1"
+    local user="$2"
     [[ -z "$user" ]] && echo "username is required when reseting the server" && return 1
-    curl -sL install.lol/ubuntu | bash -s -- -u "$user"
+    case "$system" in
+        ubuntu)
+            curl -sL install.lol/ubuntu | bash -s -- -u "$user"
+            ;;
+        *)
+            curl -sL install.lol/debian | bash -s -- --user "$user"   \
+                       --bpo                                          \
+                       --provision
+            ;;
+    esac
 }
 
 function reboot() {
@@ -273,6 +284,8 @@ _upgrade=false
 _remove_old_kernels=false
 _auto=false
 _reset=false
+_reset_with_debian=false
+_reset_with_ubuntu=false
 _reboot=false
 _provision=false
 _self_update=false
@@ -302,6 +315,8 @@ function usage() {
     echo "  -ro, --remove-old-kernels,    remove old kernels"
     echo "  -a, --auto,                   auto update or upgrade the server"
     echo "  -rr, --reset,                 reset the server, need -u to specify the username"
+    echo "  -rrd, --reset-with-debian,    reset the server with debian, need -u to specify the username"
+    echo "  -rru, --reset-with-ubuntu,    reset the server with ubuntu, need -u to specify the username"
     echo "  -r, --reboot,                 reboot the server"
     echo "  -s, --midea-unlock-test,      stream media unlock test"
     echo "  -st, --speedtest,             run speedtest"
@@ -320,6 +335,8 @@ while [[ $# -gt 0 ]]; do
         -uss | --update-ss ) _update_ss=true; shift 1 ;;
         -ro | --remove-old-kernels ) _remove_old_kernels=true; shift 1 ;;
         -rr | --reset ) _reset=true; shift 1 ;;
+        -rrd | --reset-with-debian ) _reset_with_debian=true; shift 1 ;;
+        -rru | --reset-with-ubuntu ) _reset_with_ubuntu=true; shift 1 ;;
         -r | --reboot ) _reboot=true; shift 1 ;;
         -s | --midea-unlock-test ) _unlock_test=true; shift 1 ;;
         -st | --speedtest ) _speedtest=true; shift 1 ;;
@@ -350,11 +367,15 @@ action() {
         self_update
     elif [[ "$_remove_old_kernels" == true ]]; then
         remove_old_kernels
-    elif [[ "$_reset" == true ]]; then
-        reset "$username"
+    elif [[ "$_reset" == true ]] || [[ "$_reset_with_debian" == true ]] ||  [[ "$_reset_with_ubuntu" == true ]]; then
+        [[ -z "$username" ]] && echo "username is required when resetting system" && return 1
+        system="debi"
+        [[ "$_reset_with_ubuntu" == true ]] && system="ubuntu"
+        reset $system "$username"
     elif [[ "$_reboot" == true ]]; then
         reboot
     elif [[ "$_provision" == true ]]; then
+        [[ -z "$username" ]] && echo "username is required when provisioning system" && return 1
         provision "$username"
     elif [[ "$_cleanup" == true ]]; then
         cleanup
