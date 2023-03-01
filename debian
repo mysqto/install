@@ -207,6 +207,7 @@ domain=
 timezone=
 ntp_server=
 network_console=false
+nc_password=
 shadowsocks_password=
 bbr=true
 # partition related
@@ -455,7 +456,6 @@ case $version in
         ;;
     *)
         error "Unsupported version: $version"
-        exit 1
 esac
 
 [ -z "$kernel" ] && {
@@ -584,22 +584,30 @@ dns="$(dns)"
 [ -z "$gateway" ] && echo "failed to get gateway" && exit 1
 [ -z "$dns" ] && dns="1.1.1.1"
 
+[ "$network_console" = true ] && {
+    nc_password="$(pwgen -ns 32 1 2>/dev/null)" ||
+    nc_password="$(busybox pwgen -ns 32 1 2>/dev/null)" ||
+    nc_password="$(LC_ALL=C tr </dev/urandom -dc 'a-zA-Z0-9' | head -c 32 2>/dev/null)"
+}
+
 warn "#######################################################################"
-warn "username:             $username"
-warn "uid:                  $uid"
-warn "full name:            $full_name"
-[ -n "$password" ] && warn "password:             $password"
-[ -n "$password_hash" ] && warn "password hash:        $password_hash"
-warn "hostname:             $hostname"
-warn "domain:               $domain"
-warn "timezone:             $timezone"
-warn "ntp server:           $ntp_server"
-warn "shadowsocks password: $shadowsocks_password"
-warn "interface:            $interface"
-warn "ip:                   $ip_address"
-warn "netmask:              $netmask"
-warn "gateway:              $gateway"
-warn "dns:                  $dns"
+warn "username:                $username"
+warn "uid:                     $uid"
+warn "full name:               $full_name"
+[ -n "$password" ] && warn "password:                $password"
+[ -n "$password_hash" ] && warn "password hash:           $password_hash"
+warn "hostname:                $hostname"
+warn "domain:                  $domain"
+warn "timezone:                $timezone"
+warn "ntp server:              $ntp_server"
+warn "network console:         $network_console"
+[ -n "$nc_password" ] && warn "netwrk console password: $nc_password"
+warn "shadowsocks password:    $shadowsocks_password"
+warn "interface:               $interface"
+warn "ip:                      $ip_address"
+warn "netmask:                 $netmask"
+warn "gateway:                 $gateway"
+warn "dns:                     $dns"
 [ -n "$ssh_private_key" ] && warn "ssh private key: \n$ssh_private_key"
 [ -n "$authorized_keys" ] && warn "ssh public key: \n$authorized_keys"
 warn "#######################################################################"
@@ -653,8 +661,8 @@ d-i network-console/authorized_keys_url string $authorized_keys_url
 EOF
     else
         cat >> "$preseed_file" <<EOF
-d-i network-console/password password $password
-d-i network-console/password-again password $password
+d-i network-console/password password $nc_password
+d-i network-console/password-again password $nc_password
 EOF
     fi
     cat >> "$preseed_file" <<EOF
