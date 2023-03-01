@@ -214,7 +214,7 @@ bbr=true
 filesystem=ext4
 firmware=false
 disk=
-efi=false
+efi=
 gpt=false
 esp=
 boot_size=
@@ -460,8 +460,8 @@ esac
 
 [ -z "$kernel" ] && {
     kernel="linux-image-$arch"
-    [ "$cloud_kernel" == "true" ] && has_cloud_kernel "$suite" "$arch" "$bpo_kernel" && kernel="linux-image-cloud-$arch"
-    [ "$bpo_kernel" == "true" ] && has_backports "$suite" && packages="$kernel/$suite-backports $packages"
+    [ "$cloud_kernel" == true ] && has_cloud_kernel "$suite" "$arch" "$bpo_kernel" && kernel="linux-image-cloud-$arch"
+    [ "$bpo_kernel" == true ] && has_backports "$suite" && packages="$kernel/$suite-backports $packages"
 }
 
 [ -z "$daily" ] && {
@@ -481,14 +481,14 @@ esac
 }
 
 [ ! -d /sys/firmware/efi ] && {
-    if [ "$efi" == "true" ]; then
+    if [ "$efi" == true ]; then
         warn "efi is not supported on this machine, fallback to legacy boot"
         efi=false
     fi
 }
 
-[ "$efi" == "true" ] && {
-    [ "$gpt" == "false" ] && {
+[ "$efi" == true ] && {
+    [ "$gpt" == false ] && {
         warn "efi is only supported on gpt partition table, force to use gpt"
         gpt=true
     }
@@ -648,7 +648,7 @@ d-i netcfg/confirm_static boolean true
 d-i hw-detect/load_firmware boolean true
 EOF
 
-[ "$network_console" = "true" ] && {
+[ "$network_console" = true ] && {
     cat >> "$preseed_file" <<EOF
 # Network console
 
@@ -712,7 +712,7 @@ else
     echo "d-i partman-auto/disk string $disk" >>"$preseed_file"
 fi
 
-[ "$gpt" = "true" ] && {
+[ "$gpt" = true ] && {
     cat >> "$preseed_file" <<EOF
 d-i partman-partitioning/choose_label string gpt
 d-i partman-partitioning/default_label string gpt
