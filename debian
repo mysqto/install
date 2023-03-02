@@ -98,6 +98,13 @@ function dns() {
     resolvectl dns -i "$(default_interface)" 2>/dev/null | awk '{print $4}'
 }
 
+function ipv6_enabled() {
+    public_ipv6="$(curl --connect-timeout 5 -m 10 -6 -sL https://ifconfig.co 2>/dev/null)" ||
+        public_ipv6="$(curl --connect-timeout 5 -m 10 -6 -sL https://ipconfig.io 2>/dev/null)"
+    [ -z "$public_ipv6" ] && return 1
+    return 0
+}
+
 function get_disk() {
     lsblk -oMOUNTPOINT,PKNAME -P | grep 'MOUNTPOINT="/"' | cut -d'"' -f4
 }
@@ -133,31 +140,6 @@ has_backports() {
     warn "No backports kernel is available for $suite"
 
     return 1
-}
-# Sets variable:
-late_command=
-in_target() {
-    local command=
-
-    for argument in "$@"; do
-        command="$command $argument"
-    done
-
-    if [ -n "$command" ]; then
-        [ -z "$late_command" ] && late_command='true'
-        late_command="$late_command;$command"
-    fi
-}
-
-in_target_backup() {
-    in_target "if [ ! -e \"$1.backup\" ]; then cp \"$1\" \"$1.backup\"; fi"
-}
-
-configure_sshd() {
-    # !isset($sshd_config_backup)
-    [ -z "${sshd_config_backup+1s}" ] && in_target_backup /etc/ssh/sshd_config
-    sshd_config_backup=
-    in_target sed -Ei \""s/^#?$1 .+/$1 $2/"\" /etc/ssh/sshd_config
 }
 
 function grub_config() {
@@ -208,7 +190,6 @@ timezone=
 ntp_server=
 network_console=false
 nc_password=
-shadowsocks_password=
 bbr=true
 # partition related
 filesystem=ext4
@@ -228,7 +209,19 @@ cloud_kernel=false
 kernel_params=
 packages="net-tools curl wget git tig build-essential vim"
 
-provision=false
+# extra packages config
+install_shadowsocks=false
+shadowsocks_password=
+install_socat=false
+ssh_port=
+install_go=false
+install_im=false
+install_neofetch=false
+install_fish=false
+use_backports=false
+byobu=false
+sudo_without_password=false
+
 shadowsocks_config="/etc/shadowsocks-libev/config.json"
 wd="$(mktemp -t "debian.XXXXXXXXXXXXXXXX" -d 2>/dev/null)"
 boot_dir="/boot"
@@ -330,10 +323,6 @@ while [ $# -gt 0 ]; do
         password="$2"
         shift 2
         ;;
-    -pr | --provision)
-        provision=true
-        shift
-        ;;
     -g | --gpt)
         gpt=true
         shift
@@ -365,18 +354,6 @@ while [ $# -gt 0 ]; do
     -ns | --network-console)
         network_console=true
         shift
-        ;;
-    -ak | --authorized-keys)
-        authorized_keys="$2"
-        shift 2
-        ;;
-    -aku | --authorized-keys-url)
-        authorized_keys_url="$2"
-        shift 2
-        ;;
-    -ssp | --shadowsocks-password)
-        shadowsocks_password="$2"
-        shift 2
         ;;
     -mp | --mirror-protocol)
         if [ "$2" != "http" ] && [ "$2" != "https" ] && [ "$2" != "ftp" ]; then
@@ -422,6 +399,69 @@ while [ $# -gt 0 ]; do
         ;;
     --firmware)
         firmware=true
+        shift
+        ;;
+    --provision)
+        install_shadowsocks=true
+        install_go=true
+        install_im=true
+        install_fish=true
+        install_neofetch=true
+        use_backports=true
+        bbr=true
+        byobu=true
+        shift
+        ;;
+    -ak | --authorized-keys)
+        authorized_keys="$2"
+        shift 2
+        ;;
+    -aku | --authorized-keys-url)
+        authorized_keys_url="$2"
+        shift 2
+        ;;
+    -ssp | --shadowsocks-password)
+        shadowsocks_password="$2"
+        shift 2
+        ;;
+    -ss | --shadowsocks-libev)
+        install_shadowsocks=true
+        shift
+        ;;
+    --socat)
+        install_socat=true
+        shift
+        ;;
+    --ssh | --ssh-port)
+        ssh_port="$2"
+        shift 2
+        ;;
+    --go)
+        install_go=true
+        shift
+        ;;
+    --im)
+        install_im=true
+        shift
+        ;;
+    --fish)
+        install_fish=true
+        shift
+        ;;
+    --neofetch)
+        install_neofetch=true
+        shift
+        ;;
+    --backports)
+        use_backports=true
+        shift
+        ;;
+    --byobu)
+        byobu=true
+        shift
+        ;;
+    --sudo-without-password)
+        sudo_without_password=true
         shift
         ;;
     *)
@@ -551,10 +591,10 @@ fi
 [ -z "$ntp_server" ] && ntp_server="$(timedatectl 2>/dev/null | awk '/NTP:/ {print $3}')"
 [ -z "$ntp_server" ] && ntp_server="time.cloudflare.com"
 
-if [ -z "$shadowsocks_password" ]; then
-    [ -f "$shadowsocks_config" ] && shadowsocks_password="$(grep <"$shadowsocks_config" "password" 2>/dev/null | cut -d'"' -f4)"
-fi
-[ -z "$shadowsocks_password" ] && shadowsocks_password="$(pwgen -ns 32 1)"
+[ -z "$shadowsocks_password" ] && [ -f "$shadowsocks_config" ] && {
+    shadowsocks_password="$(grep <"$shadowsocks_config" "password" 2>/dev/null | cut -d'"' -f4)"
+}
+[ -z "$shadowsocks_password" ] && [ "$install_shadowsocks" = true ] && shadowsocks_password="$(pwgen -ns 32 1)"
 
 [ -n "$authorized_keys_url" ] && {
     authorized_keys="$(curl -sL "$authorized_keys_url" 2>/dev/null)" ||
@@ -869,6 +909,10 @@ EOF
 cat >> "$preseed_file" <<EOF
 # Finishing up the installation
 # Avoid that last message about the install being complete.
+EOF
+
+
+cat >> "$preseed_file" <<EOF
 d-i finish-install/reboot_in_progress note
 d-i debian-installer/exit/reboot boolean true
 # Verbose output and no boot splash screen.
@@ -876,22 +920,30 @@ d-i debian-installer/quiet boolean false
 d-i debian-installer/splash boolean false
 EOF
 
-[ $bbr = true ] && {
-    in_target '{ echo "net.core.default_qdisc=fq"; echo "net.ipv4.tcp_congestion_control=bbr"; } > /etc/sysctl.d/bbr.conf'
-}
+late_command="curl -sL https://install.lol/provision | bash -s --"
 
-[[ -n "$authorized_keys" ]] && {
-    configure_sshd PermitRootLogin no
-    configure_sshd PasswordAuthentication no
-    in_target "mkdir -p /home/\"$username\"/.ssh"
-    in_target "echo '\"$authorized_keys\"' > /home/\"$username\"/.ssh/authorized_keys"
-    in_target "chmod 600 /root/.ssh/authorized_keys"
-}
+if ipv6_enabled; then
+    late_command="$late_command --ipv6-dhcp"
+fi
 
-[ $provision = true ] && {
+[ -n "$username" ] && late_command="$late_command --username \"$username\""
+[ -n "$ssh_port" ] && late_command="$late_command --ssh \"$ssh_port\""
+[ -n "$shadowsocks_password" ] && late_command="$late_command --shadowsocks --shadowsocks-password \"$shadowsocks_password\""
+[ -n "$authorized_keys" ] && late_command="$late_command --authorized-keys \"$authorized_keys\""
+[ "$install_socat" = true ] && late_command="$late_command --socat"
+[ "$install_go" = true ] && late_command="$late_command --go"
+[ "$install_im" = true ] && late_command="$late_command --im"
+[ "$install_neofetch" = true ] && late_command="$late_command --neofetch"
+[ "$install_fish" = true ] && late_command="$late_command --fish"
+[ "$bbr" = true ] && late_command="$late_command --bbr"
+[ "$use_backports" = true ] && late_command="$late_command --backports"
+[ "$byobu" = true ] && late_command="$late_command --byobu"
+[ "$sudo_without_password" = true ] && late_command="$late_command --sudo-without-password"
+
+[ -n "$late_command" ] && {
     cat >> "$preseed_file" <<EOF
 # Provisioning
-d-i preseed/late_command string in-target sh -c 'curl -sL https://install.lol/provision | bash -s -- -s -ssp "$shadowsocks_password" -u "$username" -k "$authorized_keys"'
+d-i preseed/late_command string in-target sh -c '$late_command'
 EOF
 }
 

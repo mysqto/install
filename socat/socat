@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+
+# shellcheck disable=SC1091
+source /etc/socatrc >/dev/null 2>&1
+ 
+function stop() {
+   for pid in $(pgrep "socat" 2>/dev/null); do
+       kill -9 "$pid" 2>/dev/null
+   done
+   
+}
+
+
+function start() {
+    stop
+    # shellcheck disable=SC2154
+    for connection in "${connections[@]}"; do
+        host="$(echo "$connection" | cut -d'|' -f1)"
+        port="$(echo "$connection" | cut -d'|' -f2)"
+
+        # skip invalid connections
+        [ "$host" == "dest_in_host:port_format" ] && continue
+        [ "$port" == "local_port" ] && continue
+
+        log_dir="$(mktemp -d -t "socat.XXXXXXXXXXXXXXXX" 2>/dev/null)"
+        [ ! -d "$log_dir" ] && {
+            echo "Failed to create log dir"
+            exit 1
+        }
+
+        socat TCP4-LISTEN:"$port",reuseaddr,fork TCP4:"$host" >> "$log_dir/$host.tcp.log" 2>&1 &
+        socat -T 600 UDP4-LISTEN:"$port",reuseaddr,fork UDP4:"$host" >> "$log_dir/$host.udp.log" 2>&1 &
+        echo "socat started on $port for $host"
+    done
+}
+
+case $1 in 
+    start)
+        start
+        ;;
+    stop)
+        stop
+        ;;
+    *)
+        echo "Usage: $0 {start|stop}"
+        ;;
+esac

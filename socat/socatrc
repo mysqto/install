@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+
+# shellcheck disable=SC2034
+readonly connections=(
+    "dest_in_host:port_format|local_port"
+)

@@ -8,10 +8,10 @@ timezone=""
 ntp_server=""
 password=""
 kernel=""
-shadowsocks_password=""
 arch=""
-ssh_authorized_keys=""
-efi=false
+authorized_keys=""
+authorized_keys_url=""
+efi=
 gpt=false
 esp=128
 boot=512
@@ -28,12 +28,25 @@ title="Install Ubuntu 20.04 LTS"
 cloud=""
 manual_partition=false
 
-[[ ! -d "$wd" ]] && wd=/tmp/ubuntu.$(date +%s) && mkdir -p "$wd"
-[[ ! -d "$wd" ]] && echo "failed to create working directory" && exit 1
+# extra packages config
+install_shadowsocks=false
+shadowsocks_password=
+install_socat=false
+ssh_port=
+install_go=false
+install_im=false
+install_neofetch=false
+install_fish=false
+use_backports=false
+byobu=false
+sudo_without_password=false
+
+[ ! -d "$wd" ] && wd=/tmp/ubuntu.$(date +%s) && mkdir -p "$wd"
+[ ! -d "$wd" ] && echo "failed to create working directory" && exit 1
 
 if ((EUID != 0)); then
 	echo "Granting root privileges for ""$(basename "$0")"
-	if [[ -t 1 ]]; then
+	if [ -t 1 ]; then
 		sudo "$0" "$@"
 	else
 		exec 1>output_file
@@ -43,13 +56,13 @@ if ((EUID != 0)); then
 fi
 
 function update_dpkg_config() {
-    [[ ! -d "/etc/apt/apt.conf.d" ]] && mkdir -p "/etc/apt/apt.conf.d"
-    [[ -f /etc/apt/apt.conf.d/local ]] && mv /etc/apt/apt.conf.d/local /etc/apt/apt.conf.d/local.bak
+    [ ! -d "/etc/apt/apt.conf.d" ] && mkdir -p "/etc/apt/apt.conf.d"
+    [ -f /etc/apt/apt.conf.d/local ] && mv /etc/apt/apt.conf.d/local /etc/apt/apt.conf.d/local.bak
     echo 'DPkg::options { "--force-confdef"; "--force-confold"; }' > /etc/apt/apt.conf.d/local
 }
 
 function restore_dpkg_config() {
-    [[ -f /etc/apt/apt.conf.d/local.bak ]] && mv /etc/apt/apt.conf.d/local.bak /etc/apt/apt.conf.d/local
+    [ -f /etc/apt/apt.conf.d/local.bak ] && mv /etc/apt/apt.conf.d/local.bak /etc/apt/apt.conf.d/local
 }
 
 function warn() {
@@ -63,14 +76,14 @@ function error() {
 function download() {
     local url="$1"
     local target="$2"
-    if [[ -z "$target" ]]; then
+    if [ -z "$target" ]; then
         target="$(basename "$url")"
     fi
     target_dir="$(dirname "$target")"
-    if [[ ! -d "$target_dir" ]]; then
+    if [ ! -d "$target_dir" ]; then
         mkdir -p "$target_dir"
     fi
-    [[ -f "$target" ]] && rm -rf "$target"
+    [ -f "$target" ] && rm -rf "$target"
     echo "Downloading $url to $target"
     curl --progress-bar -Lo "$target" "$url"
 }
@@ -86,47 +99,47 @@ function cidr_to_netmask() {
 function ip_address() {
     if="$1"
     type="$2"
-    [[ -z "$type" ]] && type="4"
+    [ -z "$type" ] && type="4"
         # shellcheck disable=SC2119
-    [[ -z "$if" ]] && if="$(default_interface)"
+    [ -z "$if" ] && if="$(default_interface)"
     ip -"$type" -o addr show "$if" | head -1 | awk '{split($4,a,"/"); print a[1]}'
 }
 # shellcheck disable=SC2120
 function netmask() {
     if="$1"
     type="$2"
-    [[ -z "$type" ]] && type="4"
+    [ -z "$type" ] && type="4"
     # shellcheck disable=SC2119
-    [[ -z "$if" ]] && if="$(default_interface)"
+    [ -z "$if" ] && if="$(default_interface)"
     local mask=""
-    if  [[ "$type" == "6" ]]; then
+    if  [ "$type" == "6" ]; then
         mask=$(ip -"$type" -o addr show "$if" | awk '{split($4,a,"/"); print a[2]}')
     else
         mask=$(cidr_to_netmask "$(ip -"$type" -o addr show "$if" | head -1 | awk '{split($4,a,"/"); print a[2]}')")
     fi
-    [[ -z "$mask" ]] && echo "failed to get netmask" && exit 1
+    [ -z "$mask" ] && echo "failed to get netmask" && exit 1
     # dirty hack for google cloud
     if [[ "$type" == "4" && "$mask" == "255.255.255.255" ]]; then
         asn=$(curl -s "https://ipconfig.io/json" | jq -r '.asn_org' 2>/dev/null)
-        if [[ "$asn" == "GOOGLE-CLOUD-PLATFORM" ]]; then
+        if [ "$asn" == "GOOGLE-CLOUD-PLATFORM" ]; then
             mask="255.255.255.0"
         fi
     fi
-    [[ -z "$mask" ]] && echo "failed to get netmask" && exit 1
+    [ -z "$mask" ] && echo "failed to get netmask" && exit 1
     echo "$mask"
 }
 
 # shellcheck disable=SC2120
 function default_gateway() {
     type="$1"
-    [[ -z "$type" ]] && type="4"
+    [ -z "$type" ] && type="4"
     ip -"$type" route show default | awk '{print $3}' | head -n1
 }
 
 # shellcheck disable=SC2120
 function default_interface() {
     type="$1"
-    [[ -z "$type" ]] && type="4"
+    [ -z "$type" ] && type="4"
     ip -"$type" route show default | awk '{print $5}' | head -n1
 }
 
@@ -146,85 +159,159 @@ function partition_type() {
 
 function grub_config() {
     grub_dir=$(find /boot -type d -name "grub*" 2>/dev/null |head -n1)
-    [[ -z "$grub_dir" ]] && return
+    [ -z "$grub_dir" ] && return
     find "$grub_dir" -regextype posix-egrep -regex ".*/(grub.conf|grub.cfg)"
 }
 
-# this function is borrowed from https://stackoverflow.com/a/30948155
-function _pwgen() {
-	chars='!$%^&-()_+='
-	{ </dev/urandom LC_ALL=C grep -ao '[A-Za-z0-9]' \
-		| head -n$((RANDOM % 8 + 9))
-			echo ${chars:$((RANDOM % ${#chars})):1}   # Random special char.
-	} | shuf | tr -d '\n'
-}
-
-function salt() {
-    # generate a random string with special characters
-    </dev/urandom  tr -dc 'a-zA-Z0-9!%^&-()+=' | fold -w 16 | head -n 1
+function ipv6_enabled() {
+    public_ipv6="$(curl --connect-timeout 5 -m 10 -6 -sL https://ifconfig.co 2>/dev/null)" ||
+        public_ipv6="$(curl --connect-timeout 5 -m 10 -6 -sL https://ipconfig.io 2>/dev/null)"
+    [ -z "$public_ipv6" ] && return 1
+    return 0
 }
 
 POSITIONAL=()
 
-while [[ $# -gt 0 ]]; do
+while [ $# -gt 0 ]; do
     case "$1" in
         -d | --disk)
             disk="$2"
-            shift 2 ;;
+            shift 2
+            ;;
         -e | --efi)
             efi=true
             shift;;
         -es | --esp-size)
             esp="$2"
-            shift 2 ;;
+            shift 2
+            ;;
         -bs | --boot-size)
             boot="$2"
-            shift 2 ;;
+            shift 2 
+            ;;
         -f | --fullname)
             full_name="$2"; 
-            shift 2 ;;
+            shift 2 
+            ;;
         -fs | --filesystem)
             filesystem="$2"; 
-            shift 2 ;;
+            shift 2 
+            ;;
         -u | --user )
             username="$2"; 
-            shift 2 ;;
+            shift 2 
+            ;;
         -uid | --uid )
             uid="$2"; 
-            shift 2 ;;
+            shift 2 
+            ;;
         -p | --password )
             password="$2"; 
-            shift 2 ;;
+            shift 2 
+            ;;
         -g | --gpt )
             gpt=true; 
-            shift ;;
+            shift 
+            ;;
         -i | --interface )
             interface="$2"; 
-            shift 2 ;;
+            shift 2 
+            ;;
         -h | --hostname )
             hostname="$2"; 
-            shift 2 ;;
+            shift 2 
+            ;;
         -t | --timezone )
             timezone="$2"; 
-            shift 2 ;;
+            shift 2 
+            ;;
         -n | --ntp-server )
             ntp_server="$2"; 
-            shift 2 ;;
+            shift 2 
+            ;;
         -k | --kernel ) 
-            ssh_authorized_keys="$2"; 
-            shift 2 ;;
-        -sk | --ssh-authorized-keys ) 
-            ssh_authorized_keys="$2"; 
-            shift 2 ;;
-        -ssp | --shadowsocks-password )
-            shadowsocks_password="$2";
-            shift 2 ;;
+            kernel="$2"; 
+            shift 2 
+            ;;
         -c | --cloud )
             cloud="$2";
-            shift 2 ;;
+            shift 2 
+            ;;
         -m | --manual-partition )
             manual_partition=true;
-            shift ;;
+            shift 
+            ;;
+        -ns | --network-console)
+            network_console=true
+            shift
+            ;;
+        --provision)
+            install_shadowsocks=true
+            install_go=true
+            install_im=true
+            install_fish=true
+            install_neofetch=true
+            use_backports=true
+            bbr=true
+            byobu=true
+            shift
+            ;;
+        -ak | --authorized-keys)
+            authorized_keys="$2"
+            shift 2
+            ;;
+        -aku | --authorized-keys-url)
+            authorized_keys_url="$2"
+            shift 2
+            ;;
+        -ssp | --shadowsocks-password)
+            shadowsocks_password="$2"
+            shift 2
+            ;;
+        -ss | --shadowsocks-libev)
+            install_shadowsocks=true
+            shift
+            ;;
+        --socat)
+            install_socat=true
+            shift
+            ;;
+        --ssh | --ssh-port)
+            ssh_port="$2"
+            shift 2
+            ;;
+        --go)
+            install_go=true
+            shift
+            ;;
+        --im)
+            install_im=true
+            shift
+            ;;
+        --fish)
+            install_fish=true
+            shift
+            ;;
+        --neofetch)
+            install_neofetch=true
+            shift
+            ;;
+        --backports)
+            use_backports=true
+            shift
+            ;;
+        --byobu)
+            byobu=true
+            shift
+            ;;
+        -bbr | --bbr)
+            bbr=true
+            shift
+            ;;
+        --sudo-without-password)
+            sudo_without_password=true
+            shift
+            ;;
         * ) POSITIONAL+=("$1"); shift ;;
     esac
 done
@@ -246,95 +333,147 @@ restore_dpkg_config
 
 [ -z "$efi" ] && {
     efi=false
-    [[ -d /sys/firmware/efi ]] && efi=true
+    [ -d /sys/firmware/efi ] && efi=true
 }
 
-[[ ! -d /sys/firmware/efi ]] && {
-    if [[ "$efi" == "true" ]]; then
-        echo "efi is not supported on this machine, fallback to legacy boot"
+[ ! -d /sys/firmware/efi ] && {
+    if [ "$efi" == true ]; then
+        warn "efi is not supported on this machine, fallback to legacy boot"
         efi=false
     fi
 }
 
-[[ "$efi" == "true" ]] && {
-    [[ "$gpt" == "false" ]] && {
-        echo "efi is only supported on gpt partition table, force to use gpt"
+[ "$efi" == true ] && {
+    [ "$gpt" == false ] && {
+        warn "efi is only supported on gpt partition table, force to use gpt"
         gpt=true
     }
+
 }
 
+[ -z "$filesystem" ] && filesystem="$(blkid -o value -s TYPE "/")"
+[ -z "$filesystem" ] && filesystem="ext4"
+[ -z "$esp" ] && esp="$(fdisk -l 2>/dev/null | grep -E 'EFI System|EFI' | awk '{print $5}' | head -n1 | sed 's/.$//')"
+[ -z "$esp" ] && esp="128"
+[ -z "$boot_size" ] && boot_size="$(lsblk -oMOUNTPOINT,SIZE -P | grep -E '^MOUNTPOINT="/boot"' | grep -Eo 'SIZE="[^"]+"' | grep -Eo '[0-9]+')"
+[ -z "$boot_size" ] && boot_size="512"
+
 # random if not specified
-[[ -z "$username" ]] && username=$(</dev/urandom LC_ALL=C tr -dc 'a-zA-Z0-9' | head -c 8)
+[ -z "$username" ] && username=$(LC_ALL=C tr </dev/urandom -dc 'a-zA-Z0-9' | head -c 8)
 
-[[ -z "$full_name" ]] && full_name="$(</etc/passwd grep "^$username:" | cut -d: -f5 | cut -d, -f1)"
-[[ -z "$full_name" ]] && full_name="$username"
+[ -z "$full_name" ] && full_name="$(grep </etc/passwd "^$username:" | cut -d: -f5 | cut -d, -f1)"
+[ -z "$full_name" ] && full_name="$username"
 
-[[ -z "$hostname" ]] && hostname="$(hostname)"
-[[ -z "$hostname" ]] && hostname=$(</dev/urandom LC_ALL=C tr -dc 'a-zA-Z0-9' | head -c 8)
+[ -z "$uid" ] && uid=$(id -u "$username" 2>/dev/null)
+[ -z "$uid" ] && uid=$(LC_ALL=C tr </dev/urandom -dc '0-9' | head -c 4)
 
-[[ -z "$uid" ]] && uid=$(id -u "$username" 2>/dev/null)
-[[ -z "$uid" ]] && uid=$(</dev/urandom LC_ALL=C tr -dc '0-9' | head -c 4)
-
-[[ -z "$timezone" ]] && timezone="$(timedatectl 2>/dev/null | awk '/Time zone:/ {print $3}')"
-[[ -z "$timezone" ]] && timezone="UTC"
-[[ -z "$ntp_server" ]] && ntp_server="$(timedatectl 2>/dev/null | awk '/NTP:/ {print $3}')"
-[[ -z "$ntp_server" ]] && ntp_server="time.cloudflare.com"
 # random password if not specified
-[[ -z "$password" ]] && enctypted_password=$(</etc/shadow grep "^$username:" | cut -d: -f2)
+password_hash=
+[ -z "$password" ] && {
+    password_hash=$(grep </etc/shadow "^$username:" | cut -d: -f2)
+}
 
-if [[ -z "$enctypted_password" ]]; then
-     [[ -z "$password" ]] && password="$(_pwgen)" 
-    enctypted_password="$(mkpasswd -m sha-512 -S "$(pwgen -ns 16 1)" "$password")"
+if [ -z "$password_hash" ]; then
+    [ -z "$password" ] && password="$(pwgen -ns 32 1)"
+    password_hash="$(mkpasswd -m sha-512 -S "$(pwgen -ns 16 1)" "$password" 2> /dev/null)" ||
+        password_hash="$(openssl passwd -6 "$password" 2>/dev/null)" ||
+        password_hash="$(busybox mkpasswd -m sha-512 -S "$(pwgen -ns 16 1)" "$password" 2>/dev/null)" || {
+        for python in python3 python python2; do
+            installed "$python" || continue
+            password_hash=$("$python" -c 'import crypt, sys; print(crypt.crypt(sys.argv[1], crypt.mksalt(crypt.METHOD_SHA256)))' "$password" 2>/dev/null) && break
+        done
+    }
+
 fi
 
-[[ -z "$enctypted_password" ]] && echo "failed to get encrypted password" && exit 1
+[ -z "$password_hash" ] && echo "failed to get password hash" && exit 1
 
-[[ -z "$kernel" ]] && kernel="linux-generic-hwe-20.04-edge"
+[ -z "$hostname" ] && hostname="$(hostname)"
+[ -z "$hostname" ] && hostname="$(cat /etc/hostname 2>/dev/null)"
+[ -z "$hostname" ] && hostname="$(cat /proc/sys/kernel/hostname 2>/dev/null)"
+[ -z "$hostname" ] && hostname=$(LC_ALL=C tr </dev/urandom -dc 'a-zA-Z0-9' | head -c 8)
 
-[[ -z "$disk" ]]
-
-[[ -z "$filesystem" ]] && filesystem="ext4"
-
-[[ -z "$esp" ]] && esp="106"
-
-if [[ -z "$shadowsocks_password" ]]; then 
-    [[ -f "$shadowsocks_config" ]] && shadowsocks_password="$(<"$shadowsocks_config" grep "password" 2>/dev/null | cut -d'"' -f4)"
+domain=$(cat </proc/sys/kernel/domainname 2>/dev/null)
+if [ "$domain" = '(none)' ]; then
+    domain=
+else
+    domain=" $domain"
 fi
-[[ -z "$shadowsocks_password" ]] && shadowsocks_password=$(_pwgen)
-[[ -z "$ssh_authorized_keys" ]] && ssh_authorized_keys="$(grep "ssh-rsa" "/home/$username/.ssh/authorized_keys" 2>/dev/null)"
+
+[ -z "$timezone" ] && timezone="$(cat /etc/timezone 2>/dev/null)"
+[ -z "$timezone" ] && timezone="$(realpath /etc/localtime 2>/dev/null | sed 's/\/usr\/share\/zoneinfo\///')"
+[ -z "$timezone" ] && timezone="$(timedatectl 2>/dev/null | awk '/Time zone:/ {print $3}')"
+[ -z "$timezone" ] && timezone="UTC"
+
+[ -z "$ntp_server" ] && ntp_server="$(timedatectl 2>/dev/null | awk '/NTP:/ {print $3}')"
+[ -z "$ntp_server" ] && ntp_server="time.cloudflare.com"
+
+[ -z "$shadowsocks_password" ] && [ -f "$shadowsocks_config" ] && {
+    shadowsocks_password="$(grep <"$shadowsocks_config" "password" 2>/dev/null | cut -d'"' -f4)"
+}
+[ -z "$shadowsocks_password" ] && [ "$install_shadowsocks" = true ] && shadowsocks_password="$(pwgen -ns 32 1)"
+
+[ -n "$authorized_keys_url" ] && {
+    authorized_keys="$(curl -sL "$authorized_keys_url" 2>/dev/null)" ||
+        authorized_keys="$(wget -qO- "$authorized_keys_url" 2>/dev/null)" ||
+        authorized_keys="$(busybox wget -qO- "$authorized_keys_url" 2>/dev/null)"
+}
+
+[ -z "$authorized_keys" ] && authorized_keys="$(cat /home/"$username"/.ssh/authorized_keys 2>/dev/null)"
+
 ssh_key_file="$wd/ssh_key"
-if [[ -z "$ssh_authorized_keys" ]]; then
+ssh_private_key=""
+[ -z "$authorized_keys" ] && {
     rm -f "$ssh_key_file"
-    ssh-keygen -t rsa -b 4096 -C "$username@$hostname" -f "$ssh_key_file" -q -N "" > /dev/null 2>&1
-    [[ -f "$ssh_key_file" ]] && ssh_authorized_keys="$(cat "$ssh_key_file.pub")"
-fi
+    ssh-keygen -t rsa -b 4096 -C "$username@$hostname" -f "$ssh_key_file" -q -N "" >/dev/null 2>&1
+    [ -f "$ssh_key_file" ] && {
+        authorized_keys="$(cat "$ssh_key_file.pub" 2>/dev/null)"
+        ssh_private_key="$(cat "$ssh_key_file" 2>/dev/null)"
+    }
+}
 
 ip_address="$(ip_address)"
 netmask="$(netmask)"
 gateway="$(default_gateway)"
 dns="$(dns)"
-[[ -z "$ip_address" ]] && echo "failed to get ip address" && exit 1
-[[ -z "$netmask" ]] && echo "failed to get netmask" && exit 1
-[[ -z "$gateway" ]] && echo "failed to get gateway" && exit 1
-[[ -z "$dns" ]] && dns="1.1.1.1"
+[ -z "$ip_address" ] && echo "failed to get ip address" && exit 1
+[ -z "$netmask" ] && echo "failed to get netmask" && exit 1
+[ -z "$gateway" ] && echo "failed to get gateway" && exit 1
+[ -z "$dns" ] && dns="1.1.1.1"
+
+[ "$network_console" = true ] && {
+    nc_password="$(pwgen -ns 32 1 2>/dev/null)" ||
+    nc_password="$(busybox pwgen -ns 32 1 2>/dev/null)" ||
+    nc_password="$(LC_ALL=C tr </dev/urandom -dc 'a-zA-Z0-9' | head -c 32 2>/dev/null)"
+}
 
 warn "#######################################################################"
-warn "username:             $username"
-[[ -n "$password" ]] && warn "password:             $password"
-warn "interface:            $interface"
-warn "ip:                   $ip_address"
-warn "netmask:              $netmask"
-warn "gateway:              $gateway"
-warn "dns:                  $dns"
-ssh_private_key="$(cat "$ssh_key_file" 2>/dev/null)"
-[[ -n "$ssh_private_key" ]] && warn "ssh private key     : \n$ssh_private_key"
+warn "username:                $username"
+warn "uid:                     $uid"
+warn "full name:               $full_name"
+[ -n "$password" ] && warn "password:                $password"
+[ -n "$password_hash" ] && warn "password hash:           $password_hash"
+warn "hostname:                $hostname"
+warn "domain:                  $domain"
+warn "timezone:                $timezone"
+warn "ntp server:              $ntp_server"
+warn "network console:         $network_console"
+[ -n "$nc_password" ] && warn "netwrk console password: $nc_password"
+warn "shadowsocks password:    $shadowsocks_password"
+warn "interface:               $interface"
+warn "ip:                      $ip_address"
+warn "netmask:                 $netmask"
+warn "gateway:                 $gateway"
+warn "dns:                     $dns"
+[ -n "$ssh_private_key" ] && warn "ssh private key: \n$ssh_private_key"
+[ -n "$authorized_keys" ] && warn "ssh public key: \n$authorized_keys"
 warn "#######################################################################"
 
 mirror="http://ports.ubuntu.com"
-[[ "$arch" == "amd64" ]] && mirror="http://archive.ubuntu.com/ubuntu"
-if [[ -n "$cloud" ]]; then
+[ "$arch" == "amd64" ] && mirror="http://archive.ubuntu.com/ubuntu"
+if [ -n "$cloud" ]; then
     mirror="http://$cloud.ports.ubuntu.com"
-    [[ "$arch" == "amd64" ]] && mirror="http://$cloud.archive.ubuntu.com/ubuntu"
+    [ "$arch" == "amd64" ] && mirror="http://$cloud.archive.ubuntu.com/ubuntu"
 fi
 initrd_url="$mirror/dists/focal-proposed/main/installer-$arch/current/legacy-images/netboot/ubuntu-installer/$arch/initrd.gz"
 linux_url="$mirror/dists/focal-proposed/main/installer-$arch/current/legacy-images/netboot/ubuntu-installer/$arch/linux"
@@ -345,16 +484,16 @@ initrd_img="$wd/initrd.img"
 boot_dir="$wd/boot"
 preseed_file="$boot_dir/preseed.cfg"
 
-[[ -d "$wd" ]] && rm -rf "$wd"
+[ -d "$wd" ] && rm -rf "$wd"
 mkdir -p "$boot_dir"
-if [[ ! -d "$wd" ]] || [[ ! -d "$boot_dir" ]] ; then
+if [ ! -d "$wd" ] || [ ! -d "$boot_dir" ] ; then
     echo "failed to create $wd or $boot_dir"
     exit 1
 fi
 
 # should remove the trailing slash if any
 mirror_source="$(grep restricted /etc/apt/sources.list 2>/dev/null | grep -v '^#' | head -n1 | awk '{print $2}' | sed 's/\/$//')"
-[[ -n "$mirror_source" ]] && mirror="$mirror_source"
+[ -n "$mirror_source" ] && mirror="$mirror_source"
 
 mirror_host="$(echo "$mirror" |awk -F'://|/' '{print $2}')"
 mirror_folder="$(echo "$mirror" |awk -F''"${mirror_host}"'' '{print $2}')"
@@ -363,8 +502,8 @@ mirror_folder="$(echo "$mirror" |awk -F''"${mirror_host}"'' '{print $2}')"
 download "$initrd_url" "$initrd_gz"
 download "$linux_url" "$vmlinuz_img"
 
-[[ ! -f "$initrd_gz" ]] && echo "initrd image not downloadded" && exit 1
-[[ ! -f "$vmlinuz_img" ]] && echo "vmlinuz not downloadded" && exit 1
+[ ! -f "$initrd_gz" ] && echo "initrd image not downloadded" && exit 1
+[ ! -f "$vmlinuz_img" ] && echo "vmlinuz not downloadded" && exit 1
 
 cat >> "$preseed_file"<<EOF
 ### Localization
@@ -398,7 +537,32 @@ d-i netcfg/no_default_route boolean true
 d-i netcfg/confirm_static boolean true
 
 d-i hw-detect/load_firmware boolean true
+EOF
 
+[ "$network_console" = true ] && {
+    cat >> "$preseed_file" <<EOF
+# Network console
+
+d-i anna/choose_modules string network-console
+d-i preseed/early_command string anna-install network-console
+EOF
+    if [ -n "$authorized_keys_url" ]; then
+        cat >> "$preseed_file" <<EOF
+d-i network-console/authorized_keys_url string $authorized_keys_url
+EOF
+    else
+        cat >> "$preseed_file" <<EOF
+d-i network-console/password password $nc_password
+d-i network-console/password-again password $nc_password
+EOF
+    fi
+    cat >> "$preseed_file" <<EOF
+d-i network-console/start select Continue
+
+EOF
+}
+
+cat >> "$preseed_file" <<EOF
 # Mirror settings
 d-i mirror/country string manual
 d-i mirror/http/hostname string $mirror_host
@@ -411,7 +575,7 @@ d-i passwd/root-login boolean false
 # To create a normal user account.
 d-i passwd/user-fullname string $full_name
 d-i passwd/username string $username
-d-i passwd/user-password-crypted password $enctypted_password
+d-i passwd/user-password-crypted password $password_hash
 # Create the first user with the specified UID instead of the default.
 d-i passwd/user-uid string $uid
 d-i user-setup/allow-password-weak boolean false
@@ -430,7 +594,7 @@ cat >> "$preseed_file"<<EOF
 d-i partman/early_command string umount /media || true;
 EOF
 
-if [[ "$manual_partition" == "false" ]]; then
+if [ "$manual_partition" == "false" ]; then
     cat >> "$preseed_file"<<EOF
 d-i partman-partitioning/confirm_write_new_label boolean true
 d-i partman/mount_style select uuid
@@ -448,8 +612,8 @@ EOF
 else
     echo "d-i partman-auto/method string regular" >> "$preseed_file"
 
-    [[ -z "$disk" ]] && disk="$(get_disk)"
-    if [[ -z "$disk" ]]; then
+    [ -z "$disk" ] && disk="$(get_disk)"
+    if [ -z "$disk" ]; then
         # shellcheck disable=SC2016
         echo 'd-i partman/early_command string debconf-set partman-auto/disk "$(list-devices disk | head -n 1)"' >> "$preseed_file"
     else 
@@ -457,7 +621,7 @@ else
         echo "d-i partman-auto/disk string $disk" >> "$preseed_file"
     fi
 
-    [[ "$gpt" == "true" ]] && {
+    [ "$gpt" == "true" ] && {
         cat >> "$preseed_file"<<EOF
 d-i partman-basicfilesystems/choose_label string gpt
 d-i partman-basicfilesystems/default_label string gpt
@@ -475,7 +639,7 @@ EOF
 d-i partman-auto/expert_recipe string           \
     naive ::                                    \
 EOF
-    if [[ "$efi" = true ]]; then
+    if [ "$efi" = true ]; then
         # shellcheck disable=SC2129
         cat >> "$preseed_file"<<EOF
         $esp $esp $esp fat32                       \\
@@ -511,7 +675,7 @@ EOF
             $reusemethod{ }                     \
 EOF
 
-        [[ "$gpt" == true ]] && {
+        [ "$gpt" == true ] && {
             cat >> "$preseed_file"<<"EOF"
             $iflabel{ gpt }                     \
 EOF
@@ -531,7 +695,7 @@ EOF
             mountpoint{ / }                     \
     .
 EOF
-    if [[ "$efi" = true ]]; then
+    if [ "$efi" = true ]; then
         cat >> "$preseed_file"<<"EOF"
 d-i partman-efi/non_efi_system boolean true
 EOF
@@ -568,8 +732,35 @@ d-i debian-installer/exit/reboot boolean true
 # Verbose output and no boot splash screen.
 d-i debian-installer/quiet boolean false
 d-i debian-installer/splash boolean false
-d-i preseed/late_command string in-target sh -c 'curl -sL https://install.lol/provision | bash -s -- -s -ssp "$shadowsocks_password" -u "$username" -k "$ssh_authorized_keys"'
 EOF
+
+late_command="curl -sL https://install.lol/provision | bash -s --"
+
+if ipv6_enabled; then
+    late_command="$late_command --ipv6-dhcp"
+fi
+
+[ -n "$username" ] && late_command="$late_command --username \"$username\""
+[ -n "$ssh_port" ] && late_command="$late_command --ssh \"$ssh_port\""
+[ -n "$shadowsocks_password" ] && late_command="$late_command --shadowsocks --shadowsocks-password \"$shadowsocks_password\""
+[ -n "$authorized_keys" ] && late_command="$late_command --authorized-keys \"$authorized_keys\""
+[ "$install_socat" = true ] && late_command="$late_command --socat"
+[ "$install_go" = true ] && late_command="$late_command --go"
+[ "$install_im" = true ] && late_command="$late_command --im"
+[ "$install_neofetch" = true ] && late_command="$late_command --neofetch"
+[ "$install_fish" = true ] && late_command="$late_command --fish"
+[ "$bbr" = true ] && late_command="$late_command --bbr"
+[ "$use_backports" = true ] && late_command="$late_command --backports"
+[ "$byobu" = true ] && late_command="$late_command --byobu"
+[ "$sudo_without_password" = true ] && late_command="$late_command --sudo-without-password"
+
+[ -n "$late_command" ] && {
+    cat >> "$preseed_file" <<EOF
+# Provisioning
+d-i preseed/late_command string in-target sh -c '$late_command'
+EOF
+}
+
 
 pushd "$boot_dir" > /dev/null 2>&1 || exit 1
 # extract initrd
@@ -578,7 +769,7 @@ gzip -d < "$initrd_gz" | cpio --extract --verbose --make-directories --no-absolu
 find . | cpio -H newc --create --verbose | gzip -9 > "$initrd_img"
 popd > /dev/null 2>&1 || exit 1
 
-[[ ! -f "$initrd_img" ]] && echo "updated initrd image not found" && exit 1
+[ ! -f "$initrd_img" ] && echo "updated initrd image not found" && exit 1
 
 cp -f "$initrd_img" "/boot/$initrd" || sudo cp -f "$initrd_img" "/boot/$initrd"
 cp -f "$vmlinuz_img" "/boot/$vmlinuz" || sudo cp -f "$vmlinuz_img" "/boot/$vmlinuz"
@@ -592,7 +783,7 @@ rm -f "$grub_custom_file" || sudo rm -f "$grub_custom_file"
 grub-mkconfig -o "$grub_cfg" || sudo grub-mkconfig -o "$grub_cfg"
 menu_entries=$(<"$grub_cfg" sed -n '1h;1!H;$g;s/\n/%%%%%%%/g;$p' | grep -Pom 1 'menuentry\ [^{]*({(((?>[^{}]+)|(?1))*)})' | sed 's/%%%%%%%/\n/g')
 second_menuentry_start=$(awk '/menuentry/{print NR}' <<< "$menu_entries" | sed -n 2p)
-if [[ -z "$second_menuentry_start" ]]; then
+if [ -z "$second_menuentry_start" ]; then
     default_menu_entry=$menu_entries
 else
     default_menuentry_ends=$((second_menuentry_start - 1))
@@ -631,7 +822,7 @@ fi
 
 echo "$install_menu_entry" >> "$grub_custom_file"
 
-[[ ! -f "$grub_custom_file" ]] && echo "grub menu not generated" && exit 1
+[ ! -f "$grub_custom_file" ] && echo "grub menu not generated" && exit 1
 
 chmod +x "$grub_custom_file"
 grub-mkconfig -o "$grub_cfg" || sudo grub-mkconfig -o "$grub_cfg"
