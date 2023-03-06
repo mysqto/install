@@ -193,7 +193,7 @@ timezone=
 ntp_server=
 network_console=false
 nc_password=
-bbr=true
+bbr=false
 # partition related
 filesystem=ext4
 firmware=false
