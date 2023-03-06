@@ -114,18 +114,21 @@ has_cloud_kernel() {
     local arch="$2"
     local use_bpo_kernel="$3"
     case $suite in
-        stretch|oldoldstable)
-            [ "$arch" = amd64 ] && [ "$use_bpo_kernel" = true ] && return
-            ;;
-        buster|oldstable)
-            [ "$arch" = amd64 ] && return
-            [ "$arch" = arm64 ] && [ "$use_bpo_kernel" = true ] && return
-            ;;
-        bullseye|stable|bookworm|testing|sid|unstable)
-            [ "$arch" = amd64 ] || [ "$arch" = arm64 ] && return
+    stretch | oldoldstable)
+        [ "$arch" = amd64 ] && [ "$use_bpo_kernel" = true ] && return
+        ;;
+    buster | oldstable)
+        [ "$arch" = amd64 ] && return
+        [ "$arch" = arm64 ] && [ "$use_bpo_kernel" = true ] && return
+        ;;
+    bullseye | stable | bookworm | testing | sid | unstable)
+        [ "$arch" = amd64 ] || [ "$arch" = arm64 ] && return
+        ;;
     esac
 
-    local tmp; tmp=''; [ "$use_bpo_kernel" = true ] && tmp='-backports'
+    local tmp
+    tmp=''
+    [ "$use_bpo_kernel" = true ] && tmp='-backports'
     warn "No cloud kernel is available for $arch/$suite$tmp"
 
     return 1
@@ -134,7 +137,7 @@ has_cloud_kernel() {
 has_backports() {
     local suite="$1"
     case $suite in
-        stretch|oldoldstable|buster|oldstable|bullseye|stable|bookworm|testing) return
+    stretch | oldoldstable | buster | oldstable | bullseye | stable | bookworm | testing) return ;;
     esac
 
     warn "No backports kernel is available for $suite"
@@ -201,6 +204,7 @@ esp=
 boot_size=
 # boot related
 force_efi_extra_removable=false
+force_lowmem=
 #kernel and upgrade related
 upgrade=safe-upgrade
 kernel=
@@ -389,6 +393,11 @@ while [ $# -gt 0 ]; do
         fi
         shift 2
         ;;
+    --force-lowmem)
+        [ "$2" != 0 ] && [ "$2" != 1 ] && [ "$2" != 2 ] && err 'Low memory level can only be 0, 1 or 2'
+        force_lowmem=$2
+        shift
+        ;;
     --daily)
         daily=true
         shift
@@ -479,23 +488,24 @@ set -- "${POSITIONAL[@]}" # restore positional parameters
 }
 
 case $version in
-    9|stretch|oldoldstable)
-        suite=stretch
-        ;;
-    10|buster|oldstable)
-        suite=buster
-        ;;
-    11|bullseye|stable)
-        suite=bullseye
-        ;;
-    12|bookworm|testing)
-        suite=bookworm
-        ;;
-    sid|unstable)
-        suite=sid
-        ;;
-    *)
-        error "Unsupported version: $version"
+9 | stretch | oldoldstable)
+    suite=stretch
+    ;;
+10 | buster | oldstable)
+    suite=buster
+    ;;
+11 | bullseye | stable)
+    suite=bullseye
+    ;;
+12 | bookworm | testing)
+    suite=bookworm
+    ;;
+sid | unstable)
+    suite=sid
+    ;;
+*)
+    error "Unsupported version: $version"
+    ;;
 esac
 
 [ -z "$kernel" ] && {
@@ -506,13 +516,24 @@ esac
 
 [ -z "$daily" ] && {
     case $suite in
-        stretch|oldoldstable|buster|oldstable|bullseye|stable)
-            daily=false
-            ;;
-        bookworm|testing|sid|unstable)
-            daily=true
-            ;;
+    stretch | oldoldstable | buster | oldstable | bullseye | stable)
+        daily=false
+        ;;
+    bookworm | testing | sid | unstable)
+        daily=true
+        ;;
     esac
+}
+
+[ -z "$force_lowmem" ] && {
+    memory_size=$(awk '/MemTotal/ {print $2}' /proc/meminfo 2>/dev/null)
+    [ -n "$memory_size" ] || force_lowmem=0
+    [ "$memory_size" -le "524288" ] && {
+        warn "memory size is less than 512MB, force to use low memory mode & cloud kernel"
+        force_lowmem=1
+        cloud_kernel=true
+        bpo_kernel=true
+    } || force_lowmem=0
 }
 
 [ -z "$efi" ] && {
@@ -558,7 +579,7 @@ esac
 
 if [ -z "$password_hash" ]; then
     [ -z "$password" ] && password="$(pwgen -ns 32 1)"
-    password_hash="$(mkpasswd -m sha-512 -S "$(pwgen -ns 16 1)" "$password" 2> /dev/null)" ||
+    password_hash="$(mkpasswd -m sha-512 -S "$(pwgen -ns 16 1)" "$password" 2>/dev/null)" ||
         password_hash="$(openssl passwd -6 "$password" 2>/dev/null)" ||
         password_hash="$(busybox mkpasswd -m sha-512 -S "$(pwgen -ns 16 1)" "$password" 2>/dev/null)" || {
         for python in python3 python python2; do
@@ -626,8 +647,8 @@ dns="$(dns)"
 
 [ "$network_console" = true ] && {
     nc_password="$(pwgen -ns 32 1 2>/dev/null)" ||
-    nc_password="$(busybox pwgen -ns 32 1 2>/dev/null)" ||
-    nc_password="$(LC_ALL=C tr </dev/urandom -dc 'a-zA-Z0-9' | head -c 32 2>/dev/null)"
+        nc_password="$(busybox pwgen -ns 32 1 2>/dev/null)" ||
+        nc_password="$(LC_ALL=C tr </dev/urandom -dc 'a-zA-Z0-9' | head -c 32 2>/dev/null)"
 }
 
 warn "#######################################################################"
@@ -657,12 +678,13 @@ preseed_file="$wd/preseed.cfg"
 [ ! -d "$wd" ] && mkdir -p "$wd"
 [ ! -d "$wd" ] && error "failed to create working directory"
 
-cat >> "$preseed_file" <<EOF
+cat >>"$preseed_file" <<EOF
 # Localization
 d-i debian-installer/language string en
 d-i debian-installer/country string US
 d-i debian-installer/locale string en_US.UTF-8
 d-i keyboard-configuration/xkb-keymap select us
+d-i lowmem/low note
 
 # Network configuration
 # netcfg will choose an interface that has link if possible. This makes it
@@ -689,28 +711,28 @@ d-i hw-detect/load_firmware boolean true
 EOF
 
 [ "$network_console" = true ] && {
-    cat >> "$preseed_file" <<EOF
+    cat >>"$preseed_file" <<EOF
 # Network console
 
 d-i anna/choose_modules string network-console
 d-i preseed/early_command string anna-install network-console
 EOF
     if [ -n "$authorized_keys_url" ]; then
-        cat >> "$preseed_file" <<EOF
+        cat >>"$preseed_file" <<EOF
 d-i network-console/authorized_keys_url string $authorized_keys_url
 EOF
     else
-        cat >> "$preseed_file" <<EOF
+        cat >>"$preseed_file" <<EOF
 d-i network-console/password password $nc_password
 d-i network-console/password-again password $nc_password
 EOF
     fi
-    cat >> "$preseed_file" <<EOF
+    cat >>"$preseed_file" <<EOF
 d-i network-console/start select Continue
 EOF
 }
 
-cat >> "$preseed_file" <<EOF
+cat >>"$preseed_file" <<EOF
 
 # Mirror settings
 d-i mirror/country string manual
@@ -753,26 +775,26 @@ else
 fi
 
 [ "$gpt" = true ] && {
-    cat >> "$preseed_file" <<EOF
+    cat >>"$preseed_file" <<EOF
 d-i partman-partitioning/choose_label string gpt
 d-i partman-partitioning/default_label string gpt
 EOF
 }
 
-cat >> "$preseed_file" <<EOF
+cat >>"$preseed_file" <<EOF
 d-i partman/default_filesystem string $filesystem
 EOF
 
-cat >> "$preseed_file" <<'EOF'
+cat >>"$preseed_file" <<'EOF'
 d-i partman-auto/expert_recipe string           \
     naive ::                                    \
 EOF
 if [ "$efi" = true ]; then
     # shellcheck disable=SC2129
-    cat >> "$preseed_file" <<EOF
+    cat >>"$preseed_file" <<EOF
     $esp $esp $esp fat32                       \\
 EOF
-    cat >> "$preseed_file" <<"EOF"
+    cat >>"$preseed_file" <<"EOF"
             $iflabel{ gpt }                     \
             $primary{ }                         \
             $reusemethod{ }                     \
@@ -781,11 +803,11 @@ EOF
             .                                   \
 EOF
 
-        cat >> "$preseed_file" <<EOF
+    cat >>"$preseed_file" <<EOF
         $boot_size $boot_size $boot_size ext4                        \\
 EOF
 
-    cat >> "$preseed_file" <<"EOF"
+    cat >>"$preseed_file" <<"EOF"
             $primary{ }                         \
             $bootable{ }                        \
             method{ format }                    \
@@ -796,7 +818,7 @@ EOF
             .                                   \
 EOF
 else
-    cat >> "$preseed_file" <<"EOF"
+    cat >>"$preseed_file" <<"EOF"
         1 1 1 free                              \
             $primary{ }                         \
             $bios_boot{ }                       \
@@ -804,17 +826,17 @@ else
 EOF
 
     [ "$gpt" == true ] && {
-        cat >> "$preseed_file" <<"EOF"
+        cat >>"$preseed_file" <<"EOF"
             $iflabel{ gpt }                     \
 EOF
     }
-    cat >> "$preseed_file" <<"EOF"
+    cat >>"$preseed_file" <<"EOF"
             method{ biosgrub }                  \
         .                                       \
 EOF
 fi
 
-cat >> "$preseed_file" <<"EOF"
+cat >>"$preseed_file" <<"EOF"
         1024 1024 -1 $default_filesystem        \
             method{ format }                    \
             format{ }                           \
@@ -824,12 +846,12 @@ cat >> "$preseed_file" <<"EOF"
     .
 EOF
 if [ "$efi" = true ]; then
-    cat >> "$preseed_file" <<"EOF"
+    cat >>"$preseed_file" <<"EOF"
 d-i partman-efi/non_efi_system boolean true
 EOF
 fi
 
-cat >> "$preseed_file" <<EOF
+cat >>"$preseed_file" <<EOF
 d-i partman-auto/choose_recipe select naive
 d-i partman-basicfilesystems/no_swap boolean false
 d-i partman-partitioning/confirm_write_new_label boolean true
@@ -838,7 +860,7 @@ d-i partman/confirm boolean true
 d-i partman/confirm_nooverwrite boolean true
 EOF
 
-cat >> "$preseed_file" <<EOF
+cat >>"$preseed_file" <<EOF
 
 # Base system installation
 d-i base-installer/kernel/image string $kernel
@@ -849,23 +871,24 @@ EOF
 
 [ -z "$security_archive" ] && {
     case $suite in
-        stretch|oldoldstable|buster|oldstable)
-            security_archive="$suite/updates"
-            ;;
-        bullseye|stable|bookworm|testing)
-            security_archive="$suite-security"
-            ;;
-        sid|unstable)
-            security_archive=''
-            ;;
-        *)
-            error "Unsupported suite: $suite"
+    stretch | oldoldstable | buster | oldstable)
+        security_archive="$suite/updates"
+        ;;
+    bullseye | stable | bookworm | testing)
+        security_archive="$suite-security"
+        ;;
+    sid | unstable)
+        security_archive=''
+        ;;
+    *)
+        error "Unsupported suite: $suite"
+        ;;
     esac
 }
 
 # If not sid/unstable
 [ -n "$security_archive" ] && {
-    cat >> "$preseed_file" <<EOF
+    cat >>"$preseed_file" <<EOF
 
 # Apt setup
 
@@ -875,7 +898,7 @@ d-i apt-setup/local0/source boolean true
 EOF
 }
 
-cat >> "$preseed_file" <<EOF
+cat >>"$preseed_file" <<EOF
 
 # Package selection
 
@@ -886,14 +909,14 @@ d-i pkgsel/upgrade select $upgrade
 popularity-contest popularity-contest/participate boolean false
 EOF
 
-cat >> "$preseed_file" <<EOF
+cat >>"$preseed_file" <<EOF
 # Boot loader installation
 
 d-i grub-installer/bootdev string default
 EOF
 
 [ "$force_efi_extra_removable" = true ] && {
-    cat >> "$preseed_file" <<EOF
+    cat >>"$preseed_file" <<EOF
 d-i grub-installer/force-efi-extra-removable boolean true
 EOF
 }
@@ -901,18 +924,17 @@ EOF
 # trim leading and trailing spaces
 kernal_params="$(echo "$kernal_params" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
 [ -n "$kernal_params" ] && {
-    cat >> "$preseed_file" <<EOF
+    cat >>"$preseed_file" <<EOF
 d-i debian-installer/add-kernel-opts string $kernal_params
 EOF
 }
 
-cat >> "$preseed_file" <<EOF
+cat >>"$preseed_file" <<EOF
 # Finishing up the installation
 # Avoid that last message about the install being complete.
 EOF
 
-
-cat >> "$preseed_file" <<EOF
+cat >>"$preseed_file" <<EOF
 d-i finish-install/reboot_in_progress note
 d-i debian-installer/exit/reboot boolean true
 # Verbose output and no boot splash screen.
@@ -941,16 +963,20 @@ fi
 [ "$sudo_without_password" = true ] && late_command="$late_command --sudo-without-password"
 
 [ -n "$late_command" ] && {
-    cat >> "$preseed_file" <<EOF
+    cat >>"$preseed_file" <<EOF
 # Provisioning
 d-i preseed/late_command string in-target sh -c '$late_command'
 EOF
 }
 
-pushd "$wd" >/dev/null 2>&1  || error "Failed to change directory to $wd"
+pushd "$wd" >/dev/null 2>&1 || error "Failed to change directory to $wd"
 base_url="$mirror_protocol://$mirror_host$mirror_directory/dists/$suite/main/installer-$arch/current/images/netboot/debian-installer/$arch"
-[ "$suite" = stretch ] && [ "$efi" = true ] && base_url="$mirror_protocol://$mirror_host$mirror_directory/dists/buster/main/installer-$arch/current/images/netboot/debian-installer/$arch"
-[ "$daily" = true ] && base_url="https://d-i.debian.org/daily-images/$arch/daily/netboot/debian-installer/$arch"
+[ "$suite" = stretch ] && [ "$efi" = true ] && {
+    base_url="$mirror_protocol://$mirror_host$mirror_directory/dists/buster/main/installer-$arch/current/images/netboot/debian-installer/$arch"
+}
+[ "$daily" = true ] && {
+    base_url="https://d-i.debian.org/daily-images/$arch/daily/netboot/debian-installer/$arch"
+}
 firmware_url="https://cdimage.debian.org/cdimage/unofficial/non-free/firmware/$suite/current/firmware.cpio.gz"
 
 timestamp=$(date '+%Y%m%d%H%M%S')
@@ -982,8 +1008,8 @@ mv initrd.gz "$installer_directory"
 
 mkrelpath=$installer_directory
 [ "$dry_run" = true ] && mkrelpath=/boot
-installer_directory=$(grub-mkrelpath "$mkrelpath" 2> /dev/null) ||
-installer_directory=$(grub2-mkrelpath "$mkrelpath" 2> /dev/null) || {
+installer_directory=$(grub-mkrelpath "$mkrelpath" 2>/dev/null) ||
+    installer_directory=$(grub2-mkrelpath "$mkrelpath" 2>/dev/null) || {
     err 'Could not find "grub-mkrelpath" or "grub2-mkrelpath" command'
 }
 [ "$dry_run" = true ] && installer_directory="$installer_directory/debian-$suite"
@@ -999,15 +1025,15 @@ kernel_params="$kernel_params lowmem/low=1"
 [ -n "$force_lowmem" ] && kernel_params="$kernel_params lowmem=+$force_lowmem"
 initrd="$installer_directory/initrd.gz"
 [ "$firmware" = true ] && initrd="$initrd $installer_directory/firmware.cpio.gz"
-rm -f "$grub_custom_file" 2> /dev/null
-cat > "$grub_custom_file"<<"EOF"
+rm -f "$grub_custom_file" 2>/dev/null
+cat >"$grub_custom_file" <<"EOF"
 #!/bin/sh
 exec tail -n +3 $0
 # This file provides an easy way to add custom menu entries.  Simply type the
 # menu entries you want to add after this comment.  Be careful not to change
 # the 'exec tail' line above.
 EOF
-cat >> "$grub_custom_file" <<EOF
+cat >>"$grub_custom_file" <<EOF
 menuentry '$title' {
     insmod part_msdos
     insmod part_gpt
