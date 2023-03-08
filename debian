@@ -578,10 +578,10 @@ esac
 }
 
 if [ -z "$password_hash" ]; then
-    [ -z "$password" ] && password="$(pwgen -ns 32 1)"
-    password_hash="$(mkpasswd -m sha-512 -S "$(pwgen -ns 16 1)" "$password" 2>/dev/null)" ||
+    [ -z "$password" ] && password="$(pwgen -nsy 32 1)"
+    password_hash="$(mkpasswd -m sha-512 -S "$(pwgen -nsy 16 1)" "$password" 2>/dev/null)" ||
         password_hash="$(openssl passwd -6 "$password" 2>/dev/null)" ||
-        password_hash="$(busybox mkpasswd -m sha-512 -S "$(pwgen -ns 16 1)" "$password" 2>/dev/null)" || {
+        password_hash="$(busybox mkpasswd -m sha-512 -S "$(pwgen -nsy 16 1)" "$password" 2>/dev/null)" || {
         for python in python3 python python2; do
             installed "$python" || continue
             password_hash=$("$python" -c 'import crypt, sys; print(crypt.crypt(sys.argv[1], crypt.mksalt(crypt.METHOD_SHA256)))' "$password" 2>/dev/null) && break
@@ -615,7 +615,11 @@ fi
 [ -z "$shadowsocks_password" ] && [ -f "$shadowsocks_config" ] && {
     shadowsocks_password="$(grep <"$shadowsocks_config" "password" 2>/dev/null | cut -d'"' -f4)"
 }
-[ -z "$shadowsocks_password" ] && [ "$install_shadowsocks" = true ] && shadowsocks_password="$(pwgen -ns 32 1)"
+
+[ -z "$shadowsocks_password" ] && [ "$install_shadowsocks" = true ] && {
+    shadowsocks_password="$(pwgen -nsy -r '`\\#$",' 32 1 2>/dev/null)" ||
+    shadowsocks_password="$(busybox pwgen -nsy -r '`\\#$",' 32 1 2>/dev/null)"
+}
 
 [ -n "$authorized_keys_url" ] && {
     authorized_keys="$(curl -sL "$authorized_keys_url" 2>/dev/null)" ||
@@ -646,9 +650,9 @@ dns="$(dns)"
 [ -z "$dns" ] && dns="1.1.1.1"
 
 [ "$network_console" = true ] && {
-    nc_password="$(pwgen -ns 32 1 2>/dev/null)" ||
-        nc_password="$(busybox pwgen -ns 32 1 2>/dev/null)" ||
-        nc_password="$(LC_ALL=C tr </dev/urandom -dc 'a-zA-Z0-9' | head -c 32 2>/dev/null)"
+    nc_password="$(pwgen -nsy 16 1 2>/dev/null)" ||
+        nc_password="$(busybox pwgen -nsy 16 1 2>/dev/null)" ||
+        nc_password="$(LC_ALL=C tr </dev/urandom -dc 'a-zA-Z0-9' | head -c 16 2>/dev/null)"
 }
 
 warn "#######################################################################"
