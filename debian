@@ -617,8 +617,8 @@ fi
 }
 
 [ -z "$shadowsocks_password" ] && [ "$install_shadowsocks" = true ] && {
-    shadowsocks_password="$(pwgen -nsy -r '`\\#$",' 32 1 2>/dev/null)" ||
-    shadowsocks_password="$(busybox pwgen -nsy -r '`\\#$",' 32 1 2>/dev/null)"
+    shadowsocks_password="$(pwgen -ns 32 1 2>/dev/null)" ||
+    shadowsocks_password="$(busybox pwgen -ns 32 1 2>/dev/null)"
 }
 
 [ -n "$authorized_keys_url" ] && {
