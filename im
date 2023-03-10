@@ -264,6 +264,10 @@ function enable_lookbusy() {
     add_cronjob "$username" "0 2 * * * speedtest --accept-license --accept-gdpr"
 }
 
+function distro() {
+    cat /etc/*-release 2>/dev/null | grep -Eo 'ID=\w+' | cut -d'=' -f2 | head -n1 2>/dev/null
+}
+
 if ((EUID != 0)); then
 	echo "Granting root privileges for ""$(basename "$0")"
 	if [[ -t 1 ]]; then
@@ -295,6 +299,7 @@ _netflix_test=false
 _edge_kernel=false
 _enable_lookbusy=false
 _speedtest=false
+_distro=false
 username=""
 _host=""
 
@@ -302,6 +307,7 @@ function usage() {
     echo "Usage: $(basename "$0") [options]"
     echo "Options:"
     echo "  -h, --help                    show this help message and exit"
+    echo "  -d, --distro,                 show the distro"
     echo "  -ist, --install-speedtest,    install speedtest-cli"
     echo "  -ilb, --install-lookbusy,     install lookbusy"
     echo "  -ipe, --install-pyenv,        install pyenv"
@@ -329,6 +335,7 @@ POSITIONAL=()
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        -d | --distro ) _distro=true; shift 1 ;;
         -uu | --update ) _update=true; shift 1 ;;
         -uuu | --ugrade ) _upgrade=true; shift 1 ;;
         -ui | --self-update ) _self_update=true; shift 1 ;;
@@ -397,6 +404,8 @@ action() {
         netflix_test
     elif [[ "$_edge_kernel" == true ]]; then
         install_edge_kernel
+    elif [[ "$_distro" == true ]]; then
+        distro
     elif [[ "$_auto" == true ]]; then
         do_all
     else
