@@ -73,6 +73,7 @@ function netmask() {
         asn=$(curl -s "https://ipconfig.io/json" | jq -r '.asn_org' 2>/dev/null)
         if [ "$asn" == "GOOGLE-CLOUD-PLATFORM" ]; then
             mask="255.255.255.0"
+            mirror_protocol="http"
         fi
     fi
     [ -z "$mask" ] && echo "failed to get netmask" && exit 1
