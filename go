@@ -24,7 +24,7 @@ function getgo() {
 	}
     go_root="$prefix/go"
     [[ -d "$go_root" ]] && echo "removing old $go_root" && rm -rf "$go_root"
-    wd="$(mktemp -t "go.XXXXXXXXXXXXXXXX" -d 2>/dev/null)"
+    wd="$(mktemp -d "${TMPDIR:-/tmp}"/go.XXXXXXXXXXXXXXXX 2>/dev/null)"
 	[[ -d "$wd" ]] || wd=/tmp/$(date +%s) && mkdir -p "$wd"
     pkg="$wd/$gopkg"
 	[[ ! -f "$gopkg" ]] && echo "downloading $gopkg from $url" && curl -L --progress-bar -o "$pkg" "$url"
@@ -41,7 +41,7 @@ function getgo() {
 		if installed update-alternatives; then
 			update-alternatives --install /usr/bin/"$bin" "$bin" "$(_realpath "$file")" 1
 		else
-			rm -rf /usr/bin/"${bin:?}" && ln -s "$(_realpath "$file")" /usr/local/bin/"${bin:?}"
+			rm -rf /usr/local/bin/"${bin:?}" && ln -s "$(_realpath "$file")" /usr/local/bin/"${bin:?}"
 		fi
 	done
 }
