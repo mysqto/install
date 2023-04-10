@@ -265,7 +265,8 @@ function enable_lookbusy() {
 }
 
 function distro() {
-    cat /etc/*-release 2>/dev/null | grep -Eo 'ID=\w+' | cut -d'=' -f2 | head -n1 2>/dev/null
+    cat /etc/*-release 2>/dev/null | grep -Eo 'ID=\w+' | cut -d'=' -f2 | head -n1 2>/dev/null ||
+        cat /etc/*-release 2>/dev/null | grep -Eo 'DISTRIB_ID=\w+' | cut -d'=' -f2 | head -n1 2>/dev/null
 }
 
 if ((EUID != 0)); then

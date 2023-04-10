@@ -23,6 +23,10 @@ function error() {
     exit 1
 }
 
+function info () {
+    echo -e "\033[1;32m${*}\033[0m"
+}
+
 function download() {
     local url="$1"
     local target="$2"
@@ -107,7 +111,7 @@ function ipv6_enabled() {
 }
 
 function get_disk() {
-    lsblk -oMOUNTPOINT,PKNAME -P | grep 'MOUNTPOINT="/"' | cut -d'"' -f4
+    lsblk -oMOUNTPOINT,PKNAME -P | grep 'MOUNTPOINT="/"' | cut -d'"' -f4 | sed 's/[0-9]//g'
 }
 
 has_cloud_kernel() {
@@ -151,7 +155,7 @@ function grub_config() {
     find "$grub_dir" -regextype posix-egrep -regex ".*/(grub.conf|grub.cfg)" 2>/dev/null
 }
 
-[ ! -d "$wd" ] && wd=/tmp/ubuntu.$(date +%s) && mkdir -p "$wd"
+[ ! -d "$wd" ] && wd=/tmp/debian.$(date +%s) && mkdir -p "$wd"
 [ ! -d "$wd" ] && echo "failed to create working directory" && exit 1
 
 if ((EUID != 0)); then
@@ -233,13 +237,18 @@ boot_dir="/boot"
 grub_d="/etc/grub.d"
 grub_custom_file="$grub_d/40_custom"
 
-# prepare for dpkg and install necessary packages
-update_dpkg_config && {
-    DEBIAN_FRONTEND=noninteractive apt -y update && apt -y --no-install-recommends install systemd pwgen \
-        whois curl cpio openssh-client jq
-}
 
-restore_dpkg_config
+# prepare for dpkg and install necessary packages
+if installed apt; then
+    update_dpkg_config && {
+        DEBIAN_FRONTEND=noninteractive apt -y update && apt -y --no-install-recommends install systemd pwgen \
+            whois curl cpio openssh-client jq 
+    } && restore_dpkg_config
+fi
+
+if installed yum; then
+    yum -y install systemd expect whois curl cpio openssh-clients jq
+fi
 
 [ -z "$arch" ] && {
     arch=$(dpkg --print-architecture 2>/dev/null) || {
@@ -412,6 +421,7 @@ while [ $# -gt 0 ]; do
         shift
         ;;
     --provision)
+        version=sid
         install_shadowsocks=true
         install_go=true
         install_im=true
@@ -579,10 +589,23 @@ esac
 }
 
 if [ -z "$password_hash" ]; then
-    [ -z "$password" ] && password="$(pwgen -nsy 32 1)"
-    password_hash="$(mkpasswd -m sha-512 -S "$(pwgen -nsy 16 1)" "$password" 2>/dev/null)" ||
+    [ -z "$password" ] && {
+        password="$(pwgen -nsy 32 1 2>/dev/null)" || 
+        password="$(mkpasswd -l 32 -C 16 -s 4 2>/dev/null)" ||
+        password="$(openssl rand -base64 32 2>/dev/null)" ||
+        password="$(busybox mkpasswd -l 32 -C 16 -s 4 2>/dev/null)" ||
+        password="$(tr -dc 'a-zA-Z0-9' </dev/urandom | head -c 32 2>/dev/null)"
+    }
+
+    salt="$(pwgen -nsy 16 1 2>/dev/null)" ||
+    salt="$(mkpasswd -l 16 -C 8 -s 4 2>/dev/null)" ||
+    salt="$(openssl rand -base64 16 2>/dev/null)" ||
+    salt="$(busybox mkpasswd -l 16 -C 8 -s 4 2>/dev/null)" ||
+    salt="$(tr -dc 'a-zA-Z0-9' </dev/urandom | head -c 16 2>/dev/null)"
+
+    password_hash="$(mkpasswd -m sha-512 -S "$salt" "$password" 2>/dev/null)" ||
         password_hash="$(openssl passwd -6 "$password" 2>/dev/null)" ||
-        password_hash="$(busybox mkpasswd -m sha-512 -S "$(pwgen -nsy 16 1)" "$password" 2>/dev/null)" || {
+        password_hash="$(busybox mkpasswd -m sha-512 -S "$salt" "$password" 2>/dev/null)" || {
         for python in python3 python python2; do
             installed "$python" || continue
             password_hash=$("$python" -c 'import crypt, sys; print(crypt.crypt(sys.argv[1], crypt.mksalt(crypt.METHOD_SHA256)))' "$password" 2>/dev/null) && break
@@ -619,7 +642,10 @@ fi
 
 [ -z "$shadowsocks_password" ] && [ "$install_shadowsocks" = true ] && {
     shadowsocks_password="$(pwgen -ns 32 1 2>/dev/null)" ||
-    shadowsocks_password="$(busybox pwgen -ns 32 1 2>/dev/null)"
+    shadowsocks_password="$(busybox pwgen -ns 32 1 2>/dev/null)" ||
+    shadowsocks_password="$(openssl rand -base64 32 2>/dev/null)" ||
+    shadowsocks_password="$(busybox mkpasswd -l 32 -C 16 2>/dev/null)" ||
+    shadowsocks_password="$(tr -dc 'a-zA-Z0-9' </dev/urandom | head -c 32 2>/dev/null)"
 }
 
 [ -n "$authorized_keys_url" ] && {
@@ -652,6 +678,8 @@ dns="$(dns)"
 
 [ "$network_console" = true ] && {
     nc_password="$(pwgen -nsy 16 1 2>/dev/null)" ||
+        nc_password="$(openssl rand -base64 16 2>/dev/null)" ||
+        nc_password="$(busybox mkpasswd -l 16 -C 8 -s 4 2>/dev/null)" ||
         nc_password="$(busybox pwgen -nsy 16 1 2>/dev/null)" ||
         nc_password="$(LC_ALL=C tr </dev/urandom -dc 'a-zA-Z0-9' | head -c 16 2>/dev/null)"
 }
@@ -863,6 +891,13 @@ d-i partman-partitioning/confirm_write_new_label boolean true
 d-i partman/choose_partition select finish
 d-i partman/confirm boolean true
 d-i partman/confirm_nooverwrite boolean true
+# If one of the disks that are going to be automatically partitioned
+# contains an old LVM configuration, the user will normally receive a
+# warning. Preseed this away
+d-i partman-lvm/device_remove_lvm boolean true
+
+# And the same goes for the confirmation to write the lvm partitions.
+d-i partman-lvm/confirm boolean true
 EOF
 
 cat >>"$preseed_file" <<EOF
@@ -1021,6 +1056,7 @@ installer_directory=$(grub-mkrelpath "$mkrelpath" 2>/dev/null) ||
 
 grub_dir=$(find /boot -type d -name "grub*" 2>/dev/null | head -n1)
 grub_cfg=$(find "$grub_dir" -regextype posix-egrep -regex ".*/(grub.conf|grub.cfg)" 2>/dev/null)
+[ -z "$grub_cfg" ] && grub_cfg=$(find /boot -regextype posix-egrep -regex ".*/(grub.conf|grub.cfg)" 2>/dev/null | head -n1)
 [ -z "$grub_cfg" ] && error "Failed to find grub.cfg"
 [ ! -f "$grub_cfg" ] && error "Failed to find grub.cfg at $grub_cfg"
 cp "$grub_cfg" "$grub_cfg.$timestamp.bak"
@@ -1052,13 +1088,28 @@ EOF
 [[ ! -f "$grub_custom_file" ]] && error "grub menu not generated"
 
 chmod +x "$grub_custom_file"
-grub-mkconfig -o "$grub_cfg"
+# create a temp file to hold the grub.cfg if we are doing a dry run
+[ "$dry_run" = true ] && grub_cfg=$wd/grub.cfg
+grub-mkconfig -o "$grub_cfg" 2>/dev/null || grub2-mkconfig -o "$grub_cfg" 2>/dev/null || {
+    err 'Could not find "grub-mkconfig" or "grub2-mkconfig" command'
+}
+[ ! -f "$grub_cfg" ] && error "grub menu not generated"
 ! grep -q "$title" "$grub_cfg" && error "grub menu not updated"
-
-echo "grub menu updated"
+echo "$grub_cfg updated"
 popd >/dev/null 2>&1 || error "Failed to change directory from $wd"
 
-grub-reboot "$title" || sudo grub-reboot "$title"
+[ "$dry_run" = true ] && {
+    echo "Dry run complete"
+    info "#######################################################################"
+    info "preseed file: $preseed_file"
+    info "grub menu   : $grub_cfg"
+    info "#######################################################################"
+    exit 0
+}
+
+grub-reboot "$title" 2>/dev/null || grub2-reboot "$title" 2>/dev/null || {
+    err 'Could not find "grub-reboot" or "grub2-reboot" command'
+}
 echo "rebooting..."
 sleep 3
 reboot
