@@ -525,6 +525,13 @@ esac
     [ "$bpo_kernel" == true ] && has_backports "$suite" && packages="$kernel/$suite-backports $packages"
 }
 
+[ $use_backports == true ] && {
+    if ! has_backports "$suite"; then
+        warn "backports repository is not available for $suite, use stable repository instead"
+        use_backports=false
+    fi
+}
+
 [ -z "$daily" ] && {
     case $suite in
     stretch | oldoldstable | buster | oldstable | bullseye | stable)
