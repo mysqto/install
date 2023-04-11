@@ -58,7 +58,7 @@ set -- "${POSITIONAL[@]}" # restore positional parameters
 
 wd=$(mktemp -t "ss-libev.XXXXXXXXXXXXXXXX" -d 2>/dev/null)
 
-[[ -d "$wd" ]] || wd=/tmp/$(date +%s) && mkdir -p "$wd"
+[[ ! -d "$wd" ]] && wd=/tmp/$(date +%s) && mkdir -p "$wd" 2>/dev/null
 [[ ! -d "$wd" ]] && echo "failed to create working directory" && exit 1
 
 pushd "$wd" >> /dev/null 2>&1 || exit
@@ -72,6 +72,7 @@ git clone https://github.com/jedisct1/libsodium.git "libsodium"
 [[ ! -d "libsodium" ]] && echo "failed to clone libsodium" && exit 1
 pushd "libsodium" >> /dev/null 2>&1 || exit
 git checkout "$libsodium_version"
+./autogen.sh
 ./configure --prefix=/usr && make
 sudo make install
 popd >> /dev/null 2>&1 || exit
