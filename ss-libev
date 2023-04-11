@@ -33,6 +33,7 @@ mbedtls_version=""
 mbedtls_default_version="2.28.2"
 mbed_releases_url="https://api.github.com/repos/ARMmbed/mbedtls/releases"
 libsodium_releases_url="https://api.github.com/repos/jedisct1/libsodium/releases"
+systemd_service_file=/lib/systemd/system/shadowsocks-libev.service
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -122,7 +123,11 @@ EOF
 fi
 sudo cp debian/shadowsocks-libev.default /etc/default/shadowsocks-libev
 if ! service_exists shadowsocks-libev; then
-    sudo cp debian/shadowsocks-libev.service /lib/systemd/system
+    sudo cp debian/shadowsocks-libev.service "$systemd_service_file"
+    # add restart on failure
+    if ! grep -q "Restart=on-failure" "$systemd_service_file"; then
+            sudo sed -i 's/^\[Service\]$/[Service]\nRestart=on-failure\nRestartSec=5/' "$systemd_service_file"
+    fi
     sudo systemctl enable shadowsocks-libev.service
 fi
 
