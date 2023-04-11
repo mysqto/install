@@ -67,11 +67,11 @@ sudo apt -y update && DEBIAN_FRONTEND=noninteractive sudo apt -y --no-install-re
     asciidoc xmlto libev-dev libc-ares-dev automake libmbedtls-dev libsodium-dev pkg-config
 
 # Installation of Libsodium
-rm -rf "libsodium-$libsodium_version"
-rm -rf "libsodium-$libsodium_version.tar.gz"
-wget "https://download.libsodium.org/libsodium/releases/libsodium-$libsodium_version.tar.gz"
-tar xvf "libsodium-$libsodium_version.tar.gz"
-pushd "libsodium-$libsodium_version" >> /dev/null 2>&1 || exit
+rm -rf "libsodium"
+git clone https://github.com/jedisct1/libsodium.git "libsodium"
+[[ ! -d "libsodium" ]] && echo "failed to clone libsodium" && exit 1
+pushd "libsodium" >> /dev/null 2>&1 || exit
+git checkout "$libsodium_version"
 ./configure --prefix=/usr && make
 sudo make install
 popd >> /dev/null 2>&1 || exit
