@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 
+wd="$(mktemp -t "debian.XXXXXXXXXXXXXXXX" -d 2>/dev/null)"
+
 function installed() {
     command -v "$1" >/dev/null 2>&1
 }
@@ -231,7 +233,6 @@ byobu=false
 sudo_without_password=false
 
 shadowsocks_config="/etc/shadowsocks-libev/config.json"
-wd="$(mktemp -t "debian.XXXXXXXXXXXXXXXX" -d 2>/dev/null)"
 boot_dir="/boot"
 grub_d="/etc/grub.d"
 grub_custom_file="$grub_d/40_custom"
@@ -713,9 +714,6 @@ warn "dns:                     $dns"
 warn "#######################################################################"
 
 preseed_file="$wd/preseed.cfg"
-
-[ ! -d "$wd" ] && mkdir -p "$wd"
-[ ! -d "$wd" ] && error "failed to create working directory"
 
 cat >>"$preseed_file" <<EOF
 # Localization
