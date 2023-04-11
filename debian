@@ -155,7 +155,6 @@ function grub_config() {
     find "$grub_dir" -regextype posix-egrep -regex ".*/(grub.conf|grub.cfg)" 2>/dev/null
 }
 
-[ ! -d "$wd" ] && wd=/tmp/debian.$(date +%s) && mkdir -p "$wd"
 [ ! -d "$wd" ] && echo "failed to create working directory" && exit 1
 
 if ((EUID != 0)); then
