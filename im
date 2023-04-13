@@ -6,12 +6,10 @@ function get_disk() {
     lsblk -oMOUNTPOINT,PKNAME -P | grep 'MOUNTPOINT="/"' | cut -d'"' -f4 | sed 's/[0-9]//g'
 }
 
-# shellcheck disable=SC2317
 function distro() {
-    dist="$(lsb_release -is 2>/dev/null)"
-    [ -n "$dist" ] || dist="$(cat /etc/*-release 2>/dev/null | grep -Eo 'ID=\w+' | cut -d'=' -f2 | head -n1)"
-    [ -n "$dist" ] || dist="$(cat /etc/*-release 2>/dev/null | grep -Eo 'ID_LIKE=\w+' | cut -d'=' -f2 | head -n1)"
-    echo "$dist" | tr '[:upper:]' '[:lower:]'
+    cat /etc/*-release 2>/dev/null | grep -Eo 'ID=\w+' | cut -d'=' -f2 | head -n1 | tr '[:upper:]' '[:lower:]' 2>/dev/null ||
+        cat /etc/*-release 2>/dev/null | grep -Eo 'ID_LIKE=\w+' | cut -d'=' -f2 | head -n1 | tr '[:upper:]' '[:lower:]' 2>/dev/null ||
+        cat /etc/*-release 2>/dev/null | grep -Eo 'DISTRIB_ID=\w+' | cut -d'=' -f2 | head -n1 | tr '[:upper:]' '[:lower:]' 2>/dev/null
 }
 
 function arch() {
@@ -94,12 +92,16 @@ function remove_old_kernels() {
 function fix_grub() {
     dist="$(distro)"
     [[ "$dist" != "debian" ]] && warn "not an Debian server, no need to fix grub" && return 0
+    [ ! -d /sys/firmware/efi ] && warn "not an EFI system, no need to fix grub" && return 0
+
     # re-install grub to fix the grub menu
     disk=$(get_disk)
     [[ -z "$disk" ]] && warn "failed to get the disk" && return
     [[ "$disk" =~ ^/dev/ ]] || disk="/dev/$disk"
     arch="$(uname -m)" || err "failed to get the architecture"
-    grub-install "$disk" --"$arch"-efi --efi-directory=/boot/efi --boot-directory=/boot --recheck
+    grub_target="x86_64-efi"
+    [[ "$arch" == "arm64" ]] && grub_target="arm64-efi"
+    grub-install "$disk" --target="$grub_target" --efi-directory=/boot/efi --boot-directory=/boot --recheck
     update-grub
 }
 
@@ -311,11 +313,6 @@ function enable_lookbusy() {
     add_cronjob "$username" "0 2 * * * speedtest --accept-license --accept-gdpr"
 }
 
-function distro() {
-    cat /etc/*-release 2>/dev/null | grep -Eo 'ID=\w+' | cut -d'=' -f2 | head -n1 2>/dev/null ||
-        cat /etc/*-release 2>/dev/null | grep -Eo 'DISTRIB_ID=\w+' | cut -d'=' -f2 | head -n1 2>/dev/null
-}
-
 if ((EUID != 0)); then
     echo "Granting root privileges for ""$(basename "$0")"
     if [[ -t 1 ]]; then
@@ -348,6 +345,7 @@ _edge_kernel=false
 _enable_lookbusy=false
 _speedtest=false
 _distro=false
+_fix_grub=false
 username=""
 _host=""
 
@@ -356,6 +354,7 @@ function usage() {
     echo "Options:"
     echo "  -h, --help                    show this help message and exit"
     echo "  -d, --distro,                 show the distro"
+    echo "  -f, --fix-grub,                fix grub boot menu"
     echo "  -ist, --install-speedtest,    install speedtest-cli"
     echo "  -ilb, --install-lookbusy,     install lookbusy"
     echo "  -ipe, --install-pyenv,        install pyenv"
@@ -385,6 +384,10 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
     -d | --distro)
         _distro=true
+        shift 1
+        ;;
+    -f | --fix-grub)
+        _fix_grub=true
         shift 1
         ;;
     -uu | --update)
@@ -523,6 +526,8 @@ action() {
         install_edge_kernel
     elif [[ "$_distro" == true ]]; then
         distro
+    elif [[ "$_fix_grub" == true ]]; then
+        fix_grub
     elif [[ "$_auto" == true ]]; then
         do_all
     else
