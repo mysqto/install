@@ -3,17 +3,17 @@
 installed=()
 
 nopassword=(
-    apt 
+    apt
     apt-get
     aptitude
     dpkg-reconfigure
     dpkg-divert
     dpkg-preconfigure
     dpkg-query
-    dpkg-split 
+    dpkg-split
     dpkg-statoverride
     dpkg-trigger
-    dpkg-deb 
+    dpkg-deb
     dpkg
     do-release-upgrade
     systemctl
@@ -29,7 +29,6 @@ nopassword=(
     make
 )
 
-
 function warn() {
     echo -e "\033[1;33m${*}\033[0m"
 }
@@ -40,7 +39,7 @@ function error() {
 }
 
 function _installed() {
-    command -v "$1" &> /dev/null
+    command -v "$1" &>/dev/null
 }
 
 function _install_fish() {
@@ -50,10 +49,10 @@ function _install_fish() {
         add-apt-repository -y ppa:fish-shell/release-3
     elif [ "$distro" == "debian" ]; then
         debian_release="$(lsb_release -rs 2>/dev/null)"
-        echo "deb http://download.opensuse.org/repositories/shells:/fish:/release:/3/Debian_$debian_release/ /" \
-            | tee /etc/apt/sources.list.d/shells:fish:release:3.list
-        curl -fsSL "https://download.opensuse.org/repositories/shells:fish:release:3/Debian_$debian_release/Release.key" \
-            | gpg --dearmor | tee /etc/apt/trusted.gpg.d/shells_fish_release_3.gpg > /dev/null
+        echo "deb http://download.opensuse.org/repositories/shells:/fish:/release:/3/Debian_$debian_release/ /" |
+            tee /etc/apt/sources.list.d/shells:fish:release:3.list
+        curl -fsSL "https://download.opensuse.org/repositories/shells:fish:release:3/Debian_$debian_release/Release.key" |
+            gpg --dearmor | tee /etc/apt/trusted.gpg.d/shells_fish_release_3.gpg >/dev/null
         apt -y update
     fi
     apt -y --no-install-recommends install fish
@@ -61,15 +60,15 @@ function _install_fish() {
 
 function _install_neofetch() {
     # install neofetch
-    pushd /tmp >> /dev/null 2>&1 || exit
+    pushd /tmp >>/dev/null 2>&1 || exit
     rm -rf neofetch
     git clone https://github.com/dylanaraps/neofetch
     if [ -d neofetch ]; then
-        pushd neofetch >> /dev/null 2>&1 || exit
+        pushd neofetch >>/dev/null 2>&1 || exit
         make install
-        popd >> /dev/null 2>&1 || exit
+        popd >>/dev/null 2>&1 || exit
     fi
-    popd >> /dev/null 2>&1 || exit
+    popd >>/dev/null 2>&1 || exit
 }
 
 function _install_im() {
@@ -79,8 +78,8 @@ function _install_im() {
 
 function _enable_bbr() {
     if ! grep -q "bbr" /etc/sysctl.conf; then
-        echo "net.core.default_qdisc=fq" >> /etc/sysctl.conf
-        echo "net.ipv4.tcp_congestion_control=bbr" >> /etc/sysctl.conf
+        echo "net.core.default_qdisc=fq" >>/etc/sysctl.conf
+        echo "net.ipv4.tcp_congestion_control=bbr" >>/etc/sysctl.conf
     fi
     sysctl -p
 }
@@ -90,13 +89,13 @@ function _enable_backports() {
     debian_codename="$(lsb_release -cs 2>/dev/null)"
     #use backports for debian
     apt_source_list="/etc/apt/sources.list"
-    grep -q "$debian_codename-backports" "$apt_source_list" || cat >> "$apt_source_list" <<EOF
+    grep -q "$debian_codename-backports" "$apt_source_list" || cat >>"$apt_source_list" <<EOF
 deb http://deb.debian.org/debian $debian_codename-backports main
 deb-src http://deb.debian.org/debian $debian_codename-backports main
 EOF
     backports_pirority_file="/etc/apt/preferences.d/backports"
     [ -f "$backports_pirority_file" ] && rm -f "$backports_pirority_file"
-    cat >> "$backports_pirority_file" <<EOF
+    cat >>"$backports_pirority_file" <<EOF
 Package: *
 Pin: release a=$debian_codename-backports
 Pin-Priority: 900
@@ -110,7 +109,7 @@ function _enable_ipv6() {
     elif grep -q "iface $if inet6 dhcp" /etc/network/interfaces; then
         warn "ipv6_dchp is true but ipv6 dhcp is already enabled"
     else
-        echo "iface $if inet6 dhcp" >> /etc/network/interfaces
+        echo "iface $if inet6 dhcp" >>/etc/network/interfaces
     fi
 }
 
@@ -141,7 +140,7 @@ function _config_ssh() {
     if grep -q "$ssh_authorized_keys" "/home/$username/.ssh/authorized_keys"; then
         warn "ssh_authorized_keys already exists"
     else
-        echo "$ssh_authorized_keys" >> "/home/$username/.ssh/authorized_keys"
+        echo "$ssh_authorized_keys" >>"/home/$username/.ssh/authorized_keys"
     fi
 
     chown -R "$username:$username" "/home/$username/.ssh"
@@ -151,7 +150,7 @@ function _config_ssh() {
     # update sshd config
     sed -ri 's/^#?PasswordAuthentication.*/PasswordAuthentication no/g' /etc/ssh/sshd_config
     # disable root login
-    sed -ri 's/^#?PermitRootLogin.*/PermitRootLogin no/g' /etc/ssh/sshd_config    
+    sed -ri 's/^#?PermitRootLogin.*/PermitRootLogin no/g' /etc/ssh/sshd_config
 }
 
 function _create_user() {
@@ -173,7 +172,7 @@ function _create_user() {
         shell="$(which fish)"
         [ -z "$shell" ] && shell="$(which bash)"
         useradd -m -u "$user_id" -g "$group_id" -s "$shell" -G sudo "$username"
-    fi    
+    fi
 }
 
 function _config_fish() {
@@ -187,12 +186,12 @@ function _config_fish() {
     current_shell="$(getent passwd "$username" | cut -d: -f7)"
 
     [ -n "$fish_shell" ] && [ "$current_shell" != "$fish_shell" ] && {
-        chsh -s "$fish_shell" "$username" 
+        chsh -s "$fish_shell" "$username"
         # install fisher
         su - "$username" -c 'set -U fish_user_paths /sbin'
         su - "$username" -c 'curl -sL https://git.io/fisher | source && fisher install jorgebucaran/fisher && fisher install mysqto/flash'
         echo "wait 5 seconds for fisher to install plugins" && sleep 5
-    }    
+    }
 }
 
 function _config_sudo() {
@@ -202,19 +201,19 @@ function _config_sudo() {
     [ -f "/etc/sudoers.d/$username" ] && rm -f "/etc/sudoers.d/$username"
 
     if [ "$sudo_without_password" = true ]; then
-        echo "$username ALL=(ALL) NOPASSWD: ALL" >> "/etc/sudoers.d/$username"
+        echo "$username ALL=(ALL) NOPASSWD: ALL" >>"/etc/sudoers.d/$username"
     else
         for cmd in "${nopassword[@]}"; do
             cmd_path="$(which "$cmd")"
             if [ -n "$cmd_path" ]; then
-                echo "$username ALL=(ALL) NOPASSWD: $cmd_path" >> "/etc/sudoers.d/$username"
+                echo "$username ALL=(ALL) NOPASSWD: $cmd_path" >>"/etc/sudoers.d/$username"
             fi
         done
 
         for cmd in "${installed[@]}"; do
             cmd_path="$(which "$cmd")"
             if [ -n "$cmd_path" ]; then
-                echo "$username ALL=(ALL) NOPASSWD: $cmd_path" >> "/etc/sudoers.d/$username"
+                echo "$username ALL=(ALL) NOPASSWD: $cmd_path" >>"/etc/sudoers.d/$username"
             fi
         done
     fi
@@ -243,29 +242,30 @@ distro="$(echo "$distro" | tr '[:upper:]' '[:lower:]')"
 [ "$distro" != "ubuntu" ] && [ "$distro" != "debian" ] && error "This script only works on Ubuntu and Debian"
 
 # check sudo installed
-if ! command -v sudo &> /dev/null; then
+if ! command -v sudo &>/dev/null; then
     echo "sudo could not be found"
     ((EUID == 0)) && apt update && apt install -y sudo || echo "Please install sudo first" && exit 1
 fi
 
 if ((EUID != 0)); then
-	echo "Granting root privileges for ""$(basename "$0")"
-	if [ -t 1 ]; then
-		sudo "$0" "$@"
-	else
-		exec 1>output_file
-		gksu "$0" "$@"
-	fi
-	exit
+    echo "Granting root privileges for ""$(basename "$0")"
+    if [ -t 1 ]; then
+        sudo "$0" "$@"
+    else
+        exec 1>output_file
+        gksu "$0" "$@"
+    fi
+    exit
 fi
 
 # this function is borrowed from https://stackoverflow.com/a/30948155
 function _pwgen() {
-	chars='!$%^&-()_+='
-	{ </dev/urandom LC_ALL=C grep -ao '[A-Za-z0-9]' \
-		| head -n$((RANDOM % 8 + 9))
-			echo ${chars:$((RANDOM % ${#chars})):1}   # Random special char.
-	} | shuf | tr -d '\n'
+    chars='!$%^&-()_+='
+    {
+        LC_ALL=C grep </dev/urandom -ao '[A-Za-z0-9]' |
+            head -n$((RANDOM % 8 + 9))
+        echo ${chars:$((RANDOM % ${#chars})):1} # Random special char.
+    } | shuf | tr -d '\n'
 }
 
 username=""
@@ -292,67 +292,70 @@ POSITIONAL=()
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        --ssh | --ssh-port ) 
-            ssh_port="$2"; 
-            shift 2 
-            ;;
-        -f | --fish)
-            install_fish=true
-            shift
-            ;;
-        -bbr | --bbr)
-            enable_bbr=true
-            shift
-            ;;
-        -b | --backports)
-            enable_backports=true
-            shift
-            ;;
-        -so | --socat)
-            enable_socat=true
-            shift
-            ;;    
-        -s | --shadowsocks)
-            enable_shadowsocks=true
-            shift
-            ;;
-        -ssp | --shadowsocks-password ) 
-            ss_password="$2"; 
-            shift 2 
-            ;;
-        -u | --user | --username) 
-            username="$2"; 
-            shift 2 
-            ;;
-        -ak | --authorized-keys ) 
-            ssh_authorized_keys="$2"; 
-            shift 2 
-            ;;
-        -6 | --ipv6-dhcp )
-            ipv6_dchp=true
-            shift
-            ;;
-        -nf | --neofetch )
-            install_neofetch=true
-            shift
-            ;;
-        -g | --go )
-            install_go=true
-            shift
-            ;;
-        -im | --im )
-            install_im=true
-            shift
-            ;;
-        --sudo-without-password )
-            sudo_without_password=true
-            shift
-            ;;
-        --byobu | --enable-byobu )
-            enable_byobu=true
-            shift
-            ;;
-        * ) POSITIONAL+=("$1"); shift ;;
+    --ssh | --ssh-port)
+        ssh_port="$2"
+        shift 2
+        ;;
+    -f | --fish)
+        install_fish=true
+        shift
+        ;;
+    -bbr | --bbr)
+        enable_bbr=true
+        shift
+        ;;
+    -b | --backports)
+        enable_backports=true
+        shift
+        ;;
+    -so | --socat)
+        enable_socat=true
+        shift
+        ;;
+    -s | --shadowsocks)
+        enable_shadowsocks=true
+        shift
+        ;;
+    -ssp | --shadowsocks-password)
+        ss_password="$2"
+        shift 2
+        ;;
+    -u | --user | --username)
+        username="$2"
+        shift 2
+        ;;
+    -ak | --authorized-keys)
+        ssh_authorized_keys="$2"
+        shift 2
+        ;;
+    -6 | --ipv6-dhcp)
+        ipv6_dchp=true
+        shift
+        ;;
+    -nf | --neofetch)
+        install_neofetch=true
+        shift
+        ;;
+    -g | --go)
+        install_go=true
+        shift
+        ;;
+    -im | --im)
+        install_im=true
+        shift
+        ;;
+    --sudo-without-password)
+        sudo_without_password=true
+        shift
+        ;;
+    --byobu | --enable-byobu)
+        enable_byobu=true
+        shift
+        ;;
+    *)
+        POSITIONAL+=("$1")
+        shift
+        ;;
     esac
 done
 
@@ -371,14 +374,13 @@ apt -y --no-install-recommends install byobu wget curl net-tools build-essential
     fi
 }
 
-
-[ "$install_neofetch" = true ]  && _install_neofetch
+[ "$install_neofetch" = true ] && _install_neofetch
 [ "$install_go" = true ] && curl -sL install.lol/go | bash
 [ "$install_im" = true ] && _install_im
 
 [ "$enable_socat" = true ] && _enable_socat
 [ "$enable_shadowsocks" = true ] && {
-    [ -f "shadowsocks_config" ] && ss_password="$(<"$shadowsocks_config" grep "password" 2>/dev/null | cut -d'"' -f4)"
+    [ -f "shadowsocks_config" ] && ss_password="$(grep <"$shadowsocks_config" "password" 2>/dev/null | cut -d'"' -f4)"
     [ -z "$ss_password" ] && ss_password="$(_pwgen)"
     curl -sL install.lol/ss-libev | bash -s -- -p "$ss_password"
 }

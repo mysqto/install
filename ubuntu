@@ -45,20 +45,20 @@ sudo_without_password=false
 [ ! -d "$wd" ] && echo "failed to create working directory" && exit 1
 
 if ((EUID != 0)); then
-	echo "Granting root privileges for ""$(basename "$0")"
-	if [ -t 1 ]; then
-		sudo "$0" "$@"
-	else
-		exec 1>output_file
-		gksu "$0" "$@"
-	fi
-	exit
+    echo "Granting root privileges for ""$(basename "$0")"
+    if [ -t 1 ]; then
+        sudo "$0" "$@"
+    else
+        exec 1>output_file
+        gksu "$0" "$@"
+    fi
+    exit
 fi
 
 function update_dpkg_config() {
     [ ! -d "/etc/apt/apt.conf.d" ] && mkdir -p "/etc/apt/apt.conf.d"
     [ -f /etc/apt/apt.conf.d/local ] && mv /etc/apt/apt.conf.d/local /etc/apt/apt.conf.d/local.bak
-    echo 'DPkg::options { "--force-confdef"; "--force-confold"; }' > /etc/apt/apt.conf.d/local
+    echo 'DPkg::options { "--force-confdef"; "--force-confold"; }' >/etc/apt/apt.conf.d/local
 }
 
 function restore_dpkg_config() {
@@ -89,10 +89,10 @@ function download() {
 }
 
 function cidr_to_netmask() {
-   set -- $(( 5 - ($1 / 8) )) 255 255 255 255 $(( (255 << (8 - ($1 % 8))) & 255 )) 0 0 0
-   # shellcheck disable=SC2015
-   [ "$1" -gt 1 ] && shift "$1" || shift
-   echo "${1-0}"."${2-0}"."${3-0}"."${4-0}"
+    set -- $((5 - ($1 / 8))) 255 255 255 255 $(((255 << (8 - ($1 % 8))) & 255)) 0 0 0
+    # shellcheck disable=SC2015
+    [ "$1" -gt 1 ] && shift "$1" || shift
+    echo "${1-0}"."${2-0}"."${3-0}"."${4-0}"
 }
 
 # shellcheck disable=SC2120
@@ -100,7 +100,7 @@ function ip_address() {
     if="$1"
     type="$2"
     [ -z "$type" ] && type="4"
-        # shellcheck disable=SC2119
+    # shellcheck disable=SC2119
     [ -z "$if" ] && if="$(default_interface)"
     ip -"$type" -o addr show "$if" | head -1 | awk '{split($4,a,"/"); print a[1]}'
 }
@@ -112,7 +112,7 @@ function netmask() {
     # shellcheck disable=SC2119
     [ -z "$if" ] && if="$(default_interface)"
     local mask=""
-    if  [ "$type" == "6" ]; then
+    if [ "$type" == "6" ]; then
         mask=$(ip -"$type" -o addr show "$if" | awk '{split($4,a,"/"); print a[2]}')
     else
         mask=$(cidr_to_netmask "$(ip -"$type" -o addr show "$if" | head -1 | awk '{split($4,a,"/"); print a[2]}')")
@@ -149,7 +149,7 @@ function dns() {
 }
 
 function get_disk() {
-    lsblk -oMOUNTPOINT,PKNAME -P | grep 'MOUNTPOINT="/"' |cut -d'"' -f4
+    lsblk -oMOUNTPOINT,PKNAME -P | grep 'MOUNTPOINT="/"' | cut -d'"' -f4
 }
 
 function partition_type() {
@@ -158,7 +158,7 @@ function partition_type() {
 }
 
 function grub_config() {
-    grub_dir=$(find /boot -type d -name "grub*" 2>/dev/null |head -n1)
+    grub_dir=$(find /boot -type d -name "grub*" 2>/dev/null | head -n1)
     [ -z "$grub_dir" ] && return
     find "$grub_dir" -regextype posix-egrep -regex ".*/(grub.conf|grub.cfg)"
 }
@@ -174,159 +174,166 @@ POSITIONAL=()
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        -d | --disk)
-            disk="$2"
-            shift 2
-            ;;
-        -e | --efi)
-            efi=true
-            shift;;
-        -es | --esp-size)
-            esp="$2"
-            shift 2
-            ;;
-        -bs | --boot-size)
-            boot="$2"
-            shift 2 
-            ;;
-        -f | --fullname)
-            full_name="$2"; 
-            shift 2 
-            ;;
-        -fs | --filesystem)
-            filesystem="$2"; 
-            shift 2 
-            ;;
-        -u | --user )
-            username="$2"; 
-            shift 2 
-            ;;
-        -uid | --uid )
-            uid="$2"; 
-            shift 2 
-            ;;
-        -p | --password )
-            password="$2"; 
-            shift 2 
-            ;;
-        -g | --gpt )
-            gpt=true; 
-            shift 
-            ;;
-        -i | --interface )
-            interface="$2"; 
-            shift 2 
-            ;;
-        -h | --hostname )
-            hostname="$2"; 
-            shift 2 
-            ;;
-        -t | --timezone )
-            timezone="$2"; 
-            shift 2 
-            ;;
-        -n | --ntp-server )
-            ntp_server="$2"; 
-            shift 2 
-            ;;
-        -k | --kernel ) 
-            kernel="$2"; 
-            shift 2 
-            ;;
-        -c | --cloud )
-            cloud="$2";
-            shift 2 
-            ;;
-        -m | --manual-partition )
-            manual_partition=true;
-            shift 
-            ;;
-        -ns | --network-console)
-            network_console=true
-            shift
-            ;;
-        --provision)
-            install_shadowsocks=true
-            install_go=true
-            install_im=true
-            install_fish=true
-            install_neofetch=true
-            use_backports=true
-            bbr=true
-            byobu=true
-            shift
-            ;;
-        -ak | --authorized-keys)
-            authorized_keys="$2"
-            shift 2
-            ;;
-        -aku | --authorized-keys-url)
-            authorized_keys_url="$2"
-            shift 2
-            ;;
-        -ssp | --shadowsocks-password)
-            shadowsocks_password="$2"
-            shift 2
-            ;;
-        -ss | --shadowsocks-libev)
-            install_shadowsocks=true
-            shift
-            ;;
-        --socat)
-            install_socat=true
-            shift
-            ;;
-        --ssh | --ssh-port)
-            ssh_port="$2"
-            shift 2
-            ;;
-        --go)
-            install_go=true
-            shift
-            ;;
-        --im)
-            install_im=true
-            shift
-            ;;
-        --fish)
-            install_fish=true
-            shift
-            ;;
-        --neofetch)
-            install_neofetch=true
-            shift
-            ;;
-        --backports)
-            use_backports=true
-            shift
-            ;;
-        --byobu)
-            byobu=true
-            shift
-            ;;
-        -bbr | --bbr)
-            bbr=true
-            shift
-            ;;
-        --sudo-without-password)
-            sudo_without_password=true
-            shift
-            ;;
-        * ) POSITIONAL+=("$1"); shift ;;
+    -d | --disk)
+        disk="$2"
+        shift 2
+        ;;
+    -e | --efi)
+        efi=true
+        shift
+        ;;
+    -es | --esp-size)
+        esp="$2"
+        shift 2
+        ;;
+    -bs | --boot-size)
+        boot="$2"
+        shift 2
+        ;;
+    -f | --fullname)
+        full_name="$2"
+        shift 2
+        ;;
+    -fs | --filesystem)
+        filesystem="$2"
+        shift 2
+        ;;
+    -u | --user)
+        username="$2"
+        shift 2
+        ;;
+    -uid | --uid)
+        uid="$2"
+        shift 2
+        ;;
+    -p | --password)
+        password="$2"
+        shift 2
+        ;;
+    -g | --gpt)
+        gpt=true
+        shift
+        ;;
+    -i | --interface)
+        interface="$2"
+        shift 2
+        ;;
+    -h | --hostname)
+        hostname="$2"
+        shift 2
+        ;;
+    -t | --timezone)
+        timezone="$2"
+        shift 2
+        ;;
+    -n | --ntp-server)
+        ntp_server="$2"
+        shift 2
+        ;;
+    -k | --kernel)
+        kernel="$2"
+        shift 2
+        ;;
+    -c | --cloud)
+        cloud="$2"
+        shift 2
+        ;;
+    -m | --manual-partition)
+        manual_partition=true
+        shift
+        ;;
+    -ns | --network-console)
+        network_console=true
+        shift
+        ;;
+    --provision)
+        install_shadowsocks=true
+        install_go=true
+        install_im=true
+        install_fish=true
+        install_neofetch=true
+        use_backports=true
+        bbr=true
+        byobu=true
+        shift
+        ;;
+    -ak | --authorized-keys)
+        authorized_keys="$2"
+        shift 2
+        ;;
+    -aku | --authorized-keys-url)
+        authorized_keys_url="$2"
+        shift 2
+        ;;
+    -ssp | --shadowsocks-password)
+        shadowsocks_password="$2"
+        shift 2
+        ;;
+    -ss | --shadowsocks-libev)
+        install_shadowsocks=true
+        shift
+        ;;
+    --socat)
+        install_socat=true
+        shift
+        ;;
+    --ssh | --ssh-port)
+        ssh_port="$2"
+        shift 2
+        ;;
+    --go)
+        install_go=true
+        shift
+        ;;
+    --im)
+        install_im=true
+        shift
+        ;;
+    --fish)
+        install_fish=true
+        shift
+        ;;
+    --neofetch)
+        install_neofetch=true
+        shift
+        ;;
+    --backports)
+        use_backports=true
+        shift
+        ;;
+    --byobu)
+        byobu=true
+        shift
+        ;;
+    -bbr | --bbr)
+        bbr=true
+        shift
+        ;;
+    --sudo-without-password)
+        sudo_without_password=true
+        shift
+        ;;
+    *)
+        POSITIONAL+=("$1")
+        shift
+        ;;
     esac
 done
 
 set -- "${POSITIONAL[@]}" # restore positional parameters
 
 case $(uname -m) in
-    amd64|x86_64|x64|64 ) arch=amd64 ;;
-    aarch64|arm64 ) arch=arm64 ;;
-    * ) echo "unsupported arch $(uname -m)"; exit 1 ;;
+amd64 | x86_64 | x64 | 64) arch=amd64 ;;
+aarch64 | arm64) arch=arm64 ;;
+*)
+    echo "unsupported arch $(uname -m)"
+    exit 1
+    ;;
 esac
 
 update_dpkg_config && {
     DEBIAN_FRONTEND=noninteractive apt -y update && apt -y --no-install-recommends install systemd pwgen \
-    whois curl cpio openssh-client jq
+        whois curl cpio openssh-client jq
 }
 
 restore_dpkg_config
@@ -375,7 +382,7 @@ password_hash=
 
 if [ -z "$password_hash" ]; then
     [ -z "$password" ] && password="$(pwgen -nsy 32 1)"
-    password_hash="$(mkpasswd -m sha-512 -S "$(pwgen -nsy 16 1)" "$password" 2> /dev/null)" ||
+    password_hash="$(mkpasswd -m sha-512 -S "$(pwgen -nsy 16 1)" "$password" 2>/dev/null)" ||
         password_hash="$(openssl passwd -6 "$password" 2>/dev/null)" ||
         password_hash="$(busybox mkpasswd -m sha-512 -S "$(pwgen -nsy 16 1)" "$password" 2>/dev/null)" || {
         for python in python3 python python2; do
@@ -414,7 +421,7 @@ fi
 
 [ -z "$shadowsocks_password" ] && [ "$install_shadowsocks" = true ] && {
     shadowsocks_password="$(pwgen -ns 32 1 2>/dev/null)" ||
-    shadowsocks_password="$(busybox pwgen -ns 32 1 2>/dev/null)"
+        shadowsocks_password="$(busybox pwgen -ns 32 1 2>/dev/null)"
 }
 
 [ -n "$authorized_keys_url" ] && {
@@ -447,8 +454,8 @@ dns="$(dns)"
 
 [ "$network_console" = true ] && {
     nc_password="$(pwgen -nsy 16 1 2>/dev/null)" ||
-    nc_password="$(busybox pwgen -nsy 16 1 2>/dev/null)" ||
-    nc_password="$(LC_ALL=C tr </dev/urandom -dc 'a-zA-Z0-9' | head -c 16 2>/dev/null)"
+        nc_password="$(busybox pwgen -nsy 16 1 2>/dev/null)" ||
+        nc_password="$(LC_ALL=C tr </dev/urandom -dc 'a-zA-Z0-9' | head -c 16 2>/dev/null)"
 }
 
 warn "#######################################################################"
@@ -490,7 +497,7 @@ preseed_file="$boot_dir/preseed.cfg"
 
 [ -d "$wd" ] && rm -rf "$wd"
 mkdir -p "$boot_dir"
-if [ ! -d "$wd" ] || [ ! -d "$boot_dir" ] ; then
+if [ ! -d "$wd" ] || [ ! -d "$boot_dir" ]; then
     echo "failed to create $wd or $boot_dir"
     exit 1
 fi
@@ -499,8 +506,8 @@ fi
 mirror_source="$(grep restricted /etc/apt/sources.list 2>/dev/null | grep -v '^#' | head -n1 | awk '{print $2}' | sed 's/\/$//')"
 [ -n "$mirror_source" ] && mirror="$mirror_source"
 
-mirror_host="$(echo "$mirror" |awk -F'://|/' '{print $2}')"
-mirror_folder="$(echo "$mirror" |awk -F''"${mirror_host}"'' '{print $2}')"
+mirror_host="$(echo "$mirror" | awk -F'://|/' '{print $2}')"
+mirror_folder="$(echo "$mirror" | awk -F''"${mirror_host}"'' '{print $2}')"
 [ -n "$mirror_folder" ] || mirror_folder="/"
 
 download "$initrd_url" "$initrd_gz"
@@ -509,7 +516,7 @@ download "$linux_url" "$vmlinuz_img"
 [ ! -f "$initrd_gz" ] && echo "initrd image not downloadded" && exit 1
 [ ! -f "$vmlinuz_img" ] && echo "vmlinuz not downloadded" && exit 1
 
-cat >> "$preseed_file"<<EOF
+cat >>"$preseed_file" <<EOF
 ### Localization
 # Preseeding only locale sets language, country and locale.
 d-i debian-installer/locale string en_US.UTF-8
@@ -544,29 +551,29 @@ d-i hw-detect/load_firmware boolean true
 EOF
 
 [ "$network_console" = true ] && {
-    cat >> "$preseed_file" <<EOF
+    cat >>"$preseed_file" <<EOF
 # Network console
 
 d-i anna/choose_modules string network-console
 d-i preseed/early_command string anna-install network-console
 EOF
     if [ -n "$authorized_keys_url" ]; then
-        cat >> "$preseed_file" <<EOF
+        cat >>"$preseed_file" <<EOF
 d-i network-console/authorized_keys_url string $authorized_keys_url
 EOF
     else
-        cat >> "$preseed_file" <<EOF
+        cat >>"$preseed_file" <<EOF
 d-i network-console/password password $nc_password
 d-i network-console/password-again password $nc_password
 EOF
     fi
-    cat >> "$preseed_file" <<EOF
+    cat >>"$preseed_file" <<EOF
 d-i network-console/start select Continue
 
 EOF
 }
 
-cat >> "$preseed_file" <<EOF
+cat >>"$preseed_file" <<EOF
 # Mirror settings
 d-i mirror/country string manual
 d-i mirror/http/hostname string $mirror_host
@@ -593,13 +600,13 @@ d-i time/zone string $timezone
 
 EOF
 
-cat >> "$preseed_file"<<EOF
+cat >>"$preseed_file" <<EOF
 # Partitioning
 d-i partman/early_command string umount /media || true;
 EOF
 
 if [ "$manual_partition" == "false" ]; then
-    cat >> "$preseed_file"<<EOF
+    cat >>"$preseed_file" <<EOF
 d-i partman-partitioning/confirm_write_new_label boolean true
 d-i partman/mount_style select uuid
 d-i partman/choose_partition select finish
@@ -614,19 +621,19 @@ d-i partman/confirm boolean true
 d-i partman/confirm_nooverwrite boolean true
 EOF
 else
-    echo "d-i partman-auto/method string regular" >> "$preseed_file"
+    echo "d-i partman-auto/method string regular" >>"$preseed_file"
 
     [ -z "$disk" ] && disk="$(get_disk)"
     if [ -z "$disk" ]; then
         # shellcheck disable=SC2016
-        echo 'd-i partman/early_command string debconf-set partman-auto/disk "$(list-devices disk | head -n 1)"' >> "$preseed_file"
-    else 
+        echo 'd-i partman/early_command string debconf-set partman-auto/disk "$(list-devices disk | head -n 1)"' >>"$preseed_file"
+    else
         [[ "$disk" =~ ^/dev/ ]] || disk="/dev/$disk"
-        echo "d-i partman-auto/disk string $disk" >> "$preseed_file"
+        echo "d-i partman-auto/disk string $disk" >>"$preseed_file"
     fi
 
     [ "$gpt" == "true" ] && {
-        cat >> "$preseed_file"<<EOF
+        cat >>"$preseed_file" <<EOF
 d-i partman-basicfilesystems/choose_label string gpt
 d-i partman-basicfilesystems/default_label string gpt
 d-i partman-partitioning/choose_label string gpt
@@ -635,20 +642,20 @@ d-i partman/choose_label string gpt
 d-i partman/default_label string gpt
 EOF
     }
-    cat >> "$preseed_file"<<EOF
+    cat >>"$preseed_file" <<EOF
 d-i partman/default_filesystem string $filesystem
 EOF
 
-    cat >> "$preseed_file"<<'EOF'
+    cat >>"$preseed_file" <<'EOF'
 d-i partman-auto/expert_recipe string           \
     naive ::                                    \
 EOF
     if [ "$efi" = true ]; then
         # shellcheck disable=SC2129
-        cat >> "$preseed_file"<<EOF
+        cat >>"$preseed_file" <<EOF
         $esp $esp $esp fat32                       \\
 EOF
-        cat >> "$preseed_file"<<"EOF"
+        cat >>"$preseed_file" <<"EOF"
             $iflabel{ gpt }                     \
             $primary{ }                         \
             $reusemethod{ }                     \
@@ -657,11 +664,11 @@ EOF
             .                                   \
 EOF
 
-        cat >> "$preseed_file"<<EOF
+        cat >>"$preseed_file" <<EOF
         $boot $boot $boot ext4                        \\
 EOF
 
-        cat >> "$preseed_file"<<"EOF"
+        cat >>"$preseed_file" <<"EOF"
             $primary{ }                         \
             $bootable{ }                        \
             method{ format }                    \
@@ -672,7 +679,7 @@ EOF
             .                                   \
 EOF
     else
-        cat >> "$preseed_file"<<"EOF"
+        cat >>"$preseed_file" <<"EOF"
         1 1 1 free                              \
             $primary{ }                         \
             $bios_boot{ }                       \
@@ -680,17 +687,17 @@ EOF
 EOF
 
         [ "$gpt" == true ] && {
-            cat >> "$preseed_file"<<"EOF"
+            cat >>"$preseed_file" <<"EOF"
             $iflabel{ gpt }                     \
 EOF
         }
-        cat >> "$preseed_file"<<"EOF"
+        cat >>"$preseed_file" <<"EOF"
             method{ biosgrub }                  \
         .                                       \
 EOF
     fi
 
-    cat >> "$preseed_file"<<"EOF"
+    cat >>"$preseed_file" <<"EOF"
         1024 1024 -1 $default_filesystem        \
             method{ format }                    \
             format{ }                           \
@@ -700,12 +707,12 @@ EOF
     .
 EOF
     if [ "$efi" = true ]; then
-        cat >> "$preseed_file"<<"EOF"
+        cat >>"$preseed_file" <<"EOF"
 d-i partman-efi/non_efi_system boolean true
 EOF
     fi
 
-    cat >> "$preseed_file"<<EOF
+    cat >>"$preseed_file" <<EOF
 d-i partman-auto/choose_recipe select naive
 d-i partman-basicfilesystems/no_swap boolean false
 d-i partman-partitioning/confirm_write_new_label boolean true
@@ -715,8 +722,7 @@ d-i partman/confirm_nooverwrite boolean true
 EOF
 fi
 
-
-cat >> "$preseed_file"<<EOF
+cat >>"$preseed_file" <<EOF
 d-i debian-installer/allow_unauthenticated boolean true
 
 tasksel tasksel/first multiselect minimal
@@ -759,19 +765,18 @@ fi
 [ "$sudo_without_password" = true ] && late_command="$late_command --sudo-without-password"
 
 [ -n "$late_command" ] && {
-    cat >> "$preseed_file" <<EOF
+    cat >>"$preseed_file" <<EOF
 # Provisioning
 d-i preseed/late_command string in-target sh -c '$late_command'
 EOF
 }
 
-
-pushd "$boot_dir" > /dev/null 2>&1 || exit 1
+pushd "$boot_dir" >/dev/null 2>&1 || exit 1
 # extract initrd
-gzip -d < "$initrd_gz" | cpio --extract --verbose --make-directories --no-absolute-filenames >>/dev/null 2>&1
+gzip -d <"$initrd_gz" | cpio --extract --verbose --make-directories --no-absolute-filenames >>/dev/null 2>&1
 # add preseed.cfg
-find . | cpio -H newc --create --verbose | gzip -9 > "$initrd_img"
-popd > /dev/null 2>&1 || exit 1
+find . | cpio -H newc --create --verbose | gzip -9 >"$initrd_img"
+popd >/dev/null 2>&1 || exit 1
 
 [ ! -f "$initrd_img" ] && echo "updated initrd image not found" && exit 1
 
@@ -785,34 +790,34 @@ grub_custom_file="$grub_d/40_custom"
 rm -f "$grub_custom_file" || sudo rm -f "$grub_custom_file"
 # try to update grub.cfg before adding custom entry
 grub-mkconfig -o "$grub_cfg" || sudo grub-mkconfig -o "$grub_cfg"
-menu_entries=$(<"$grub_cfg" sed -n '1h;1!H;$g;s/\n/%%%%%%%/g;$p' | grep -Pom 1 'menuentry\ [^{]*({(((?>[^{}]+)|(?1))*)})' | sed 's/%%%%%%%/\n/g')
-second_menuentry_start=$(awk '/menuentry/{print NR}' <<< "$menu_entries" | sed -n 2p)
+menu_entries=$(sed <"$grub_cfg" -n '1h;1!H;$g;s/\n/%%%%%%%/g;$p' | grep -Pom 1 'menuentry\ [^{]*({(((?>[^{}]+)|(?1))*)})' | sed 's/%%%%%%%/\n/g')
+second_menuentry_start=$(awk '/menuentry/{print NR}' <<<"$menu_entries" | sed -n 2p)
 if [ -z "$second_menuentry_start" ]; then
     default_menu_entry=$menu_entries
 else
     default_menuentry_ends=$((second_menuentry_start - 1))
-    default_menu_entry=$(sed -n "1,${default_menuentry_ends}p" <<< "$menu_entries")
+    default_menu_entry=$(sed -n "1,${default_menuentry_ends}p" <<<"$menu_entries")
 fi
 
 boot_options="auto=true hostname=ubuntu domain= quiet"
-install_menu_entry=$(sed "/menuentry.*/c\menuentry\ \'$title\'\ --class debian\ --class\ gnu-linux\ --class\ gnu\ --class\ os\ \{" <<< "$default_menu_entry")
+install_menu_entry=$(sed "/menuentry.*/c\menuentry\ \'$title\'\ --class debian\ --class\ gnu-linux\ --class\ gnu\ --class\ os\ \{" <<<"$default_menu_entry")
 
-old_kernels=$(grep 'linux.*/\|kernel.*/' <<< "$install_menu_entry" | awk '{print $2}')
+old_kernels=$(grep 'linux.*/\|kernel.*/' <<<"$install_menu_entry" | awk '{print $2}')
 for old_kernel in $old_kernels; do
     old_kernel=$(basename "$old_kernel")
-    echo "replace $old_kernel with $vmlinuz" 
+    echo "replace $old_kernel with $vmlinuz"
     # shellcheck disable=SC2001
     install_menu_entry=$(echo "$install_menu_entry" | sed "s|$old_kernel.*|$vmlinuz\ $boot_options|g")
 done
 
-old_initrds=$(grep 'initrd.*/' <<< "$install_menu_entry" | awk '{print $2}')
+old_initrds=$(grep 'initrd.*/' <<<"$install_menu_entry" | awk '{print $2}')
 for old_initrd in $old_initrds; do
     old_initrd=$(basename "$old_initrd")
     echo "replace $old_initrd with $initrd"
     install_menu_entry=${install_menu_entry//$old_initrd/$initrd}
 done
 
-cat >> "$grub_custom_file"<<"EOF"
+cat >>"$grub_custom_file" <<"EOF"
 #!/bin/sh
 exec tail -n +3 $0
 # This file provides an easy way to add custom menu entries.  Simply type the
@@ -820,11 +825,11 @@ exec tail -n +3 $0
 # the 'exec tail' line above.
 EOF
 
-if grep -q "initrdfail" <<< "$install_menu_entry"; then
-    echo "initrdfail=1" >> "$grub_custom_file"
+if grep -q "initrdfail" <<<"$install_menu_entry"; then
+    echo "initrdfail=1" >>"$grub_custom_file"
 fi
 
-echo "$install_menu_entry" >> "$grub_custom_file"
+echo "$install_menu_entry" >>"$grub_custom_file"
 
 [ ! -f "$grub_custom_file" ] && echo "grub menu not generated" && exit 1
 

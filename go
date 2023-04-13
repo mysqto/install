@@ -22,11 +22,11 @@ function getgo() {
 		[[ "$os" == "linux" ]] && prefix=/opt
 		[[ "$os" == "darwin" ]] && prefix=/usr/local/opt
 	}
-    go_root="$prefix/go"
-    [[ -d "$go_root" ]] && echo "removing old $go_root" && rm -rf "$go_root"
-    wd="$(mktemp -d "${TMPDIR:-/tmp}"/go.XXXXXXXXXXXXXXXX 2>/dev/null)"
+	go_root="$prefix/go"
+	[[ -d "$go_root" ]] && echo "removing old $go_root" && rm -rf "$go_root"
+	wd="$(mktemp -d "${TMPDIR:-/tmp}"/go.XXXXXXXXXXXXXXXX 2>/dev/null)"
 	[[ -d "$wd" ]] || wd=/tmp/$(date +%s) && mkdir -p "$wd"
-    pkg="$wd/$gopkg"
+	pkg="$wd/$gopkg"
 	[[ ! -f "$gopkg" ]] && echo "downloading $gopkg from $url" && curl -L --progress-bar -o "$pkg" "$url"
 	[[ ! -d "$prefix" ]] && echo "creating directory : $prefix" && mkdir -p "$prefix"
 	pushd "$prefix" >/dev/null 2>&1 || return 255
@@ -65,10 +65,10 @@ fi
 
 arch=""
 case $(uname -m) in
-	i386|i686) arch="386" ;;
-	x86_64) arch="amd64" ;;
-	aarch64|arm64) arch="arm64" ;;
-	armv6l)  arch="armv6l" ;;
+i386 | i686) arch="386" ;;
+x86_64) arch="amd64" ;;
+aarch64 | arm64) arch="arm64" ;;
+armv6l) arch="armv6l" ;;
 esac
 
 [[ -z "$arch" ]] && echo "Fatal: can not determine system arch" && exit 255
