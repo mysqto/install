@@ -2,11 +2,12 @@
 
 # this function is borrowed from https://stackoverflow.com/a/30948155
 function _pwgen() {
-	chars='!%^&-()_+='
-	{ </dev/urandom LC_ALL=C grep -ao '[A-Za-z0-9]' \
-		| head -n$((RANDOM % 8 + 9))
-			echo ${chars:$((RANDOM % ${#chars})):1}   # Random special char.
-	} | shuf | tr -d '\n'
+    chars='!%^&-()_+='
+    {
+        LC_ALL=C grep </dev/urandom -ao '[A-Za-z0-9]' |
+            head -n$((RANDOM % 8 + 9))
+        echo ${chars:$((RANDOM % ${#chars})):1} # Random special char.
+    } | shuf | tr -d '\n'
 }
 
 # shellcheck disable=SC2120
@@ -37,10 +38,22 @@ systemd_service_file=/lib/systemd/system/shadowsocks-libev.service
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        -p | --password ) password="$2"; shift 2 ;;
-        -lsv | --libsodium-version ) libsodium_version="$2"; shift 2 ;;
-        -mv | --mbedtls-version ) mbedtls_version="$2"; shift 2 ;;
-        * ) POSITIONAL+=("$1"); shift ;;
+    -p | --password)
+        password="$2"
+        shift 2
+        ;;
+    -lsv | --libsodium-version)
+        libsodium_version="$2"
+        shift 2
+        ;;
+    -mv | --mbedtls-version)
+        mbedtls_version="$2"
+        shift 2
+        ;;
+    *)
+        POSITIONAL+=("$1")
+        shift
+        ;;
     esac
 done
 
@@ -61,7 +74,7 @@ wd=$(mktemp -t "ss-libev.XXXXXXXXXXXXXXXX" -d 2>/dev/null)
 [[ ! -d "$wd" ]] && wd=/tmp/$(date +%s) && mkdir -p "$wd" 2>/dev/null
 [[ ! -d "$wd" ]] && echo "failed to create working directory" && exit 1
 
-pushd "$wd" >> /dev/null 2>&1 || exit
+pushd "$wd" >>/dev/null 2>&1 || exit
 
 sudo apt -y update && DEBIAN_FRONTEND=noninteractive sudo apt -y --no-install-recommends install gettext build-essential autoconf libtool libpcre3-dev \
     asciidoc xmlto libev-dev libc-ares-dev automake libmbedtls-dev libsodium-dev pkg-config
@@ -70,44 +83,44 @@ sudo apt -y update && DEBIAN_FRONTEND=noninteractive sudo apt -y --no-install-re
 rm -rf "libsodium"
 git clone https://github.com/jedisct1/libsodium.git "libsodium"
 [[ ! -d "libsodium" ]] && echo "failed to clone libsodium" && exit 1
-pushd "libsodium" >> /dev/null 2>&1 || exit
+pushd "libsodium" >>/dev/null 2>&1 || exit
 git checkout "$libsodium_version"
 ./autogen.sh
 ./configure --prefix=/usr && make
 sudo make install
-popd >> /dev/null 2>&1 || exit
+popd >>/dev/null 2>&1 || exit
 sudo ldconfig
 
 # Installation of MbedTLS
 rm -rf "mbedtls"
 git clone https://github.com/ARMmbed/mbedtls.git "mbedtls"
 [[ ! -d "mbedtls" ]] && echo "failed to clone mbedtls" && exit 1
-pushd "mbedtls" >> /dev/null 2>&1 || exit
+pushd "mbedtls" >>/dev/null 2>&1 || exit
 git checkout "$mbedtls_version"
 make SHARED=1 CFLAGS=-fPIC
 sudo make DESTDIR=/usr install
-popd >> /dev/null 2>&1 || exit
+popd >>/dev/null 2>&1 || exit
 sudo ldconfig
 
 rm -rf simple-obfs
 git clone https://github.com/shadowsocks/simple-obfs.git
-pushd simple-obfs >> /dev/null 2>&1 || exit
+pushd simple-obfs >>/dev/null 2>&1 || exit
 git submodule update --init --recursive
 ./autogen.sh
 ./configure --prefix=/usr && make
 sudo make install
-popd >> /dev/null 2>&1 || exit
+popd >>/dev/null 2>&1 || exit
 
 rm -rf shadowsocks-libev
 git clone https://github.com/shadowsocks/shadowsocks-libev.git
-pushd shadowsocks-libev >> /dev/null 2>&1 || exit
+pushd shadowsocks-libev >>/dev/null 2>&1 || exit
 git submodule update --init --recursive
 ./autogen.sh && ./configure --prefix=/usr && make
 sudo make install
 if [ ! -e "/etc/shadowsocks-libev/config.json" ]; then
     [[ ! -d "/etc/shadowsocks-libev/" ]] && sudo mkdir -p /etc/shadowsocks-libev/
     [[ -z "$password" ]] && password=$(_pwgen)
-    cat << EOF > config.json
+    cat <<EOF >config.json
 {
         "server"      : ["::0","0.0.0.0"],
         "server_port" : 15527,
@@ -120,14 +133,14 @@ if [ ! -e "/etc/shadowsocks-libev/config.json" ]; then
         "plugin_opts" : "obfs=http;obfs-host=cloudfront.net"
 }
 EOF
-    sudo mv config.json  /etc/shadowsocks-libev/
+    sudo mv config.json /etc/shadowsocks-libev/
 fi
 sudo cp debian/shadowsocks-libev.default /etc/default/shadowsocks-libev
 if ! service_exists shadowsocks-libev; then
     sudo cp debian/shadowsocks-libev.service "$systemd_service_file"
     # add restart on failure
     if ! grep -q "Restart=on-failure" "$systemd_service_file"; then
-            sudo sed -i 's/^\[Service\]$/[Service]\nRestart=on-failure\nRestartSec=5/' "$systemd_service_file"
+        sudo sed -i 's/^\[Service\]$/[Service]\nRestart=on-failure\nRestartSec=5/' "$systemd_service_file"
     fi
     sudo systemctl enable shadowsocks-libev.service
 fi
@@ -142,5 +155,5 @@ default_if=$(default_interface -6 2>/dev/null)
     fi
 }
 sudo systemctl start shadowsocks-libev
-popd >> /dev/null 2>&1 || exit
-popd >> /dev/null 2>&1 || exit
+popd >>/dev/null 2>&1 || exit
+popd >>/dev/null 2>&1 || exit

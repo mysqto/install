@@ -25,7 +25,7 @@ function error() {
     exit 1
 }
 
-function info () {
+function info() {
     echo -e "\033[1;32m${*}\033[0m"
 }
 
@@ -237,12 +237,11 @@ boot_dir="/boot"
 grub_d="/etc/grub.d"
 grub_custom_file="$grub_d/40_custom"
 
-
 # prepare for dpkg and install necessary packages
 if installed apt; then
     update_dpkg_config && {
         DEBIAN_FRONTEND=noninteractive apt -y update && apt -y --no-install-recommends install systemd pwgen \
-            whois curl cpio openssh-client jq 
+            whois curl cpio openssh-client jq
     } && restore_dpkg_config
 fi
 
@@ -252,20 +251,20 @@ fi
 
 [ -z "$arch" ] && {
     arch=$(dpkg --print-architecture 2>/dev/null) || {
-        case $(uname -m) in
-        x86_64)
-            arch=amd64
-            ;;
-        aarch64)
-            arch=arm64
-            ;;
-        i386)
-            arch=i386
-            ;;
-        *)
-            err 'No "--architecture" specified'
-            ;;
-        esac
+    case $(uname -m) in
+    x86_64)
+        arch=amd64
+        ;;
+    aarch64)
+        arch=arm64
+        ;;
+    i386)
+        arch=i386
+        ;;
+    *)
+        err 'No "--architecture" specified'
+        ;;
+    esac
     }
 }
 
@@ -597,18 +596,18 @@ esac
 
 if [ -z "$password_hash" ]; then
     [ -z "$password" ] && {
-        password="$(pwgen -nsy 32 1 2>/dev/null)" || 
-        password="$(mkpasswd -l 32 -C 16 -s 4 2>/dev/null)" ||
-        password="$(openssl rand -base64 32 2>/dev/null)" ||
-        password="$(busybox mkpasswd -l 32 -C 16 -s 4 2>/dev/null)" ||
-        password="$(tr -dc 'a-zA-Z0-9' </dev/urandom | head -c 32 2>/dev/null)"
+        password="$(pwgen -nsy 32 1 2>/dev/null)" ||
+            password="$(mkpasswd -l 32 -C 16 -s 4 2>/dev/null)" ||
+            password="$(openssl rand -base64 32 2>/dev/null)" ||
+            password="$(busybox mkpasswd -l 32 -C 16 -s 4 2>/dev/null)" ||
+            password="$(tr -dc 'a-zA-Z0-9' </dev/urandom | head -c 32 2>/dev/null)"
     }
 
     salt="$(pwgen -nsy 16 1 2>/dev/null)" ||
-    salt="$(mkpasswd -l 16 -C 8 -s 4 2>/dev/null)" ||
-    salt="$(openssl rand -base64 16 2>/dev/null)" ||
-    salt="$(busybox mkpasswd -l 16 -C 8 -s 4 2>/dev/null)" ||
-    salt="$(tr -dc 'a-zA-Z0-9' </dev/urandom | head -c 16 2>/dev/null)"
+        salt="$(mkpasswd -l 16 -C 8 -s 4 2>/dev/null)" ||
+        salt="$(openssl rand -base64 16 2>/dev/null)" ||
+        salt="$(busybox mkpasswd -l 16 -C 8 -s 4 2>/dev/null)" ||
+        salt="$(tr -dc 'a-zA-Z0-9' </dev/urandom | head -c 16 2>/dev/null)"
 
     password_hash="$(mkpasswd -m sha-512 -S "$salt" "$password" 2>/dev/null)" ||
         password_hash="$(openssl passwd -6 "$password" 2>/dev/null)" ||
@@ -649,10 +648,10 @@ fi
 
 [ -z "$shadowsocks_password" ] && [ "$install_shadowsocks" = true ] && {
     shadowsocks_password="$(pwgen -ns 32 1 2>/dev/null)" ||
-    shadowsocks_password="$(busybox pwgen -ns 32 1 2>/dev/null)" ||
-    shadowsocks_password="$(openssl rand -base64 32 2>/dev/null)" ||
-    shadowsocks_password="$(busybox mkpasswd -l 32 -C 16 2>/dev/null)" ||
-    shadowsocks_password="$(tr -dc 'a-zA-Z0-9' </dev/urandom | head -c 32 2>/dev/null)"
+        shadowsocks_password="$(busybox pwgen -ns 32 1 2>/dev/null)" ||
+        shadowsocks_password="$(openssl rand -base64 32 2>/dev/null)" ||
+        shadowsocks_password="$(busybox mkpasswd -l 32 -C 16 2>/dev/null)" ||
+        shadowsocks_password="$(tr -dc 'a-zA-Z0-9' </dev/urandom | head -c 32 2>/dev/null)"
 }
 
 [ -n "$authorized_keys_url" ] && {
