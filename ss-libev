@@ -138,10 +138,12 @@ fi
 sudo cp debian/shadowsocks-libev.default /etc/default/shadowsocks-libev
 if ! service_exists shadowsocks-libev; then
     sudo cp debian/shadowsocks-libev.service "$systemd_service_file"
-    # add restart on failure
-    if ! grep -q "Restart=on-failure" "$systemd_service_file"; then
-        sudo sed -i 's/^\[Service\]$/[Service]\nRestart=on-failure\nRestartSec=5/' "$systemd_service_file"
-    fi
+    sudo systemctl enable shadowsocks-libev.service
+fi
+
+# add restart on failure
+if ! grep -q "Restart=on-failure" "$systemd_service_file"; then
+    sudo sed -i 's/^\[Service\]$/[Service]\nRestart=on-failure\nRestartSec=5/' "$systemd_service_file"
     sudo systemctl enable shadowsocks-libev.service
 fi
 
