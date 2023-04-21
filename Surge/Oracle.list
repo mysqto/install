@@ -1,0 +1,10 @@
+# NAME: Oracle
+# AUTHOR: mysqto
+# REPO: https://github.com/mysqto/install/blob/gh-pages/Surge
+
+DOMAIN-SUFFIX,oracle.com
+DOMAIN-SUFFIX,oraclecloud.com
+DOMAIN-SUFFIX,oracleinfinity.io
+DOMAIN-KEYWORD,oracle
+DOMAIN-KEYWORD,oci
+DOMAIN-KEYWORD,oraclecloud
