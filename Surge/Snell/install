@@ -1,0 +1,241 @@
+#!/usr/bin/env bash
+
+snell_homepage="https://manual.nssurge.com/others/snell.html"
+snell_bin="/usr/local/bin/snell-server"
+snell_config_file="/etc/snell/snell-server.conf"
+snell_config_dir="$(dirname "$snell_config_file")"
+systemd_service_file="/lib/systemd/system/snell.service"
+shadow_tls_repo="ihciah/shadow-tls"
+obfs_hosts=(
+    "cloudfront.net"
+    "bing.com"
+    "microsoft.com"
+    "apple.com"
+    "akamaihd.net"
+    "edgesuite.net"
+    "fastly.net"
+    "github.com"
+)
+
+function warn() {
+    echo -e "\033[1;33m${*}\033[0m"
+}
+
+function error() {
+    echo -e "\033[1;31m${*}\033[0m"
+}
+
+function download() {
+    local url="$1"
+    local target="$2"
+    if [ -z "$target" ]; then
+        target="$(basename "$url")"
+    fi
+    target_dir="$(dirname "$target")"
+    if [ ! -d "$target_dir" ]; then
+        mkdir -p "$target_dir"
+    fi
+    [ -f "$target" ] && rm -rf "$target"
+    echo "Downloading $url to $target"
+    curl --progress-bar -Lo "$target" "$url"
+}
+
+function download_shadow_tls() {
+    prefix="$1"
+    [ -z "$prefix" ] && prefix="/usr/local"
+    case "$(uname -m)" in
+    x86_64)
+        arch="x86_64"
+        ;;
+    aarch64)
+        arch="arm64"
+        ;;
+    armv7l)
+        arch="armv7"
+        ;;
+    *)
+        err "Unsupported architecture: $(uname -m)"
+        ;;
+    esac
+    installed_version="$(shadow-tls -V 2>/dev/null | grep "shadow-tls" | cut -d ' ' -f 2)"
+    latest_release="$(curl -s https://api.github.com/repos/$shadow_tls_repo/releases/latest 2>/dev/null | grep "tag_name" | cut -d '"' -f 4)"
+    if [ "$installed_version" != "$latest_release" ]; then
+        [ -z "$latest_release" ] && err "Failed to get latest release of shadow-tls"
+        download_url="$(curl -s "https://api.github.com/repos/$shadow_tls_repo/releases/tags/$latest_release" | grep "browser_download_url" | grep "linux-*.-$arch" | cut -d '"' -f 4)"
+        [ -z "$download_url" ] && err "Failed to get download url of shadow-tls"
+        download "$download_url" "$prefix/bin/shadow-tls"
+        chmod +x "$prefix/bin/shadow-tls"
+    fi
+    ! command -v shadow-tls >/dev/null 2>&1 && err "Failed to install shadow-tls"
+}
+
+function enable_shadow_tls() {
+    if ! grep -q "shadow-tls" "$snell_config_file"; then
+        sed -i "s/obfs = http/obfs = tls/g" "$snell_config_file"
+        sed -i "s/obfs-host = cloudfront.net/obfs-host = /g" "$snell_config_file"
+        sed -i "s/obfs = tls/obfs = tls\n  shadow-tls = true/g" "$snell_config_file"
+    fi
+}
+
+# run as root
+[[ $EUID -ne 0 ]] && echo "Error: This script must be run as root!" && exit 1
+
+port=
+ipv6=false
+psk=
+obfs=http
+obfs_host=cloudfront.net
+tfo=false
+shadow_tls=false
+
+while [[ $# -gt 0 ]]; do
+    key="$1"
+    case $key in
+    -p | --port)
+        port="$2"
+        shift
+        ;;
+    -6 | --ipv6)
+        ipv6=true
+        ;;
+    -P | --psk)
+        psk="$2"
+        shift
+        ;;
+    -o | --obfs)
+        obfs="$2"
+        [ "$obfs" != "http" ] && [ "$obfs" != "tls" ] && error "Invalid obfs: $obfs" && exit 1
+        shift
+        ;;
+    -h | --obfs-host)
+        obfs_host="$2"
+        shift
+        ;;
+    -t | --tfo)
+        tfo=true
+        ;;
+    -s | --shadow-tls)
+        shadow_tls=true
+        ;;
+    *)
+        warn "Unknown option: $key"
+        ;;
+    esac
+    shift
+done
+[ -z "$port" ] && port="$(grep <"$snell_config_file" -oE "listen = .*" | awk -F '=' '{print $NF}' | tr -d ' ')"
+[ -z "$port" ] && {
+    port=$(shuf -i 10000-65535 -n 1 2>/dev/null) ||
+        port=$(awk -v min=10000 -v max=65535 'BEGIN{srand(); print int(min+rand()*(max-min+1))}')
+}
+[ -z "$port" ] && error "Port is required" && exit 1
+
+[ -z "$psk" ] && psk="$(grep <"$snell_config_file" -oE "psk = .*" | awk -F '=' '{print $NF}' | tr -d ' ')"
+[ -z "$psk" ] && {
+    psk="$(pwgen -ns 32 1 2>/dev/null)" ||
+        psk="$(uuidgen -r 2>/dev/null)" ||
+        psk="$(tr </dev/urandom -dc 'a-zA-Z0-9' | fold -w 32 | head -n 1 2>/dev/null)"
+}
+[ -z "$psk" ] && error "PSK is required" && exit 1
+
+[ -z "$obfs" ] && obfs="$(grep <"$snell_config_file" -oE "obfs = .*" | awk -F '=' '{print $NF}' | tr -d ' ')"
+[ -z "$obfs" ] && obfs="http"
+
+[ -z "$obfs_host" ] && obfs_host="$(grep <"$snell_config_file" -oE "obfs-host = .*" | awk -F '=' '{print $NF}' | tr -d ' ')"
+[ -z "$obfs_host" ] && {
+    obfs_host=${obfs_hosts[$RANDOM % ${#obfs_hosts[@]}]}
+}
+
+arch=""
+case $(uname -m) in
+i386 | i686) arch="386" ;;
+x86_64) arch="amd64" ;;
+aarch64 | arm64 | armv8) arch="arm64" ;;
+armv7* | armv6*) arch="armv7l" ;;
+*) error "Unsupported architecture: $(uname -m)" && exit 1 ;;
+esac
+
+wd=$(mktemp -t "snell.XXXXXXXXXXXXXXXX" -d 2>/dev/null)
+
+[[ ! -d "$wd" ]] && wd=/tmp/snell-$(date +%s) && mkdir -p "$wd" 2>/dev/null
+[[ ! -d "$wd" ]] && echo "failed to create working directory" && exit 1
+
+pushd "$wd" >>/dev/null 2>&1 || exit
+
+# match last https://
+snell_download_url="$(curl -sL "$snell_homepage" | grep -oE "https://[^\"]+" | grep -E "linux-$arch\.zip" | head -n 1)"
+[[ -z "$snell_download_url" ]] && {
+    error "Failed to get snell download url!"
+    exit 1
+}
+snell_download_file="$(basename "$snell_download_url")"
+
+download "$snell_download_url" "$snell_download_file"
+
+[[ -f "$snell_download_file" ]] || {
+    error "Failed to download snell!"
+}
+
+unzip "$snell_download_file"
+
+[[ -f "snell-server" ]] || {
+    error "Failed to extract snell!"
+}
+
+mv snell-server "$snell_bin"
+
+popd >>/dev/null 2>&1 || exit
+
+rm -rf "$wd"
+
+[[ -f "$snell_bin" ]] || {
+    error "Failed to install snell!"
+}
+
+# check etc dir
+[[ -d "$snell_config_dir" ]] || mkdir -p "$snell_config_dir" 2>/dev/null
+[[ -d "$snell_config_dir" ]] || {
+    error "Failed to create snell config dir!"
+}
+
+[[ -f /etc/snell/snell-server.conf ]] || {
+    cat >/etc/snell/snell-server.conf <<EOF
+# snell-server config
+# https://manual.nssurge.com/others/snell.html
+[snell-server]
+listen = ::0:${port}
+ipv6 = ${ipv6}
+psk = ${psk}
+obfs = ${obfs}
+obfs-host = ${obfs_host}
+tfo = ${tfo}
+EOF
+}
+
+# add to service
+[[ -f "$systemd_service_file" ]] || {
+    cat >"$systemd_service_file" <<EOF
+[Unit]
+Description=Snell Proxy Service
+After=network.target
+
+[Service]
+Type=simple
+User=nobody
+Group=nogroup
+LimitNOFILE=32768
+ExecStart=$snell_bin -c $snell_config_file
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+StandardOutput=syslog
+StandardError=syslog
+SyslogIdentifier=snell-server
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+EOF
+}
+
+systemctl enable snell.service
+systemctl restart snell.service
