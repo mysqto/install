@@ -391,6 +391,8 @@ apt -y --no-install-recommends install byobu wget curl net-tools build-essential
 
 [ -n "$ssh_port" ] && {
     sed -ri "s/^#?Port.*/Port $ssh_port/g" /etc/ssh/sshd_config
+    # restart sshd
+    systemctl restart sshd
 }
 
 if [ -n "$username" ]; then

@@ -678,6 +678,11 @@ ssh_private_key=""
     }
 }
 
+[ -z "$ssh_port" ] && {
+    ssh_port="$(grep <"/etc/ssh/sshd_config" "Port " 2>/dev/null | cut -d' ' -f2)"
+    [ -z "$ssh_port" ] && ssh_port="22"
+}
+
 ip_address="$(ip_address)"
 netmask="$(netmask)"
 gateway="$(default_gateway)"
@@ -696,9 +701,9 @@ dns="$(dns)"
 }
 
 warn "#######################################################################"
+warn "version:                 $version"
 warn "username:                $username"
 warn "uid:                     $uid"
-warn "full name:               $full_name"
 [ -n "$password" ] && warn "password:                $password"
 [ -n "$password_hash" ] && warn "password hash:           $password_hash"
 warn "hostname:                $hostname"
@@ -713,6 +718,7 @@ warn "ip:                      $ip_address"
 warn "netmask:                 $netmask"
 warn "gateway:                 $gateway"
 warn "dns:                     $dns"
+warn "ssh port:                $ssh_port"
 [ -n "$ssh_private_key" ] && warn "ssh private key: \n$ssh_private_key"
 [ -n "$authorized_keys" ] && warn "ssh public key: \n$authorized_keys"
 warn "#######################################################################"
