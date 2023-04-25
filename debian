@@ -41,7 +41,9 @@ function download() {
     fi
     [ -f "$target" ] && rm -rf "$target"
     echo "Downloading $url to $target"
-    curl --progress-bar -Lo "$target" "$url"
+    if ! curl --progress-bar -sf -Lo "$target" "$url"; then
+        error "Failed to download $url"
+    fi
 }
 
 function cidr_to_netmask() {
@@ -223,6 +225,7 @@ packages="net-tools curl wget git tig build-essential vim"
 # extra packages config
 install_shadowsocks=false
 shadowsocks_password=
+shadowsocks_config="/etc/shadowsocks-libev/config.json"
 install_socat=false
 ssh_port=
 install_go=false
@@ -233,7 +236,17 @@ use_backports=false
 byobu=false
 sudo_without_password=false
 
-shadowsocks_config="/etc/shadowsocks-libev/config.json"
+# Shadow-TLS related
+install_shadow_tls=
+snell_port=
+snell_psk=
+shadow_tls_port=
+shadow_tls_password=
+shadow_tls_obfs_host=
+snell_version=4
+snell_config_file="/etc/snell/snell-server.conf"
+shadow_tls_default_file="/etc/default/shadow-tls"
+
 boot_dir="/boot"
 grub_d="/etc/grub.d"
 grub_custom_file="$grub_d/40_custom"
@@ -252,20 +265,20 @@ fi
 
 [ -z "$arch" ] && {
     arch=$(dpkg --print-architecture 2>/dev/null) || {
-    case $(uname -m) in
-    x86_64)
-        arch=amd64
-        ;;
-    aarch64)
-        arch=arm64
-        ;;
-    i386)
-        arch=i386
-        ;;
-    *)
-        err 'No "--architecture" specified'
-        ;;
-    esac
+        case $(uname -m) in
+        x86_64)
+            arch=amd64
+            ;;
+        aarch64)
+            arch=arm64
+            ;;
+        i386)
+            arch=i386
+            ;;
+        *)
+            err 'No "--architecture" specified'
+            ;;
+        esac
     }
 }
 
@@ -427,6 +440,7 @@ while [ $# -gt 0 ]; do
     --provision)
         version=sid
         install_shadowsocks=true
+        install_shadow_tls=true
         install_go=true
         install_im=true
         install_fish=true
@@ -442,6 +456,30 @@ while [ $# -gt 0 ]; do
         ;;
     -aku | --authorized-keys-url)
         authorized_keys_url="$2"
+        shift 2
+        ;;
+    -stls | --shadow-tls)
+        install_shadow_tls=true
+        shift
+        ;;
+    --shadow-tls-port)
+        shadow_tls_port="$2"
+        shift 2
+        ;;
+    --shadow-tls-password)
+        shadow_tls_password="$2"
+        shift 2
+        ;;
+    --snell-port)
+        snell_port="$2"
+        shift 2
+        ;;
+    --snell-psk)
+        snell_psk="$2"
+        shift 2
+        ;;
+    --shadow-tls-obfs)
+        shadow_tls_obfs_host="$2"
         shift 2
         ;;
     -ssp | --shadowsocks-password)
@@ -551,7 +589,7 @@ esac
     memory_size=$(awk '/MemTotal/ {print $2}' /proc/meminfo 2>/dev/null)
     [ -n "$memory_size" ] || force_lowmem=0
     [ "$memory_size" -le "524288" ] && {
-        warn "memory size is less than 512MB, force to use low memory mode & cloud kernel"
+        warn "memory size <= 512MB, force to use low memory mode & cloud kernel"
         force_lowmem=1
         cloud_kernel=true
         bpo_kernel=true
@@ -659,6 +697,46 @@ fi
         shadowsocks_password="$(tr -dc 'a-zA-Z0-9' </dev/urandom | head -c 32 2>/dev/null)"
 }
 
+[ "$install_shadow_tls" = true ] && {
+    [ -z "$snell_port" ] && snell_port="$(grep 2>/dev/null <"$snell_config_file" -oE "listen = .*" | awk -F ':' '{print $NF}' | tr -d ' ')"
+    [ -z "$snell_port" ] && {
+        snell_port=$(shuf -i 10000-65535 -n 1 2>/dev/null) ||
+            snell_port=$(awk -v min=10000 -v max=65535 'BEGIN{srand(); print int(min+rand()*(max-min+1))}')
+    }
+    [ -z "$snell_port" ] && error "Snell port is required with --shadow-tls, please re-run the script with --snell-port option"
+
+    [ -z "$snell_psk" ] && snell_psk="$(grep 2>/dev/null <"$snell_config_file" -oE "psk = .*" | awk -F '=' '{print $NF}' | tr -d ' ')"
+    [ -z "$snell_psk" ] && {
+        snell_psk="$(pwgen -ns 32 1 2>/dev/null)" ||
+            snell_psk="$(uuidgen -r 2>/dev/null)" ||
+            snell_psk="$(tr </dev/urandom -dc 'a-zA-Z0-9' | fold -w 32 | head -n 1 2>/dev/null)"
+    }
+    [ -z "$snell_psk" ] && error "Snell PSK is required with --shadow-tls, please re-run the script with --snell-psk option"
+
+    shadow_tls_password=$(grep 2>/dev/null <"$shadow_tls_default_file" -oE "shadow_tls_password=.*" | awk -F '=' '{print $NF}' | tr -d ' ')
+    [ -z "$shadow_tls_password" ] && {
+        shadow_tls_password="$(pwgen -ns 32 1 2>/dev/null)" ||
+            shadow_tls_password="$(uuidgen -r 2>/dev/null)" ||
+            shadow_tls_password="$(tr </dev/urandom -dc 'a-zA-Z0-9' | fold -w 32 | head -n 1 2>/dev/null)"
+    }
+
+    shadow_tls_port=$(grep 2>/dev/null <"$shadow_tls_default_file" -oE "shadow_tls_port=.*" | awk -F '=' '{print $NF}' | tr -d ' ')
+    # should not use snell port
+    while [[ -z "$shadow_tls_port" ]] || [[ "$shadow_tls_port" -eq "$snell_port" ]]; do
+        shadow_tls_port=$(shuf -i 10000-65535 -n 1 2>/dev/null) ||
+            shadow_tls_port=$(awk -v min=10000 -v max=65535 'BEGIN{srand(); print int(min+rand()*(max-min+1))}')
+    done
+    [ -z "$shadow_tls_port" ] && error "Shadow TLS port is required with --shadow-tls, please re-run the script with --shadow-tls-port option"
+
+    [ -z "$shadow_tls_obfs_host" ] && {
+        shadow_tls_obfs_host="$(grep 2>/dev/null <"$snell_config_file" -oE "obfs-host = .*" | awk -F '=' '{print $NF}' | tr -d ' ')" ||
+            shadow_tls_obfs_host="$(grep 2>/dev/null <"$shadow_tls_default_file" -oE "obfs_host=.*" | awk -F '=' '{print $NF}' | tr -d ' ')"
+    }
+    [ -z "$shadow_tls_obfs_host" ] && error "Shadow TLS obfs host is required with --shadow-tls, please re-run the script with --shadow-tls-obfs-host option"
+    [ -z "$snell_version" ] && snell_version="$(grep 2>/dev/null <"$snell_config_file" -oE "version = .*" | awk -F '=' '{print $NF}' | tr -d ' ')"
+    [ -z "$snell_version" ] && snell_version=4
+}
+
 [ -n "$authorized_keys_url" ] && {
     authorized_keys="$(curl -sL "$authorized_keys_url" 2>/dev/null)" ||
         authorized_keys="$(wget -qO- "$authorized_keys_url" 2>/dev/null)" ||
@@ -721,6 +799,14 @@ warn "dns:                     $dns"
 warn "ssh port:                $ssh_port"
 [ -n "$ssh_private_key" ] && warn "ssh private key: \n$ssh_private_key"
 [ -n "$authorized_keys" ] && warn "ssh public key: \n$authorized_keys"
+warn "install Shadow TLS       $install_shadow_tls"
+[ "$install_shadow_tls" = true ] && {
+    warn "snell port:              $snell_port"
+    warn "snell psk:               $snell_psk"
+    warn "shadow-tls port:         $shadow_tls_port"
+    warn "shadow-tls password:     $shadow_tls_password"
+    warn "shadow-tls obfs host:    $shadow_tls_obfs_host"
+}
 warn "#######################################################################"
 
 preseed_file="$wd/preseed.cfg"
@@ -744,13 +830,13 @@ d-i netcfg/dhcpv6_timeout string 60
 EOF
 
 if [ "$static_ip" = true ]; then
-# Static IP configuration.
+    # Static IP configuration.
     cat >>"$preseed_file" <<EOF
 # Static IP configuration.
 d-i netcfg/disable_autoconfig boolean true
 EOF
 else
-# DHCP configuration.
+    # DHCP configuration.
     cat >>"$preseed_file" <<EOF
 # DHCP configuration.
 d-i netcfg/dhcp_failed note
@@ -1030,6 +1116,14 @@ fi
 [ "$use_backports" = true ] && late_command="$late_command --backports"
 [ "$byobu" = true ] && late_command="$late_command --byobu"
 [ "$sudo_without_password" = true ] && late_command="$late_command --sudo-without-password"
+[ "$install_shadow_tls" = true ] && {
+    late_command="$late_command --shadow-tls"
+    late_command="$late_command --shadow-tls-password \"$shadow_tls_password\""
+    late_command="$late_command --shadow-tls-port \"$shadow_tls_port\""
+    late_command="$late_command --shadow-tls-obfs \"$shadow_tls_obfs_host\""
+    late_command="$late_command --snell-port \"$snell_port\""
+    late_command="$late_command --snell-psk \"$snell_psk\""
+}
 
 [ -n "$late_command" ] && {
     cat >>"$preseed_file" <<EOF
@@ -1057,7 +1151,8 @@ download "$base_url/initrd.gz" initrd.gz
 [ ! -f "initrd.gz" ] && error "Failed to download $base_url/initrd.gz"
 [ "$firmware" = true ] && [ ! -f "firmware.cpio.gz" ] && error "Failed to download $firmware_url"
 
-gzip -d initrd.gz
+gzip -d initrd.gz 2>/dev/null || error "Failed to decompress initrd.gz"
+[ ! -f initrd ] && error "Failed to decompress initrd.gz"
 # cpio reads a list of file names from the standard input
 echo preseed.cfg | cpio -o -H newc -A -F initrd
 gzip -1 initrd

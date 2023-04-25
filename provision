@@ -258,16 +258,6 @@ if ((EUID != 0)); then
     exit
 fi
 
-# this function is borrowed from https://stackoverflow.com/a/30948155
-function _pwgen() {
-    chars='!$%^&-()_+='
-    {
-        LC_ALL=C grep </dev/urandom -ao '[A-Za-z0-9]' |
-            head -n$((RANDOM % 8 + 9))
-        echo ${chars:$((RANDOM % ${#chars})):1} # Random special char.
-    } | shuf | tr -d '\n'
-}
-
 username=""
 ss_password=""
 ssh_port=
@@ -285,6 +275,17 @@ enable_socat=false
 enable_byobu=false
 enable_backports=false
 sudo_without_password=false
+
+# Shadow-TLS related
+install_shadow_tls=false
+snell_port=
+snell_psk=
+shadow_tls_port=
+shadow_tls_password=
+shadow_tls_obfs_host=
+snell_version=4
+snell_config_file="/etc/snell/snell-server.conf"
+shadow_tls_default_file="/etc/default/shadow-tls"
 
 distro="$(lsb_release -is 2>/dev/null)"
 
@@ -352,6 +353,30 @@ while [ $# -gt 0 ]; do
         enable_byobu=true
         shift
         ;;
+    -stls | --shadow-tls)
+        install_shadow_tls=true
+        shift
+        ;;
+    --shadow-tls-port)
+        shadow_tls_port="$2"
+        shift 2
+        ;;
+    --shadow-tls-password)
+        shadow_tls_password="$2"
+        shift 2
+        ;;
+    --snell-port)
+        snell_port="$2"
+        shift 2
+        ;;
+    --snell-psk)
+        snell_psk="$2"
+        shift 2
+        ;;
+    --shadow-tls-obfs)
+        shadow_tls_obfs_host="$2"
+        shift 2
+        ;;
     *)
         POSITIONAL+=("$1")
         shift
@@ -381,8 +406,55 @@ apt -y --no-install-recommends install byobu wget curl net-tools build-essential
 [ "$enable_socat" = true ] && _enable_socat
 [ "$enable_shadowsocks" = true ] && {
     [ -f "shadowsocks_config" ] && ss_password="$(grep <"$shadowsocks_config" "password" 2>/dev/null | cut -d'"' -f4)"
-    [ -z "$ss_password" ] && ss_password="$(_pwgen)"
+    [ -z "$ss_password" ] && {
+        ss_password=$(openssl rand -base64 32 2>/dev/null) ||
+            ss_password=$(tr -dc 'a-zA-Z0-9' <"/dev/urandom" | fold -w 32 | head -n 1) ||
+            ss_password=$(cat /proc/sys/kernel/random/uuid 2>/dev/null)
+    }
     curl -sL install.lol/ss-libev | bash -s -- -p "$ss_password"
+}
+
+[ "$install_shadow_tls" = true ] && {
+    [ -z "$snell_port" ] && snell_port="$(grep 2>/dev/null <"$snell_config_file" -oE "listen = .*" | awk -F ':' '{print $NF}' | tr -d ' ')"
+    [ -z "$snell_port" ] && {
+        snell_port=$(shuf -i 10000-65535 -n 1 2>/dev/null) ||
+            snell_port=$(awk -v min=10000 -v max=65535 'BEGIN{srand(); print int(min+rand()*(max-min+1))}')
+    }
+    [ -z "$snell_port" ] && error "Snell port is required with --shadow-tls, please re-run the script with --snell-port option"
+
+    [ -z "$snell_psk" ] && snell_psk="$(grep 2>/dev/null <"$snell_config_file" -oE "psk = .*" | awk -F '=' '{print $NF}' | tr -d ' ')"
+    [ -z "$snell_psk" ] && {
+        snell_psk="$(pwgen -ns 32 1 2>/dev/null)" ||
+            snell_psk="$(uuidgen -r 2>/dev/null)" ||
+            snell_psk="$(tr </dev/urandom -dc 'a-zA-Z0-9' | fold -w 32 | head -n 1 2>/dev/null)"
+    }
+    [ -z "$snell_psk" ] && error "Snell PSK is required with --shadow-tls, please re-run the script with --snell-psk option"
+
+    shadow_tls_password=$(grep 2>/dev/null <"$shadow_tls_default_file" -oE "shadow_tls_password=.*" | awk -F '=' '{print $NF}' | tr -d ' ')
+    [ -z "$shadow_tls_password" ] && {
+        shadow_tls_password="$(pwgen -ns 32 1 2>/dev/null)" ||
+            shadow_tls_password="$(uuidgen -r 2>/dev/null)" ||
+            shadow_tls_password="$(tr </dev/urandom -dc 'a-zA-Z0-9' | fold -w 32 | head -n 1 2>/dev/null)"
+    }
+
+    shadow_tls_port=$(grep 2>/dev/null <"$shadow_tls_default_file" -oE "shadow_tls_port=.*" | awk -F '=' '{print $NF}' | tr -d ' ')
+    # should not use snell port
+    while [[ -z "$shadow_tls_port" ]] || [[ "$shadow_tls_port" == "$snell_port" ]]; do
+        shadow_tls_port=$(shuf -i 10000-65535 -n 1 2>/dev/null) ||
+            shadow_tls_port=$(awk -v min=10000 -v max=65535 'BEGIN{srand(); print int(min+rand()*(max-min+1))}')
+    done
+    [ -z "$shadow_tls_port" ] && error "Shadow TLS port is required with --shadow-tls, please re-run the script with --shadow-tls-port option"
+
+    [ -z "$shadow_tls_obfs_host" ] && {
+        shadow_tls_obfs_host="$(grep 2>/dev/null <"$snell_config_file" -oE "obfs-host = .*" | awk -F '=' '{print $NF}' | tr -d ' ')" ||
+            shadow_tls_obfs_host="$(grep 2>/dev/null <"$shadow_tls_default_file" -oE "obfs_host=.*" | awk -F '=' '{print $NF}' | tr -d ' ')"
+    }
+    [ -z "$shadow_tls_obfs_host" ] && error "Shadow TLS obfs host is required with --shadow-tls, please re-run the script with --shadow-tls-obfs-host option"
+    [ -z "$snell_version" ] && snell_version="$(grep 2>/dev/null <"$snell_config_file" -oE "version = .*" | awk -F '=' '{print $NF}' | tr -d ' ')"
+    [ -z "$snell_version" ] && snell_version=4
+
+    curl -sL install.lol/Surge/Snell/install | bash -s -- --snell-port "$snell_port" --snell-psk "$snell_psk" --snell-version "$snell_version" \
+        --shadow-tls --shadow-tls-password "$shadow_tls_password" --shadow-tls-port "$shadow_tls_port" --obfs-host "$shadow_tls_obfs_host"
 }
 
 #enable bbr
