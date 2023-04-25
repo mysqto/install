@@ -98,9 +98,10 @@ function fix_grub() {
     disk=$(get_disk)
     [[ -z "$disk" ]] && warn "failed to get the disk" && return
     [[ "$disk" =~ ^/dev/ ]] || disk="/dev/$disk"
+    local arch=
     arch="$(uname -m)" || err "failed to get the architecture"
     grub_target="x86_64-efi"
-    [[ "$arch" == "arm64" ]] && grub_target="arm64-efi"
+    [[ "$arch" == "aarch64" ]] && grub_target="arm64-efi"
     grub-install "$disk" --target="$grub_target" --efi-directory=/boot/efi --boot-directory=/boot --recheck
     update-grub
 }
@@ -133,6 +134,11 @@ function upgrade() {
 
 function update_ss() {
     curl -sL install.lol/ss-libev | bash -s --
+}
+
+function shadow_tls() {
+    curl -sL install.lol/Surge/Snell/install | bash -s -- --shadow-tls
+    #curl -sL install.lol/Surge/Snell/install -o /tmp/shadow-tls && chmod +x /tmp/shadow-tls && /tmp/shadow-tls && rm /tmp/shadow-tls
 }
 
 function install_speedtest() {
@@ -346,6 +352,7 @@ _enable_lookbusy=false
 _speedtest=false
 _distro=false
 _fix_grub=false
+_shadow_tls=false
 username=""
 _host=""
 
@@ -364,7 +371,7 @@ function usage() {
     echo "  -uu, --update,                update the server"
     echo "  -uuu, --ugrade,               upgrade the server if needed"
     echo "  -ui, --self-update,           update $(basename "$0")"
-    echo "  -uss, --update-ss,            update shadowsocks-libev"
+    echo "  -uss, --update-shadowsocks,   update shadowsocks-libev"
     echo "  -ro, --remove-old-kernels,    remove old kernels"
     echo "  -a, --auto,                   auto update or upgrade the server"
     echo "  -rr, --reset,                 reset the server, need -u to specify the username"
@@ -372,6 +379,8 @@ function usage() {
     echo "  -rru, --reset-with-ubuntu,    reset the server with ubuntu, need -u to specify the username"
     echo "  -r, --reboot,                 reboot the server"
     echo "  -s, --midea-unlock-test,      stream media unlock test"
+    echo "  -ss, --shadowsocks,           enable shadowsocks"
+    echo "  -stls, --shadow-tls,          enable snell and shadow-tls"
     echo "  -st, --speedtest,             run speedtest"
     echo "  -p, --provision,              provision the server, need -u to specify the username"
     echo "  -u, --username,               specify the username when reseting or provisioning the server"
@@ -402,8 +411,12 @@ while [[ $# -gt 0 ]]; do
         _self_update=true
         shift 1
         ;;
-    -uss | --update-ss)
+    -ss | -uss | --shadowsocks | --update-shadowsocks)
         _update_ss=true
+        shift 1
+        ;;
+    -stls | --shadow-tls)
+        _shadow_tls=true
         shift 1
         ;;
     -ro | --remove-old-kernels)
@@ -490,6 +503,8 @@ action() {
         upgrade
     elif [[ "$_update_ss" == true ]]; then
         update_ss
+    elif [[ "$_shadow_tls" == true ]]; then
+        shadow_tls
     elif [[ "$_self_update" == true ]]; then
         self_update
     elif [[ "$_remove_old_kernels" == true ]]; then
