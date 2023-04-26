@@ -65,24 +65,24 @@ function installed() {
 function updateable() {
     apt-get update >/dev/null 2>&1
     available=$(apt list --upgradable 2>/dev/null | grep -c upgradable)
-    [[ "$available" -gt 0 ]] || return 1
+    [ "$available" -gt 0 ] || return 1
 }
 
 function updatable_without_kernel() {
     apt-get update >/dev/null 2>&1
     available=$(apt list --upgradable 2>/dev/null | grep -v linux-image | grep -c upgradable)
-    [[ "$available" -gt 0 ]] || return 1
+    [ "$available" -gt 0 ] || return 1
 }
 
 function kernal_updateable() {
     apt-get update >/dev/null 2>&1
     available=$(apt list --upgradable 2>/dev/null | grep upgradable | grep -c linux-image)
-    [[ "$available" -gt 0 ]] || return 1
+    [ "$available" -gt 0 ] || return 1
 }
 
 function remove_old_kernels() {
     old_kernels=$(dpkg -l "linux-"{image,headers}"-*" 2>/dev/null | awk '/^ii/{print $2}' | grep -E '[0-9]+\.[0-9]+\.[0-9]+' | grep -v "$(uname -r | cut -d- -f-2)")
-    [[ -z "$old_kernels" ]] && echo "no old kernels to remove" && return 0
+    [ -z "$old_kernels" ] && echo "no old kernels to remove" && return 0
     for kernel in $old_kernels; do
         apt -y purge "$kernel"
     done
@@ -91,17 +91,17 @@ function remove_old_kernels() {
 
 function fix_grub() {
     dist="$(distro)"
-    [[ "$dist" != "debian" ]] && warn "not an Debian server, no need to fix grub" && return 0
+    [ "$dist" != "debian" ] && warn "not an Debian server, no need to fix grub" && return 0
     [ ! -d /sys/firmware/efi ] && warn "not an EFI system, no need to fix grub" && return 0
 
     # re-install grub to fix the grub menu
     disk=$(get_disk)
-    [[ -z "$disk" ]] && warn "failed to get the disk" && return
+    [ -z "$disk" ] && warn "failed to get the disk" && return
     [[ "$disk" =~ ^/dev/ ]] || disk="/dev/$disk"
     local arch=
     arch="$(uname -m)" || err "failed to get the architecture"
     grub_target="x86_64-efi"
-    [[ "$arch" == "aarch64" ]] && grub_target="arm64-efi"
+    [ "$arch" == "aarch64" ] && grub_target="arm64-efi"
     grub-install "$disk" --target="$grub_target" --efi-directory=/boot/efi --boot-directory=/boot --recheck
     update-grub
 }
@@ -115,20 +115,20 @@ function update() {
     elif updateable; then
         echo "update available, update the server"
         apt -y upgrade
-        [[ -f "/var/run/reboot-required" ]] && echo "reboot required" && reboot
+        [ -f "/var/run/reboot-required" ] && echo "reboot required" && reboot
     fi
 }
 
 function upgrade() {
     dist="$(distro)"
-    [[ "$dist" != "Ubuntu" ]] && echo "not an Ubuntu server, no need to upgrade" && return 0
+    [ "$dist" != "Ubuntu" ] && echo "not an Ubuntu server, no need to upgrade" && return 0
     current_version=$(lsb_release -r | awk '{print $2}')
-    [[ "$current_version" == "22.04" ]] && echo "already on 22.04, no need to upgrade" && return 0
+    [ "$current_version" == "22.04" ] && echo "already on 22.04, no need to upgrade" && return 0
     echo "upgrading the server from $current_version to 22.04"
-    [[ -f /etc/apt/apt.conf.d/local ]] && cp /etc/apt/apt.conf.d/local /etc/apt/apt.conf.d/local.bak
+    [ -f /etc/apt/apt.conf.d/local ] && cp /etc/apt/apt.conf.d/local /etc/apt/apt.conf.d/local.bak
     echo 'DPkg::options { "--force-confdef"; "--force-confold"; }' >/etc/apt/apt.conf.d/local
     DEBIAN_FRONTEND=noninteractive /usr/bin/do-release-upgrade -d -f DistUpgradeViewNonInteractive
-    [[ -f /etc/apt/apt.conf.d/local.bak ]] && cp /etc/apt/apt.conf.d/local.bak /etc/apt/apt.conf.d/local
+    [ -f /etc/apt/apt.conf.d/local.bak ] && cp /etc/apt/apt.conf.d/local.bak /etc/apt/apt.conf.d/local
     reboot
 }
 
@@ -146,21 +146,21 @@ function install_speedtest() {
     manpath=$prefix/share/man/man5
     pkg_info_url='https://raw.githubusercontent.com/teamookla/homebrew-speedtest/master/speedtest.rb'
     pkg_version="$(curl -sL "$pkg_info_url" | grep 'version \".*\"' | cut -d'"' -f2)"
-    [[ -z "$pkg_version" ]] && echo "failed to get the latest speedtest-cli versuib" && return 1
+    [ -z "$pkg_version" ] && echo "failed to get the latest speedtest-cli versuib" && return 1
     pkg_url="https://install.speedtest.net/app/cli/ookla-speedtest-$pkg_version-linux-$(uname -m).tgz"
     pkg_url=${pkg_url//\\/}
     pkg_name=$(basename "$pkg_url")
     tmp_dir=$(mktemp -d -t speedtest-cli-XXXXXXXXXX 2>/dev/null)
-    [[ -z "$tmp_dir" ]] && echo "failed to create a temp dir" && return 1
+    [ -z "$tmp_dir" ] && echo "failed to create a temp dir" && return 1
     target_pkg="$tmp_dir/$pkg_name"
     curl -sL "$pkg_url" -o "$target_pkg"
-    [[ ! -f "$target_pkg" ]] && echo "failed to download the package" && return 1
+    [ ! -f "$target_pkg" ] && echo "failed to download the package" && return 1
     tar -xzf "$target_pkg" -C "$tmp_dir"
-    [[ ! -f "$tmp_dir/speedtest" ]] && echo "failed to extract the package" && return 1
+    [ ! -f "$tmp_dir/speedtest" ] && echo "failed to extract the package" && return 1
     mv "$tmp_dir/speedtest" $prefix/bin/speedtest
     chmod +x $prefix/bin/speedtest
-    [[ ! -d "$manpath" ]] && mkdir -p "$manpath"
-    [[ -d "$manpath" ]] && mv "$tmp_dir/speedtest.5" "$manpath"
+    [ ! -d "$manpath" ] && mkdir -p "$manpath"
+    [ -d "$manpath" ] && mv "$tmp_dir/speedtest.5" "$manpath"
     rm -rf "$tmp_dir"
     echo "speedtest-cli installed"
 }
@@ -181,23 +181,23 @@ function run_speedtest() {
 
 function install_pyenv() {
     username="$1"
-    [[ -z "$username" ]] && echo "username is required when installing pyenv" && return 1
+    [ -z "$username" ] && echo "username is required when installing pyenv" && return 1
     su - "$username" -c "rm -rf ~/.pyenv && curl -sL https://pyenv.run | bash"
     su - "$username" -c "curl -sL https://git.io/fisher | source && fisher install jorgebucaran/fisher && fisher install oh-my-fish/plugin-pyenv"
 }
 
 function self_update() {
     new_script=$(curl -sL install.lol/im)
-    [[ -z "$new_script" ]] && echo "failed to get the latest script" && return 1
+    [ -z "$new_script" ] && echo "failed to get the latest script" && return 1
     script_path=$(readlink -f "$0")
-    [[ ! -f "$script_path" ]] && echo "failed to get the script path" && return 1
+    [ ! -f "$script_path" ] && echo "failed to get the script path" && return 1
     (sleep 1 && cat <<<"$new_script" >"$script_path" && chmod +x "$script_path" && echo "script updated, please run it again") &
     echo "im is updating, please wait"
 }
 
 function provision() {
     local user="$1"
-    [[ -z "$user" ]] && echo "username is required when provisioning the server" && return 1
+    [ -z "$user" ] && echo "username is required when provisioning the server" && return 1
     curl -sL install.lol/provision | bash -s -- -u "$user" -s
 }
 
@@ -205,7 +205,7 @@ function reset() {
     [ "$#" != 2 ] && echo "usage: $0 reset <username>" && return 1
     local system="$1"
     local user="$2"
-    [[ -z "$user" ]] && echo "username is required when reseting the server" && return 1
+    [ -z "$user" ] && echo "username is required when reseting the server" && return 1
     case "$system" in
     ubuntu)
         curl -sL install.lol/ubuntu | bash -s -- -u "$user"
@@ -223,7 +223,7 @@ function reboot() {
 
 function do_all() {
     current_version=$(lsb_release -r | awk '{print $2}')
-    if [[ "$current_version" == "22.04" ]]; then
+    if [ "$current_version" == "22.04" ]; then
         update
     else
         echo upgraading server from "$current_version" to 22.04
@@ -238,7 +238,7 @@ function cleanup() {
 
 function netflix_test() {
     wd=$(mktemp -d -t netflix-XXXXXXXXXXXXXXXX 2>/dev/null)
-    [[ -z "$wd" ]] && echo "failed to create a temp dir" && return 1
+    [ -z "$wd" ] && echo "failed to create a temp dir" && return 1
     pushd "$wd" >/dev/null 2>&1 || return 1
     rm -rf netflix-verify && git clone https://github.com/sjlleo/netflix-verify.git >/dev/null 2>&1 &&
         cd netflix-verify && go run main.go && cd .. && rm -rf netflix-verify
@@ -248,7 +248,7 @@ function netflix_test() {
 
 function midea_unlock_test() {
     wd=$(mktemp -d -t midea-XXXXXXXXXXXXXXXX 2>/dev/null)
-    [[ -z "$wd" ]] && echo "failed to create a temp dir" && return 1
+    [ -z "$wd" ] && echo "failed to create a temp dir" && return 1
     pushd "$wd" >/dev/null 2>&1 || return 1
     # TODO: add midea unlock test
     popd >/dev/null 2>&1 || return 1
@@ -259,7 +259,7 @@ function install_edge_kernel() {
     current_version=$(lsb_release -r | awk '{print $2}')
     apt -y update 2>/dev/null
     edge_kernel=$(apt-cache search -q linux-image-generic-hwe-"$(lsb_release -r | awk '{print $2}')"-edge 2>/dev/null | cut -d' ' -f1)
-    [[ -z "$edge_kernel" ]] && echo "failed to get the edge kernel" && return 1
+    [ -z "$edge_kernel" ] && echo "failed to get the edge kernel" && return 1
     if dpkg -s "$edge_kernel" >/dev/null 2>&1; then
         echo "edge kernel already installed"
         return 0
@@ -271,13 +271,13 @@ function install_edge_kernel() {
 
 function install_lookbusy() {
     remote_url=$(curl -sL $lookbusy_base | grep -oP 'href="\K[^"]+.tar.gz' | head -n 1 | sed 's/ //g')
-    [[ -z "$remote_url" ]] && echo "failed to get the remote url" && return 1
+    [ -z "$remote_url" ] && echo "failed to get the remote url" && return 1
     remote_version=$(echo "$remote_url" | grep -oP 'lookbusy-\K[^"]+.tar.gz' | sed 's/\.tar\.gz//g')
-    [[ -z "$remote_version" ]] && echo "failed to get the remote version" && return 1
+    [ -z "$remote_version" ] && echo "failed to get the remote version" && return 1
     local_version=$(lookbusy -V 2>/dev/null | grep -oP 'lookbusy ([0-9]+([.][0-9]+)+)' | awk '{print $2}')
-    [[ -z "$local_version" ]] || [[ "$local_version" != "$remote_version" ]] && {
+    [ -z "$local_version" ] || [ "$local_version" != "$remote_version" ] && {
         tmp_dir=$(mktemp -d -t lookbusy-XXXXXXXXXXXXXXXX 2>/dev/null)
-        [[ -z "$tmp_dir" ]] && echo "failed to create a temp dir" && return 1
+        [ -z "$tmp_dir" ] && echo "failed to create a temp dir" && return 1
         pushd "$tmp_dir" >/dev/null 2>&1 || return 1
         curl -sL "$lookbusy_base$remote_url" -o lookbusy.tar.gz || return 1
         tar -xvf lookbusy.tar.gz --strip-components=1 --exclude=.svn || return 1
@@ -289,7 +289,7 @@ function install_lookbusy() {
 
 function enable_lookbusy() {
     username="$1"
-    [[ -z "$username" ]] && echo "username is required when enabling lookbusy" && return 1
+    [ -z "$username" ] && echo "username is required when enabling lookbusy" && return 1
     if ! installed lookbusy; then
         echo "lookbusy is not installed"
         echo "installing lookbusy"
@@ -321,7 +321,7 @@ function enable_lookbusy() {
 
 if ((EUID != 0)); then
     echo "Granting root privileges for ""$(basename "$0")"
-    if [[ -t 1 ]]; then
+    if [ -t 1 ]; then
         sudo "$0" "$@"
     else
         exec 1>output_file
@@ -389,7 +389,7 @@ function usage() {
 
 POSITIONAL=()
 
-while [[ $# -gt 0 ]]; do
+while [ $# -gt 0 ]; do
     case "$1" in
     -d | --distro)
         _distro=true
@@ -497,53 +497,53 @@ done
 set -- "${POSITIONAL[@]}" # restore positional parameters
 
 action() {
-    if [[ "$_update" == true ]]; then
+    if [ "$_update" == true ]; then
         update
-    elif [[ "$_upgrade" == true ]]; then
+    elif [ "$_upgrade" == true ]; then
         upgrade
-    elif [[ "$_update_ss" == true ]]; then
+    elif [ "$_update_ss" == true ]; then
         update_ss
-    elif [[ "$_shadow_tls" == true ]]; then
+    elif [ "$_shadow_tls" == true ]; then
         shadow_tls
-    elif [[ "$_self_update" == true ]]; then
+    elif [ "$_self_update" == true ]; then
         self_update
-    elif [[ "$_remove_old_kernels" == true ]]; then
+    elif [ "$_remove_old_kernels" == true ]; then
         remove_old_kernels
-    elif [[ "$_reset" == true ]] || [[ "$_reset_with_debian" == true ]] || [[ "$_reset_with_ubuntu" == true ]]; then
-        [[ -z "$username" ]] && echo "username is required when resetting system" && return 1
+    elif [ "$_reset" == true ] || [ "$_reset_with_debian" == true ] || [ "$_reset_with_ubuntu" == true ]; then
+        [ -z "$username" ] && echo "username is required when resetting system" && return 1
         system="debi"
-        [[ "$_reset_with_ubuntu" == true ]] && system="ubuntu"
+        [ "$_reset_with_ubuntu" == true ] && system="ubuntu"
         reset $system "$username"
-    elif [[ "$_reboot" == true ]]; then
+    elif [ "$_reboot" == true ]; then
         reboot
-    elif [[ "$_provision" == true ]]; then
-        [[ -z "$username" ]] && echo "username is required when provisioning system" && return 1
+    elif [ "$_provision" == true ]; then
+        [ -z "$username" ] && echo "username is required when provisioning system" && return 1
         provision "$username"
-    elif [[ "$_cleanup" == true ]]; then
+    elif [ "$_cleanup" == true ]; then
         cleanup
-    elif [[ "$_install_speedtest" == true ]]; then
+    elif [ "$_install_speedtest" == true ]; then
         install_speedtest
-    elif [[ "$_speedtest" == true ]]; then
+    elif [ "$_speedtest" == true ]; then
         run_speedtest
-    elif [[ "$_install_lookbusy" == true ]]; then
+    elif [ "$_install_lookbusy" == true ]; then
         install_lookbusy
-    elif [[ "$_install_pyenv" == true ]]; then
-        [[ -z "$username" ]] && echo "username is required when installing pyenv" && return 1
+    elif [ "$_install_pyenv" == true ]; then
+        [ -z "$username" ] && echo "username is required when installing pyenv" && return 1
         install_pyenv "$username"
-    elif [[ "$_enable_lookbusy" == true ]]; then
-        [[ -z "$username" ]] && echo "username is required when enabling lookbusy" && return 1
+    elif [ "$_enable_lookbusy" == true ]; then
+        [ -z "$username" ] && echo "username is required when enabling lookbusy" && return 1
         enable_lookbusy "$username"
-    elif [[ "$_unlock_test" == true ]]; then
+    elif [ "$_unlock_test" == true ]; then
         midea_unlock_test
-    elif [[ "$_netflix_test" == true ]]; then
+    elif [ "$_netflix_test" == true ]; then
         netflix_test
-    elif [[ "$_edge_kernel" == true ]]; then
+    elif [ "$_edge_kernel" == true ]; then
         install_edge_kernel
-    elif [[ "$_distro" == true ]]; then
+    elif [ "$_distro" == true ]; then
         distro
-    elif [[ "$_fix_grub" == true ]]; then
+    elif [ "$_fix_grub" == true ]; then
         fix_grub
-    elif [[ "$_auto" == true ]]; then
+    elif [ "$_auto" == true ]; then
         do_all
     else
         usage

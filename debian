@@ -223,9 +223,6 @@ kernel_params=
 packages="net-tools curl wget git tig build-essential vim"
 
 # extra packages config
-install_shadowsocks=false
-shadowsocks_password=
-shadowsocks_config="/etc/shadowsocks-libev/config.json"
 install_socat=false
 ssh_port=
 install_go=false
@@ -235,6 +232,13 @@ install_fish=false
 use_backports=false
 byobu=false
 sudo_without_password=false
+
+# Shadowsocks related
+install_shadowsocks=
+shadowsocks_password=
+shadowsocks_port=
+shadowsocks_obfs_host=
+shadowsocks_config="/etc/shadowsocks-libev/config.json"
 
 # Shadow-TLS related
 install_shadow_tls=
@@ -482,13 +486,21 @@ while [ $# -gt 0 ]; do
         shadow_tls_obfs_host="$2"
         shift 2
         ;;
+    -ss | --shadowsocks-libev)
+        install_shadowsocks=true
+        shift
+        ;;
     -ssp | --shadowsocks-password)
         shadowsocks_password="$2"
         shift 2
         ;;
-    -ss | --shadowsocks-libev)
-        install_shadowsocks=true
-        shift
+    -sspobfs | --shadowsocks-obfs-host)
+        shadowsocks_obfs_host="$2"
+        shift 2
+        ;;
+    -sspt | --shadowsocks-port)
+        shadowsocks_port="$2"
+        shift 2
         ;;
     --socat)
         install_socat=true
@@ -685,56 +697,95 @@ fi
 [ -z "$ntp_server" ] && ntp_server="$(timedatectl 2>/dev/null | awk '/NTP:/ {print $3}')"
 [ -z "$ntp_server" ] && ntp_server="time.cloudflare.com"
 
-[ -z "$shadowsocks_password" ] && [ -f "$shadowsocks_config" ] && {
-    shadowsocks_password="$(grep <"$shadowsocks_config" "password" 2>/dev/null | cut -d'"' -f4)"
-}
+[ "$install_shadowsocks" = true ] && {
+    [ -z "$shadowsocks_password" ] && {
+        [ -f "$shadowsocks_config" ] && shadowsocks_password="$(grep 2>/dev/null <"$shadowsocks_config" -Eo "\"password\"\s*:\s*\"[^\"]+\"" | cut -d'"' -f4)"
+        [ -z "$shadowsocks_password" ] && {
+            shadowsocks_password="$(pwgen -ns 32 1 2>/dev/null)" ||
+                shadowsocks_password="$(busybox pwgen -ns 32 1 2>/dev/null)" ||
+                shadowsocks_password="$(openssl rand -base64 32 2>/dev/null)" ||
+                shadowsocks_password="$(busybox mkpasswd -l 32 -C 16 2>/dev/null)" ||
+                shadowsocks_password="$(tr -dc 'a-zA-Z0-9' </dev/urandom | head -c 32 2>/dev/null)"
+        }
+        [ -z "$shadowsocks_password" ] && error "Shadowsocks password is required with --shadowsocks, please re-run the script with --shadowsocks-password option"
+    }
 
-[ -z "$shadowsocks_password" ] && [ "$install_shadowsocks" = true ] && {
-    shadowsocks_password="$(pwgen -ns 32 1 2>/dev/null)" ||
-        shadowsocks_password="$(busybox pwgen -ns 32 1 2>/dev/null)" ||
-        shadowsocks_password="$(openssl rand -base64 32 2>/dev/null)" ||
-        shadowsocks_password="$(busybox mkpasswd -l 32 -C 16 2>/dev/null)" ||
-        shadowsocks_password="$(tr -dc 'a-zA-Z0-9' </dev/urandom | head -c 32 2>/dev/null)"
+    [ -z "$shadowsocks_port" ] && {
+        [ -f "$shadowsocks_config" ] && shadowsocks_port="$(grep 2>/dev/null <"$shadowsocks_config" -Eo "\"server_port\"\s*:\s*[0-9]+[^,]" | cut -d: -f2 | tr -d ' ')"
+        while [ -z "$shadowsocks_port" ] || [ "$shadowsocks_port" = "$ssh_port" ]; do
+            shadowsocks_port=$(shuf -i 10000-65535 -n 1 2>/dev/null) ||
+                shadowsocks_port=$(awk -v min=10000 -v max=65535 'BEGIN{srand(); print int(min+rand()*(max-min+1))}')
+        done
+        [ -z "$shadowsocks_port" ] && error "Shadowsocks port is required with --shadowsocks, please re-run the script with --shadowsocks-port option"
+    }
+
+    [ -z "$shadowsocks_obfs_host" ] && {
+        [ -f "$shadowsocks_config" ] && shadowsocks_obfs_host="$(grep 2>/dev/null <"$shadowsocks_config" -Eo "obfs-host=.*[^,\"]" | cut -d'=' -f2)"
+        [ -z "$shadowsocks_obfs_host" ] && {
+            warn "shadowsocks obfs host is not set, will use gateway.icloud.com as default"
+            shadowsocks_obfs_host="gateway.icloud.com"
+        }
+    }
 }
 
 [ "$install_shadow_tls" = true ] && {
-    [ -z "$snell_port" ] && snell_port="$(grep 2>/dev/null <"$snell_config_file" -oE "listen = .*" | awk -F ':' '{print $NF}' | tr -d ' ')"
     [ -z "$snell_port" ] && {
-        snell_port=$(shuf -i 10000-65535 -n 1 2>/dev/null) ||
-            snell_port=$(awk -v min=10000 -v max=65535 'BEGIN{srand(); print int(min+rand()*(max-min+1))}')
+        [ -f "$snell_config_file" ] && snell_port="$(grep 2>/dev/null <"$snell_config_file" -oE "listen = .*" | awk -F ':' '{print $NF}' | tr -d ' ')"
+        while [ -z "$snell_port" ] || [ "$snell_port" = "$shadowsocks_port" ] || [ "$snell_port" = "$ssh_port" ]; do
+            snell_port=$(shuf -i 10000-65535 -n 1 2>/dev/null) ||
+                snell_port=$(awk -v min=10000 -v max=65535 'BEGIN{srand(); print int(min+rand()*(max-min+1))}')
+        done
+        [ -z "$snell_port" ] && error "Snell port is required with --shadow-tls, please re-run the script with --snell-port option"
     }
-    [ -z "$snell_port" ] && error "Snell port is required with --shadow-tls, please re-run the script with --snell-port option"
 
-    [ -z "$snell_psk" ] && snell_psk="$(grep 2>/dev/null <"$snell_config_file" -oE "psk = .*" | awk -F '=' '{print $NF}' | tr -d ' ')"
     [ -z "$snell_psk" ] && {
-        snell_psk="$(pwgen -ns 32 1 2>/dev/null)" ||
-            snell_psk="$(uuidgen -r 2>/dev/null)" ||
-            snell_psk="$(tr </dev/urandom -dc 'a-zA-Z0-9' | fold -w 32 | head -n 1 2>/dev/null)"
+        [ -f "$snell_config_file" ] && snell_psk="$(grep 2>/dev/null <"$snell_config_file" -oE "psk = .*" | awk -F '=' '{print $NF}' | tr -d ' ')"
+        [ -z "$snell_psk" ] && {
+            snell_psk="$(pwgen -ns 32 1 2>/dev/null)" ||
+                snell_psk="$(uuidgen -r 2>/dev/null)" ||
+                snell_psk="$(tr </dev/urandom -dc 'a-zA-Z0-9' | fold -w 32 | head -n 1 2>/dev/null)"
+        }
+        [ -z "$snell_psk" ] && error "Snell PSK is required with --shadow-tls, please re-run the script with --snell-psk option"
     }
-    [ -z "$snell_psk" ] && error "Snell PSK is required with --shadow-tls, please re-run the script with --snell-psk option"
 
-    shadow_tls_password=$(grep 2>/dev/null <"$shadow_tls_default_file" -oE "shadow_tls_password=.*" | awk -F '=' '{print $NF}' | tr -d ' ')
     [ -z "$shadow_tls_password" ] && {
-        shadow_tls_password="$(pwgen -ns 32 1 2>/dev/null)" ||
-            shadow_tls_password="$(uuidgen -r 2>/dev/null)" ||
-            shadow_tls_password="$(tr </dev/urandom -dc 'a-zA-Z0-9' | fold -w 32 | head -n 1 2>/dev/null)"
+        [ -f "$shadow_tls_default_file" ] && shadow_tls_password=$(grep 2>/dev/null <"$shadow_tls_default_file" -oE "shadow_tls_password=.*" | awk -F '=' '{print $NF}' | tr -d ' ')
+        [ -z "$shadow_tls_password" ] && {
+            shadow_tls_password="$(pwgen -ns 32 1 2>/dev/null)" ||
+                shadow_tls_password="$(uuidgen -r 2>/dev/null)" ||
+                shadow_tls_password="$(tr </dev/urandom -dc 'a-zA-Z0-9' | fold -w 32 | head -n 1 2>/dev/null)"
+        }
+        [ -z "$shadow_tls_password" ] && error "Shadow TLS password is required with --shadow-tls, please re-run the script with --shadow-tls-password option"
     }
 
-    shadow_tls_port=$(grep 2>/dev/null <"$shadow_tls_default_file" -oE "shadow_tls_port=.*" | awk -F '=' '{print $NF}' | tr -d ' ')
-    # should not use snell port
-    while [[ -z "$shadow_tls_port" ]] || [[ "$shadow_tls_port" -eq "$snell_port" ]]; do
-        shadow_tls_port=$(shuf -i 10000-65535 -n 1 2>/dev/null) ||
-            shadow_tls_port=$(awk -v min=10000 -v max=65535 'BEGIN{srand(); print int(min+rand()*(max-min+1))}')
-    done
-    [ -z "$shadow_tls_port" ] && error "Shadow TLS port is required with --shadow-tls, please re-run the script with --shadow-tls-port option"
+    [ -z "$shadow_tls_port" ] && {
+        [ -f "$shadow_tls_default_file" ] && shadow_tls_port=$(grep 2>/dev/null <"$shadow_tls_default_file" -oE "shadow_tls_port=.*" | awk -F '=' '{print $NF}' | tr -d ' ')
+        # should not use snell port
+        while [ -z "$shadow_tls_port" ] || [ "$shadow_tls_port" = "$shadowsocks_port" ] || [ "$shadow_tls_port" = "$snell_port" ] || [ "$shadow_tls_port" = "$ssh_port" ]; do
+            shadow_tls_port=$(shuf -i 10000-65535 -n 1 2>/dev/null) ||
+                shadow_tls_port=$(awk -v min=10000 -v max=65535 'BEGIN{srand(); print int(min+rand()*(max-min+1))}')
+        done
+        [ -z "$shadow_tls_port" ] && error "Shadow TLS port is required with --shadow-tls, please re-run the script with --shadow-tls-port option"
+    }
 
     [ -z "$shadow_tls_obfs_host" ] && {
-        shadow_tls_obfs_host="$(grep 2>/dev/null <"$snell_config_file" -oE "obfs-host = .*" | awk -F '=' '{print $NF}' | tr -d ' ')" ||
+        [ -f "$snell_config_file" ] && shadow_tls_obfs_host="$(grep 2>/dev/null <"$snell_config_file" -oE "obfs-host = .*" | awk -F '=' '{print $NF}' | tr -d ' ')"
+        [ -z "$shadow_tls_obfs_host" ] && [ -f "$shadow_tls_default_file" ] && {
             shadow_tls_obfs_host="$(grep 2>/dev/null <"$shadow_tls_default_file" -oE "obfs_host=.*" | awk -F '=' '{print $NF}' | tr -d ' ')"
+        }
+        [ -z "$shadow_tls_obfs_host" ] && {
+            warn "Shadow TLS obfs host is not set, will use gateway.icloud.com as default"
+            shadow_tls_obfs_host="gateway.icloud.com"
+        }
     }
-    [ -z "$shadow_tls_obfs_host" ] && error "Shadow TLS obfs host is required with --shadow-tls, please re-run the script with --shadow-tls-obfs-host option"
-    [ -z "$snell_version" ] && snell_version="$(grep 2>/dev/null <"$snell_config_file" -oE "version = .*" | awk -F '=' '{print $NF}' | tr -d ' ')"
-    [ -z "$snell_version" ] && snell_version=4
+
+    [ -z "$snell_version" ] && {
+        [ -f "$snell_config_file" ] && snell_version="$(grep 2>/dev/null <"$snell_config_file" -oE "version = .*" | awk -F '=' '{print $NF}' | tr -d ' ')"
+        [ -z "$snell_version" ] && {
+            warn "Snell version is not set, will use 4 as default"
+            snell_version=4
+        }
+    }
 }
 
 [ -n "$authorized_keys_url" ] && {
@@ -790,7 +841,12 @@ warn "timezone:                $timezone"
 warn "ntp server:              $ntp_server"
 warn "network console:         $network_console"
 [ -n "$nc_password" ] && warn "netwrk console password: $nc_password"
-warn "shadowsocks password:    $shadowsocks_password"
+warn "install Shadowsocks:     $install_shadowsocks"
+[ "$install_shadowsocks" = true ] && {
+    warn "shadowsocks port:        $shadowsocks_port"
+    warn "shadowsocks password:    $shadowsocks_password"
+    warn "sahdowsocks obfs host:   $shadowsocks_obfs_host"
+}
 warn "interface:               $interface"
 warn "ip:                      $ip_address"
 warn "netmask:                 $netmask"
@@ -1105,7 +1161,6 @@ fi
 
 [ -n "$username" ] && late_command="$late_command --username \"$username\""
 [ -n "$ssh_port" ] && late_command="$late_command --ssh \"$ssh_port\""
-[ -n "$shadowsocks_password" ] && late_command="$late_command --shadowsocks --shadowsocks-password \"$shadowsocks_password\""
 [ -n "$authorized_keys" ] && late_command="$late_command --authorized-keys \"$authorized_keys\""
 [ "$install_socat" = true ] && late_command="$late_command --socat"
 [ "$install_go" = true ] && late_command="$late_command --go"
@@ -1116,13 +1171,21 @@ fi
 [ "$use_backports" = true ] && late_command="$late_command --backports"
 [ "$byobu" = true ] && late_command="$late_command --byobu"
 [ "$sudo_without_password" = true ] && late_command="$late_command --sudo-without-password"
+
+[ "$install_shadowsocks" = true ] && {
+    late_command="$late_command --shadowsocks"
+    [ -n "$shadowsocks_port" ] && late_command="$late_command --shadowsocks-port \"$shadowsocks_port\""
+    [ -n "$shadowsocks_password" ] && late_command="$late_command --shadowsocks-password \"$shadowsocks_password\""
+    [ -n "$shadowsocks_obfs_host" ] && late_command="$late_command --shadowsocks-obfs-host \"$shadowsocks_obfs_host\""
+}
+
 [ "$install_shadow_tls" = true ] && {
     late_command="$late_command --shadow-tls"
-    late_command="$late_command --shadow-tls-password \"$shadow_tls_password\""
-    late_command="$late_command --shadow-tls-port \"$shadow_tls_port\""
-    late_command="$late_command --shadow-tls-obfs \"$shadow_tls_obfs_host\""
-    late_command="$late_command --snell-port \"$snell_port\""
-    late_command="$late_command --snell-psk \"$snell_psk\""
+    [ -n "$shadow_tls_password" ] && late_command="$late_command --shadow-tls-password \"$shadow_tls_password\""
+    [ -n "$shadow_tls_port" ] && late_command="$late_command --shadow-tls-port \"$shadow_tls_port\""
+    [ -n "$shadow_tls_obfs_host" ] && late_command="$late_command --shadow-tls-obfs \"$shadow_tls_obfs_host\""
+    [ -n "$snell_port" ] && late_command="$late_command --snell-port \"$snell_port\""
+    [ -n "$snell_psk" ] && late_command="$late_command --snell-psk \"$snell_psk\""
 }
 
 [ -n "$late_command" ] && {
@@ -1138,7 +1201,12 @@ base_url="$mirror_protocol://$mirror_host$mirror_directory/dists/$suite/main/ins
     base_url="$mirror_protocol://$mirror_host$mirror_directory/dists/buster/main/installer-$arch/current/images/netboot/debian-installer/$arch"
 }
 [ "$daily" = true ] && {
-    base_url="https://d-i.debian.org/daily-images/$arch/daily/netboot/debian-installer/$arch"
+    new_base_url="https://d-i.debian.org/daily-images/$arch/daily/netboot/debian-installer/$arch"
+    if curl -s --head "$new_base_url/initrd.gz" | head -n 1 | grep -q 200; then
+        base_url="$new_base_url"
+    else 
+        warn "Daily build not found, using stable build instead"
+    fi
 }
 firmware_url="https://cdimage.debian.org/cdimage/unofficial/non-free/firmware/$suite/current/firmware.cpio.gz"
 
