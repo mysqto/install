@@ -25,11 +25,12 @@ function warn() {
 
 function error() {
     echo -e "\033[1;31m${*}\033[0m"
+    exit 1
 }
 
 service_exists() {
     local n=$1
-    if [[ $(systemctl list-units --all -t service --full --no-legend "$n.service" | cut -f1 -d' ' 2>/dev/null) == $n.service ]]; then
+    if [ "$(systemctl list-units --all -t service --full --no-legend "$n.service" | cut -f1 -d' ' 2>/dev/null)" == "$n.service" ]; then
         return 0
     else
         return 1
@@ -56,7 +57,7 @@ function download_snell() {
     installed_version="$(snell-server --version 2>&1 | grep -Eo "snell-server v[0-9\.]+" | cut -d ' ' -f 2 | sed 's/ *$//g')"
     # match last https://
     snell_download_url="$(curl -sL "$snell_homepage" 2>/dev/null | grep -oE "https://[^\"]+" | grep -E "linux-$arch\.zip" | head -n 1)"
-    [[ -z "$snell_download_url" ]] && {
+    [ -z "$snell_download_url" ] && {
         error "Failed to get snell download url!"
         exit 1
     }
@@ -64,26 +65,26 @@ function download_snell() {
 
     remove_version="$(echo "$snell_download_file" | grep -oE "v[0-9\.]+" | sed 's/ *$//g')"
 
-    if [[ "$installed_version" == "$remove_version" ]]; then
+    if [ "$installed_version" == "$remove_version" ]; then
         warn "Installed snell version is $installed_version, latest snell version is $remove_version, no need to update snell!"
         return
     fi
 
     download "$snell_download_url" "$snell_download_file"
 
-    [[ -f "$snell_download_file" ]] || {
+    [ -f "$snell_download_file" ] || {
         error "Failed to download snell!"
     }
 
     unzip "$snell_download_file"
 
-    [[ -f "snell-server" ]] || {
+    [ -f "snell-server" ] || {
         error "Failed to extract snell!"
     }
 
     mv snell-server "$snell_bin"
 
-    [[ -f "$snell_bin" ]] || {
+    [ -f "$snell_bin" ] || {
         error "Failed to install snell!"
     }
 }
@@ -91,8 +92,8 @@ function download_snell() {
 function enable_snell() {
     download_snell
     # check etc dir
-    [[ -d "$snell_config_dir" ]] || mkdir -p "$snell_config_dir" 2>/dev/null
-    [[ -d "$snell_config_dir" ]] || {
+    [ -d "$snell_config_dir" ] || mkdir -p "$snell_config_dir" 2>/dev/null
+    [ -d "$snell_config_dir" ] || {
         error "Failed to create snell config dir!"
     }
 
@@ -208,7 +209,7 @@ EOF
 }
 
 # run as root
-[[ $EUID -ne 0 ]] && echo "Error: This script must be run as root!" && exit 1
+[ $EUID -ne 0 ] && echo "Error: This script must be run as root!" && exit 1
 
 snell_port=
 ipv6=false
@@ -220,7 +221,7 @@ snell_version=
 shadow_tls=
 shadow_tls_password=
 
-while [[ $# -gt 0 ]]; do
+while [ $# -gt 0 ]; do
     key="$1"
     case $key in
     -sp | --snell-port)
@@ -268,30 +269,40 @@ while [[ $# -gt 0 ]]; do
     shift
 done
 
-[ -z "$snell_port" ] && snell_port="$(grep 2>/dev/null <"$snell_config_file" -oE "listen = .*" | awk -F ':' '{print $NF}' | tr -d ' ')"
 [ -z "$snell_port" ] && {
-    snell_port=$(shuf -i 10000-65535 -n 1 2>/dev/null) ||
+    snell_port="$(grep 2>/dev/null <"$snell_config_file" -oE "listen = .*" | awk -F ':' '{print $NF}' | tr -d ' ')" ||
+        snell_port=$(shuf -i 10000-65535 -n 1 2>/dev/null) ||
         snell_port=$(awk -v min=10000 -v max=65535 'BEGIN{srand(); print int(min+rand()*(max-min+1))}')
+    [ -z "$snell_port" ] && error "Port is required, please specify it with --snell-port option"
 }
-[ -z "$snell_port" ] && error "Port is required" && exit 1
 
-[ -z "$snell_psk" ] && snell_psk="$(grep 2>/dev/null <"$snell_config_file" -oE "psk = .*" | awk -F '=' '{print $NF}' | tr -d ' ')"
 [ -z "$snell_psk" ] && {
-    snell_psk="$(pwgen -ns 32 1 2>/dev/null)" ||
+    snell_psk="$(grep 2>/dev/null <"$snell_config_file" -oE "psk = .*" | awk -F '=' '{print $NF}' | tr -d ' ')" ||
+        snell_psk="$(pwgen -ns 32 1 2>/dev/null)" ||
         snell_psk="$(uuidgen -r 2>/dev/null)" ||
         snell_psk="$(tr </dev/urandom -dc 'a-zA-Z0-9' | fold -w 32 | head -n 1 2>/dev/null)"
+    [ -z "$snell_psk" ] && error "PSK is required, please specify it with --snell-psk option"
 }
-[ -z "$snell_psk" ] && error "PSK is required" && exit 1
 
-[ -z "$obfs" ] && obfs="$(grep 2>/dev/null <"$snell_config_file" -oE "obfs = .*" | awk -F '=' '{print $NF}' | tr -d ' ')"
-[ -z "$obfs" ] && obfs="http"
+[ -z "$obfs" ] && {
+    obfs="$(grep 2>/dev/null <"$snell_config_file" -oE "obfs = .*" | awk -F '=' '{print $NF}' | tr -d ' ')"
+    [ -z "$obfs" ] && {
+        warn "Failed to get obfs from $snell_config_file, use http as default"
+        obfs="http"
+    }
+}
 
 [ -z "$obfs_host" ] && {
     obfs_host="$(grep 2>/dev/null <"$snell_config_file" -oE "obfs-host = .*" | awk -F '=' '{print $NF}' | tr -d ' ')"
 }
 
-[ -z "$snell_version" ] && snell_version=$(grep 2>/dev/null <"$snell_config_file" -oE "version = .*" | awk -F '=' '{print $NF}' | tr -d ' ')
-[ -z "$snell_version" ] && snell_version="4"
+[ -z "$snell_version" ] && {
+    snell_version=$(grep 2>/dev/null <"$snell_config_file" -oE "version = .*" | awk -F '=' '{print $NF}' | tr -d ' ')
+    [ -z "$snell_version" ] && {
+        warn "Failed to get version from $snell_config_file, use 4 as default"
+        snell_version="4"
+    }
+}
 
 [ -z "$shadow_tls" ] && {
     # check shadow-tls service exists
@@ -303,22 +314,24 @@ done
 }
 
 [ "$shadow_tls" = true ] && {
-    shadow_tls_password=$(grep 2>/dev/null <"$shadow_tls_default_file" -oE "shadow_tls_password=.*" | awk -F '=' '{print $NF}' | tr -d ' ')
+
     [ -z "$shadow_tls_password" ] && {
-        shadow_tls_password="$(pwgen -ns 32 1 2>/dev/null)" ||
+        shadow_tls_password=$(grep 2>/dev/null <"$shadow_tls_default_file" -oE "shadow_tls_password=.*" | awk -F '=' '{print $NF}' | tr -d ' ') ||
+            shadow_tls_password="$(pwgen -ns 32 1 2>/dev/null)" ||
             shadow_tls_password="$(uuidgen -r 2>/dev/null)" ||
             shadow_tls_password="$(tr </dev/urandom -dc 'a-zA-Z0-9' | fold -w 32 | head -n 1 2>/dev/null)"
+        [ -z "$shadow_tls_password" ] && error "Shadow-TLS password is required when shadow-tls is enabled"
     }
-    [ -z "$shadow_tls_password" ] && error "Shadow-TLS password is required when shadow-tls is enabled" && exit 1
 
-    shadow_tls_port=$(grep 2>/dev/null <"$shadow_tls_default_file" -oE "shadow_tls_port=.*" | awk -F '=' '{print $NF}' | tr -d ' ')
-    # should not use snell port
-    while [[ -z "$shadow_tls_port" ]] || [[ "$shadow_tls_port" -eq "$snell_port" ]]; do
-        shadow_tls_port=$(shuf -i 10000-65535 -n 1 2>/dev/null) ||
-            shadow_tls_port=$(awk -v min=10000 -v max=65535 'BEGIN{srand(); print int(min+rand()*(max-min+1))}')
-    done
-    [ -z "$shadow_tls_port" ] && error "Shadow-TLS port is required when shadow-tls is enabled" && exit 1
-    [ "$shadow_tls_port" -eq "$snell_port" ] && error "Shadow-TLS port should not be the same as snell port" && exit 1
+    [ -z "$shadow_tls_port" ] && {
+        shadow_tls_port=$(grep 2>/dev/null <"$shadow_tls_default_file" -oE "shadow_tls_port=.*" | awk -F '=' '{print $NF}' | tr -d ' ')
+        # should not use snell port
+        while [ -z "$shadow_tls_port" ] || [ "$shadow_tls_port" -eq "$snell_port" ]; do
+            shadow_tls_port=$(shuf -i 10000-65535 -n 1 2>/dev/null) ||
+                shadow_tls_port=$(awk -v min=10000 -v max=65535 'BEGIN{srand(); print int(min+rand()*(max-min+1))}')
+        done
+        [ -z "$shadow_tls_port" ] && error "Shadow-TLS port is required when shadow-tls is enabled" && exit 1
+    }
     [ "$obfs" != "tls" ] && {
         warn "Shadow-TLS is enabled but obfs is not tls, forcing obfs to tls"
         obfs="tls"
@@ -330,6 +343,7 @@ done
 }
 
 [ -z "$obfs_host" ] && {
+    warn "No obfs-host specified, use random one"
     obfs_host=${obfs_hosts[$RANDOM % ${#obfs_hosts[@]}]}
 }
 
@@ -344,8 +358,8 @@ esac
 
 wd=$(mktemp -t "snell.XXXXXXXXXXXXXXXX" -d 2>/dev/null)
 
-[[ ! -d "$wd" ]] && wd=/tmp/snell-$(date +%s) && mkdir -p "$wd" 2>/dev/null
-[[ ! -d "$wd" ]] && echo "failed to create working directory" && exit 1
+[ ! -d "$wd" ] && wd=/tmp/snell-$(date +%s) && mkdir -p "$wd" 2>/dev/null
+[ ! -d "$wd" ] && echo "failed to create working directory" && exit 1
 
 if installed apt || installed apt-get; then
     apt-get update

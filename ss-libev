@@ -1,15 +1,5 @@
 #!/bin/bash
 
-# this function is borrowed from https://stackoverflow.com/a/30948155
-function _pwgen() {
-    chars='!%^&-()_+='
-    {
-        LC_ALL=C grep </dev/urandom -ao '[A-Za-z0-9]' |
-            head -n$((RANDOM % 8 + 9))
-        echo ${chars:$((RANDOM % ${#chars})):1} # Random special char.
-    } | shuf | tr -d '\n'
-}
-
 # shellcheck disable=SC2120
 function default_interface() {
     type="$1"
@@ -19,7 +9,7 @@ function default_interface() {
 
 service_exists() {
     local n=$1
-    if [[ $(systemctl list-units --all -t service --full --no-legend "$n.service" | cut -f1 -d' ' 2>/dev/null) == $n.service ]]; then
+    if [ "$(systemctl list-units --all -t service --full --no-legend "$n.service" | cut -f1 -d' ' 2>/dev/null)" == "$n.service" ]; then
         return 0
     else
         return 1
@@ -27,19 +17,36 @@ service_exists() {
 }
 
 POSITIONAL=()
+port=
 password=""
+obfs_host=""
 libsodium_version=""
-libsodium_default_version="1.0.18"
+libsodium_default_version=
 mbedtls_version=""
-mbedtls_default_version="2.28.2"
+mbedtls_default_version=
 mbed_releases_url="https://api.github.com/repos/ARMmbed/mbedtls/releases"
 libsodium_releases_url="https://api.github.com/repos/jedisct1/libsodium/releases"
 systemd_service_file=/lib/systemd/system/shadowsocks-libev.service
 
-while [[ $# -gt 0 ]]; do
+obfs_hosts=(
+    "microsoft.com"
+    "apple.com"
+    "gateway.messenger.live.com"
+    "gateway.icloud.com"
+)
+
+while [ $# -gt 0 ]; do
     case "$1" in
+    -P | --port)
+        port="$2"
+        shift 2
+        ;;
     -p | --password)
         password="$2"
+        shift 2
+        ;;
+    -o | --obfs-host)
+        obfs_host="$2"
         shift 2
         ;;
     -lsv | --libsodium-version)
@@ -59,20 +66,20 @@ done
 
 set -- "${POSITIONAL[@]}" # restore positional parameters
 
-[[ -n "$libsodium_version" ]] || {
+[ -n "$libsodium_version" ] || {
     libsodium_version=$(curl -sL "$libsodium_releases_url" 2>/dev/null | grep "tag_name" | head -n 1 | cut -d '"' -f4 | cut -d'-' -f1)
 }
-[[ -n "$mbedtls_version" ]] || {
+[ -n "$mbedtls_version" ] || {
     mbedtls_version=$(curl -sL "$mbed_releases_url" 2>/dev/null | grep "tag_name" | grep 'v2.' | head -n 1 | cut -d '"' -f 4)
 }
 
-[[ -z "$libsodium_version" ]] && echo "use libsodium $libsodium_default_version" && libsodium_version="$libsodium_default_version"
-[[ -z "$mbedtls_version" ]] && echo "use mbedtls $mbedtls_default_version" && mbedtls_version="$mbedtls_default_version"
+[ -z "$libsodium_version" ] && echo "use libsodium $libsodium_default_version" && libsodium_version="$libsodium_default_version"
+[ -z "$mbedtls_version" ] && echo "use mbedtls $mbedtls_default_version" && mbedtls_version="$mbedtls_default_version"
 
 wd=$(mktemp -t "ss-libev.XXXXXXXXXXXXXXXX" -d 2>/dev/null)
 
-[[ ! -d "$wd" ]] && wd=/tmp/$(date +%s) && mkdir -p "$wd" 2>/dev/null
-[[ ! -d "$wd" ]] && echo "failed to create working directory" && exit 1
+[ ! -d "$wd" ] && wd=/tmp/$(date +%s) && mkdir -p "$wd" 2>/dev/null
+[ ! -d "$wd" ] && echo "failed to create working directory" && exit 1
 
 pushd "$wd" >>/dev/null 2>&1 || exit
 
@@ -82,7 +89,7 @@ sudo apt -y update && DEBIAN_FRONTEND=noninteractive sudo apt -y --no-install-re
 # Installation of Libsodium
 rm -rf "libsodium"
 git clone https://github.com/jedisct1/libsodium.git "libsodium"
-[[ ! -d "libsodium" ]] && echo "failed to clone libsodium" && exit 1
+[ ! -d "libsodium" ] && echo "failed to clone libsodium" && exit 1
 pushd "libsodium" >>/dev/null 2>&1 || exit
 git checkout "$libsodium_version"
 ./autogen.sh
@@ -94,7 +101,7 @@ sudo ldconfig
 # Installation of MbedTLS
 rm -rf "mbedtls"
 git clone https://github.com/ARMmbed/mbedtls.git "mbedtls"
-[[ ! -d "mbedtls" ]] && echo "failed to clone mbedtls" && exit 1
+[ ! -d "mbedtls" ] && echo "failed to clone mbedtls" && exit 1
 pushd "mbedtls" >>/dev/null 2>&1 || exit
 git checkout "$mbedtls_version"
 make SHARED=1 CFLAGS=-fPIC
@@ -118,19 +125,35 @@ git submodule update --init --recursive
 ./autogen.sh && ./configure --prefix=/usr && make
 sudo make install
 if [ ! -e "/etc/shadowsocks-libev/config.json" ]; then
-    [[ ! -d "/etc/shadowsocks-libev/" ]] && sudo mkdir -p /etc/shadowsocks-libev/
-    [[ -z "$password" ]] && password=$(_pwgen)
+    [ ! -d "/etc/shadowsocks-libev/" ] && sudo mkdir -p /etc/shadowsocks-libev/
+    [ -z "$password" ] && {
+        password="$(pwgen -ns 32 1 2>/dev/null)" ||
+            password="$(busybox pwgen -ns 32 1 2>/dev/null)" ||
+            password="$(openssl rand -base64 32 2>/dev/null)" ||
+            password="$(busybox mkpasswd -l 32 -C 16 2>/dev/null)" ||
+            password="$(tr -dc 'a-zA-Z0-9' </dev/urandom | head -c 32 2>/dev/null)"
+    }
+    [ -z "$port" ] && {
+        port="$(shuf -i 10000-65535 -n 1 2>/dev/null)" ||
+            port="$(awk -v min=10000 -v max=65535 'BEGIN{srand(); print int(min+rand()*(max-min+1))}' 2>/dev/null)"
+    }
+
+    [ -z "$obfs_host" ] && {
+        warn "obfs-host is not specified, use random one"
+        obfs_host=${obfs_hosts[$RANDOM % ${#obfs_hosts[@]}]}
+    }
+
     cat <<EOF >config.json
 {
         "server"      : ["::0","0.0.0.0"],
-        "server_port" : 15527,
+        "server_port" : ${port},
         "password"    : "${password}",
         "timeout"     : 300,
         "method"      : "chacha20-ietf-poly1305",
         "mode"        : "tcp_and_udp",
         "fast_open"   : true,
         "plugin"      : "obfs-server",
-        "plugin_opts" : "obfs=http;obfs-host=cloudfront.net"
+        "plugin_opts" : "obfs=http;obfs-host=${obfs_host}"
 }
 EOF
     sudo mv config.json /etc/shadowsocks-libev/
