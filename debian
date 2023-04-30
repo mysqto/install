@@ -407,6 +407,22 @@ while [ $# -gt 0 ]; do
         static_ip=true
         shift
         ;;
+    -ip | --ip-address)
+        ip_address="$2"
+        shift 2
+        ;;
+    -nm | --netmask)
+        netmask="$2"
+        shift 2
+        ;;
+    -gw | --gateway)
+        gateway="$2"
+        shift 2
+        ;;
+    -dns | --dns)
+        dns="$2"
+        shift 2
+        ;;
     -sr | --security-repository)
         security_repository="$2"
         shift 2
@@ -812,14 +828,17 @@ ssh_private_key=""
     [ -z "$ssh_port" ] && ssh_port="22"
 }
 
-ip_address="$(ip_address)"
-netmask="$(netmask)"
-gateway="$(default_gateway)"
-dns="$(dns)"
-[ -z "$ip_address" ] && echo "failed to get ip address" && exit 1
-[ -z "$netmask" ] && echo "failed to get netmask" && exit 1
-[ -z "$gateway" ] && echo "failed to get gateway" && exit 1
-[ -z "$dns" ] && dns="1.1.1.1"
+[ -z "$ip_address" ] && ip_address="$(ip_address)"
+[ -z "$netmask" ] && netmask="$(netmask)"
+[ -z "$gateway" ] && gateway="$(default_gateway)"
+[ -z "$dns" ] && dns="$(dns)"
+[ -z "$ip_address" ] && error "failed to get ip address"
+[ -z "$netmask" ] && error "failed to get netmask"
+[ -z "$gateway" ] && error "failed to get gateway"
+[ -z "$dns" ] && {
+    warn "failed to get dns, will use 1.1.1.1 as default"
+    dns="1.1.1.1"
+}
 
 [ "$network_console" = true ] && {
     nc_password="$(pwgen -nsy 16 1 2>/dev/null)" ||
