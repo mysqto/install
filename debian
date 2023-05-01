@@ -75,7 +75,6 @@ function netmask() {
     else
         mask=$(cidr_to_netmask "$(ip -"$type" -o addr show "$if" | head -1 | awk '{split($4,a,"/"); print a[2]}')")
     fi
-    [ -z "$mask" ] && echo "failed to get netmask" && exit 1
     # dirty hack for google cloud
     if [ "$type" == "4" ] && [ "$mask" == "255.255.255.255" ]; then
         asn=$(curl -s "https://ipconfig.io/json" | jq -r '.asn_org' 2>/dev/null)
@@ -84,7 +83,7 @@ function netmask() {
             mirror_protocol="http"
         fi
     fi
-    [ -z "$mask" ] && echo "failed to get netmask" && exit 1
+    [ -z "$mask" ] && error "failed to get netmask"
     echo "$mask"
 }
 
@@ -154,12 +153,7 @@ has_backports() {
     return 1
 }
 
-function grub_config() {
-    grub_dir=$(find /boot -type d -name "grub*" 2>/dev/null | head -n1)
-    find "$grub_dir" -regextype posix-egrep -regex ".*/(grub.conf|grub.cfg)" 2>/dev/null
-}
-
-[ ! -d "$wd" ] && echo "failed to create working directory" && exit 1
+[ ! -d "$wd" ] && error "failed to create working directory"
 
 if ((EUID != 0)); then
     echo "Granting root privileges for ""$(basename "$0")"
@@ -223,6 +217,7 @@ kernel_params=
 packages="net-tools curl wget git tig build-essential vim"
 
 # extra packages config
+provision=false
 install_socat=false
 ssh_port=
 install_go=false
@@ -287,8 +282,7 @@ fi
 }
 
 [ -z "$arch" ] && {
-    echo "failed to detect architecture, please specify it with --architecture"
-    exit 1
+    error "failed to detect architecture, please specify it with --architecture"
 }
 
 POSITIONAL=()
@@ -458,6 +452,7 @@ while [ $# -gt 0 ]; do
         shift
         ;;
     --provision)
+        provision=true
         version=sid
         install_shadowsocks=true
         install_shadow_tls=true
@@ -691,7 +686,7 @@ if [ -z "$password_hash" ]; then
 
 fi
 
-[ -z "$password_hash" ] && echo "failed to get password hash" && exit 1
+[ -z "$password_hash" ] && error "failed to get password hash"
 
 [ -z "$hostname" ] && hostname="$(hostname)"
 [ -z "$hostname" ] && hostname="$(cat /etc/hostname 2>/dev/null)"
@@ -1172,46 +1167,48 @@ d-i debian-installer/quiet boolean false
 d-i debian-installer/splash boolean false
 EOF
 
-late_command="curl -sL https://install.lol/provision | bash -s --"
+[ "$provision" = true ] && {
+    late_command="curl -sL https://install.lol/provision | bash -s --"
 
-if ipv6_enabled; then
-    late_command="$late_command --ipv6-dhcp"
-fi
+    if ipv6_enabled; then
+        late_command="$late_command --ipv6-dhcp"
+    fi
 
-[ -n "$username" ] && late_command="$late_command --username \"$username\""
-[ -n "$ssh_port" ] && late_command="$late_command --ssh \"$ssh_port\""
-[ -n "$authorized_keys" ] && late_command="$late_command --authorized-keys \"$authorized_keys\""
-[ "$install_socat" = true ] && late_command="$late_command --socat"
-[ "$install_go" = true ] && late_command="$late_command --go"
-[ "$install_im" = true ] && late_command="$late_command --im"
-[ "$install_neofetch" = true ] && late_command="$late_command --neofetch"
-[ "$install_fish" = true ] && late_command="$late_command --fish"
-[ "$bbr" = true ] && late_command="$late_command --bbr"
-[ "$use_backports" = true ] && late_command="$late_command --backports"
-[ "$byobu" = true ] && late_command="$late_command --byobu"
-[ "$sudo_without_password" = true ] && late_command="$late_command --sudo-without-password"
+    [ -n "$username" ] && late_command="$late_command --username \"$username\""
+    [ -n "$ssh_port" ] && late_command="$late_command --ssh \"$ssh_port\""
+    [ -n "$authorized_keys" ] && late_command="$late_command --authorized-keys \"$authorized_keys\""
+    [ "$install_socat" = true ] && late_command="$late_command --socat"
+    [ "$install_go" = true ] && late_command="$late_command --go"
+    [ "$install_im" = true ] && late_command="$late_command --im"
+    [ "$install_neofetch" = true ] && late_command="$late_command --neofetch"
+    [ "$install_fish" = true ] && late_command="$late_command --fish"
+    [ "$bbr" = true ] && late_command="$late_command --bbr"
+    [ "$use_backports" = true ] && late_command="$late_command --backports"
+    [ "$byobu" = true ] && late_command="$late_command --byobu"
+    [ "$sudo_without_password" = true ] && late_command="$late_command --sudo-without-password"
 
-[ "$install_shadowsocks" = true ] && {
-    late_command="$late_command --shadowsocks"
-    [ -n "$shadowsocks_port" ] && late_command="$late_command --shadowsocks-port \"$shadowsocks_port\""
-    [ -n "$shadowsocks_password" ] && late_command="$late_command --shadowsocks-password \"$shadowsocks_password\""
-    [ -n "$shadowsocks_obfs_host" ] && late_command="$late_command --shadowsocks-obfs-host \"$shadowsocks_obfs_host\""
-}
+    [ "$install_shadowsocks" = true ] && {
+        late_command="$late_command --shadowsocks"
+        [ -n "$shadowsocks_port" ] && late_command="$late_command --shadowsocks-port \"$shadowsocks_port\""
+        [ -n "$shadowsocks_password" ] && late_command="$late_command --shadowsocks-password \"$shadowsocks_password\""
+        [ -n "$shadowsocks_obfs_host" ] && late_command="$late_command --shadowsocks-obfs-host \"$shadowsocks_obfs_host\""
+    }
 
-[ "$install_shadow_tls" = true ] && {
-    late_command="$late_command --shadow-tls"
-    [ -n "$shadow_tls_password" ] && late_command="$late_command --shadow-tls-password \"$shadow_tls_password\""
-    [ -n "$shadow_tls_port" ] && late_command="$late_command --shadow-tls-port \"$shadow_tls_port\""
-    [ -n "$shadow_tls_obfs_host" ] && late_command="$late_command --shadow-tls-obfs \"$shadow_tls_obfs_host\""
-    [ -n "$snell_port" ] && late_command="$late_command --snell-port \"$snell_port\""
-    [ -n "$snell_psk" ] && late_command="$late_command --snell-psk \"$snell_psk\""
-}
+    [ "$install_shadow_tls" = true ] && {
+        late_command="$late_command --shadow-tls"
+        [ -n "$shadow_tls_password" ] && late_command="$late_command --shadow-tls-password \"$shadow_tls_password\""
+        [ -n "$shadow_tls_port" ] && late_command="$late_command --shadow-tls-port \"$shadow_tls_port\""
+        [ -n "$shadow_tls_obfs_host" ] && late_command="$late_command --shadow-tls-obfs \"$shadow_tls_obfs_host\""
+        [ -n "$snell_port" ] && late_command="$late_command --snell-port \"$snell_port\""
+        [ -n "$snell_psk" ] && late_command="$late_command --snell-psk \"$snell_psk\""
+    }
 
-[ -n "$late_command" ] && {
-    cat >>"$preseed_file" <<EOF
+    [ -n "$late_command" ] && {
+        cat >>"$preseed_file" <<EOF
 # Provisioning
 d-i preseed/late_command string in-target sh -c '$late_command'
 EOF
+    }
 }
 
 pushd "$wd" >/dev/null 2>&1 || error "Failed to change directory to $wd"
@@ -1223,7 +1220,7 @@ base_url="$mirror_protocol://$mirror_host$mirror_directory/dists/$suite/main/ins
     new_base_url="https://d-i.debian.org/daily-images/$arch/daily/netboot/debian-installer/$arch"
     if curl -s --head "$new_base_url/initrd.gz" | head -n 1 | grep -q 200; then
         base_url="$new_base_url"
-    else 
+    else
         warn "Daily build not found, using stable build instead"
     fi
 }
@@ -1270,7 +1267,7 @@ grub_cfg=$(find "$grub_dir" -regextype posix-egrep -regex ".*/(grub.conf|grub.cf
 [ -z "$grub_cfg" ] && grub_cfg=$(find /boot -regextype posix-egrep -regex ".*/(grub.conf|grub.cfg)" 2>/dev/null | head -n1)
 [ -z "$grub_cfg" ] && error "Failed to find grub.cfg"
 [ ! -f "$grub_cfg" ] && error "Failed to find grub.cfg at $grub_cfg"
-cp "$grub_cfg" "$grub_cfg.$timestamp.bak"
+[ "$dry_run" == false ] && cp "$grub_cfg" "$grub_cfg.$timestamp.bak"
 title="Install Debian $suite $arch"
 
 kernel_params="$kernel_params lowmem/low=1"

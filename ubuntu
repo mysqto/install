@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+wd="$(mktemp -t "ubuntu.XXXXXXXXXXXXXXXX" -d 2>/dev/null)"
+# debug flag
+dry_run=false
 
 username=""
 full_name=""
@@ -14,23 +17,40 @@ authorized_keys_url=""
 efi=
 gpt=false
 esp=128
-boot=512
+boot_size=512
 filesystem="ext4"
-wd="$(mktemp -t "ubuntu.XXXXXXXXXXXXXXXX" -d 2>/dev/null)"
 disk=""
 interface="auto"
 shadowsocks_config="/etc/shadowsocks-libev/config.json"
 grub_d="/etc/grub.d"
-vmlinuz="vmlinuz$(date '+%Y%m%d%H%M%S')"
-initrd="initrd.img$(date '+%Y%m%d%H%M%S')"
+timestamp=$(date '+%Y%m%d%H%M%S')
+vmlinuz="vmlinuz$timestamp"
+initrd="initrd.img$timestamp"
 boot_options="auto=true hostname=ubuntu domain= quiet"
 title="Install Ubuntu 20.04 LTS"
 cloud=""
 manual_partition=false
 
 # extra packages config
-install_shadowsocks=false
+provision=false
+# Shadowsocks related
+install_shadowsocks=
 shadowsocks_password=
+shadowsocks_port=
+shadowsocks_obfs_host=
+shadowsocks_config="/etc/shadowsocks-libev/config.json"
+
+# Shadow-TLS related
+install_shadow_tls=
+snell_port=
+snell_psk=
+shadow_tls_port=
+shadow_tls_password=
+shadow_tls_obfs_host=
+snell_version=4
+snell_config_file="/etc/snell/snell-server.conf"
+shadow_tls_default_file="/etc/default/shadow-tls"
+
 install_socat=false
 ssh_port=
 install_go=false
@@ -41,8 +61,7 @@ use_backports=false
 byobu=false
 sudo_without_password=false
 
-[ ! -d "$wd" ] && wd=/tmp/ubuntu.$(date +%s) && mkdir -p "$wd"
-[ ! -d "$wd" ] && echo "failed to create working directory" && exit 1
+[ ! -d "$wd" ] && error "failed to create working directory"
 
 if ((EUID != 0)); then
     echo "Granting root privileges for ""$(basename "$0")"
@@ -71,6 +90,11 @@ function warn() {
 
 function error() {
     echo -e "\033[1;31m${*}\033[0m"
+    exit 1
+}
+
+function info() {
+    echo -e "\033[1;32m${*}\033[0m"
 }
 
 function download() {
@@ -85,7 +109,9 @@ function download() {
     fi
     [ -f "$target" ] && rm -rf "$target"
     echo "Downloading $url to $target"
-    curl --progress-bar -Lo "$target" "$url"
+    if ! curl --progress-bar -sf -Lo "$target" "$url"; then
+        error "Failed to download $url"
+    fi
 }
 
 function cidr_to_netmask() {
@@ -117,15 +143,15 @@ function netmask() {
     else
         mask=$(cidr_to_netmask "$(ip -"$type" -o addr show "$if" | head -1 | awk '{split($4,a,"/"); print a[2]}')")
     fi
-    [ -z "$mask" ] && echo "failed to get netmask" && exit 1
+    [ -z "$mask" ] && error "failed to get netmask"
     # dirty hack for google cloud
-    if [[ "$type" == "4" && "$mask" == "255.255.255.255" ]]; then
+    if [ "$type" == "4" ] && [ "$mask" == "255.255.255.255" ]; then
         asn=$(curl -s "https://ipconfig.io/json" | jq -r '.asn_org' 2>/dev/null)
         if [ "$asn" == "GOOGLE-CLOUD-PLATFORM" ]; then
             mask="255.255.255.0"
         fi
     fi
-    [ -z "$mask" ] && echo "failed to get netmask" && exit 1
+    [ -z "$mask" ] && error "failed to get netmask"
     echo "$mask"
 }
 
@@ -149,18 +175,12 @@ function dns() {
 }
 
 function get_disk() {
-    lsblk -oMOUNTPOINT,PKNAME -P | grep 'MOUNTPOINT="/"' | cut -d'"' -f4
+    lsblk -oMOUNTPOINT,PKNAME -P | grep 'MOUNTPOINT="/"' | cut -d'"' -f4 | sed 's/[0-9]//g'
 }
 
 function partition_type() {
     local disk="$1"
     fdisk -l "$disk" | awk '/Disklabel type:/ {print $3}'
-}
-
-function grub_config() {
-    grub_dir=$(find /boot -type d -name "grub*" 2>/dev/null | head -n1)
-    [ -z "$grub_dir" ] && return
-    find "$grub_dir" -regextype posix-egrep -regex ".*/(grub.conf|grub.cfg)"
 }
 
 function ipv6_enabled() {
@@ -182,12 +202,12 @@ while [ $# -gt 0 ]; do
         efi=true
         shift
         ;;
-    -es | --esp-size)
+    -esp | --esp-size)
         esp="$2"
         shift 2
         ;;
     -bs | --boot-size)
-        boot="$2"
+        boot_size="$2"
         shift 2
         ;;
     -f | --fullname)
@@ -222,6 +242,26 @@ while [ $# -gt 0 ]; do
         hostname="$2"
         shift 2
         ;;
+    -s | --static-ip)
+        static_ip=true
+        shift
+        ;;
+    -ip | --ip-address)
+        ip_address="$2"
+        shift 2
+        ;;
+    -nm | --netmask)
+        netmask="$2"
+        shift 2
+        ;;
+    -gw | --gateway)
+        gateway="$2"
+        shift 2
+        ;;
+    -dns | --dns)
+        dns="$2"
+        shift 2
+        ;;
     -t | --timezone)
         timezone="$2"
         shift 2
@@ -247,7 +287,9 @@ while [ $# -gt 0 ]; do
         shift
         ;;
     --provision)
+        provision=true
         install_shadowsocks=true
+        install_shadow_tls=true
         install_go=true
         install_im=true
         install_fish=true
@@ -265,13 +307,45 @@ while [ $# -gt 0 ]; do
         authorized_keys_url="$2"
         shift 2
         ;;
-    -ssp | --shadowsocks-password)
-        shadowsocks_password="$2"
+    -stls | --shadow-tls)
+        install_shadow_tls=true
+        shift
+        ;;
+    --shadow-tls-port)
+        shadow_tls_port="$2"
+        shift 2
+        ;;
+    --shadow-tls-password)
+        shadow_tls_password="$2"
+        shift 2
+        ;;
+    --snell-port)
+        snell_port="$2"
+        shift 2
+        ;;
+    --snell-psk)
+        snell_psk="$2"
+        shift 2
+        ;;
+    --shadow-tls-obfs)
+        shadow_tls_obfs_host="$2"
         shift 2
         ;;
     -ss | --shadowsocks-libev)
         install_shadowsocks=true
         shift
+        ;;
+    -ssp | --shadowsocks-password)
+        shadowsocks_password="$2"
+        shift 2
+        ;;
+    -sspobfs | --shadowsocks-obfs-host)
+        shadowsocks_obfs_host="$2"
+        shift 2
+        ;;
+    -sspt | --shadowsocks-port)
+        shadowsocks_port="$2"
+        shift 2
         ;;
     --socat)
         install_socat=true
@@ -313,6 +387,10 @@ while [ $# -gt 0 ]; do
         sudo_without_password=true
         shift
         ;;
+    --dry-run)
+        dry_run=true
+        shift
+        ;;
     *)
         POSITIONAL+=("$1")
         shift
@@ -326,8 +404,7 @@ case $(uname -m) in
 amd64 | x86_64 | x64 | 64) arch=amd64 ;;
 aarch64 | arm64) arch=arm64 ;;
 *)
-    echo "unsupported arch $(uname -m)"
-    exit 1
+    error "unsupported arch $(uname -m)"
     ;;
 esac
 
@@ -375,16 +452,28 @@ restore_dpkg_config
 [ -z "$uid" ] && uid=$(LC_ALL=C tr </dev/urandom -dc '0-9' | head -c 4)
 
 # random password if not specified
-password_hash=
 [ -z "$password" ] && {
     password_hash=$(grep </etc/shadow "^$username:" | cut -d: -f2)
 }
 
 if [ -z "$password_hash" ]; then
-    [ -z "$password" ] && password="$(pwgen -nsy 32 1)"
-    password_hash="$(mkpasswd -m sha-512 -S "$(pwgen -nsy 16 1)" "$password" 2>/dev/null)" ||
+    [ -z "$password" ] && {
+        password="$(pwgen -nsy 32 1 2>/dev/null)" ||
+            password="$(mkpasswd -l 32 -C 16 -s 4 2>/dev/null)" ||
+            password="$(openssl rand -base64 32 2>/dev/null)" ||
+            password="$(busybox mkpasswd -l 32 -C 16 -s 4 2>/dev/null)" ||
+            password="$(tr -dc 'a-zA-Z0-9' </dev/urandom | head -c 32 2>/dev/null)"
+    }
+
+    salt="$(pwgen -nsy 16 1 2>/dev/null)" ||
+        salt="$(mkpasswd -l 16 -C 8 -s 4 2>/dev/null)" ||
+        salt="$(openssl rand -base64 16 2>/dev/null)" ||
+        salt="$(busybox mkpasswd -l 16 -C 8 -s 4 2>/dev/null)" ||
+        salt="$(tr -dc 'a-zA-Z0-9' </dev/urandom | head -c 16 2>/dev/null)"
+
+    password_hash="$(mkpasswd -m sha-512 -S "$salt" "$password" 2>/dev/null)" ||
         password_hash="$(openssl passwd -6 "$password" 2>/dev/null)" ||
-        password_hash="$(busybox mkpasswd -m sha-512 -S "$(pwgen -nsy 16 1)" "$password" 2>/dev/null)" || {
+        password_hash="$(busybox mkpasswd -m sha-512 -S "$salt" "$password" 2>/dev/null)" || {
         for python in python3 python python2; do
             installed "$python" || continue
             password_hash=$("$python" -c 'import crypt, sys; print(crypt.crypt(sys.argv[1], crypt.mksalt(crypt.METHOD_SHA256)))' "$password" 2>/dev/null) && break
@@ -393,7 +482,7 @@ if [ -z "$password_hash" ]; then
 
 fi
 
-[ -z "$password_hash" ] && echo "failed to get password hash" && exit 1
+[ -z "$password_hash" ] && error "failed to get password hash"
 
 [ -z "$hostname" ] && hostname="$(hostname)"
 [ -z "$hostname" ] && hostname="$(cat /etc/hostname 2>/dev/null)"
@@ -415,13 +504,95 @@ fi
 [ -z "$ntp_server" ] && ntp_server="$(timedatectl 2>/dev/null | awk '/NTP:/ {print $3}')"
 [ -z "$ntp_server" ] && ntp_server="time.cloudflare.com"
 
-[ -z "$shadowsocks_password" ] && [ -f "$shadowsocks_config" ] && {
-    shadowsocks_password="$(grep <"$shadowsocks_config" "password" 2>/dev/null | cut -d'"' -f4)"
+[ "$install_shadowsocks" = true ] && {
+    [ -z "$shadowsocks_password" ] && {
+        [ -f "$shadowsocks_config" ] && shadowsocks_password="$(grep 2>/dev/null <"$shadowsocks_config" -Eo "\"password\"\s*:\s*\"[^\"]+\"" | cut -d'"' -f4)"
+        [ -z "$shadowsocks_password" ] && {
+            shadowsocks_password="$(pwgen -ns 32 1 2>/dev/null)" ||
+                shadowsocks_password="$(busybox pwgen -ns 32 1 2>/dev/null)" ||
+                shadowsocks_password="$(openssl rand -base64 32 2>/dev/null)" ||
+                shadowsocks_password="$(busybox mkpasswd -l 32 -C 16 2>/dev/null)" ||
+                shadowsocks_password="$(tr -dc 'a-zA-Z0-9' </dev/urandom | head -c 32 2>/dev/null)"
+        }
+        [ -z "$shadowsocks_password" ] && error "Shadowsocks password is required with --shadowsocks, please re-run the script with --shadowsocks-password option"
+    }
+
+    [ -z "$shadowsocks_port" ] && {
+        [ -f "$shadowsocks_config" ] && shadowsocks_port="$(grep 2>/dev/null <"$shadowsocks_config" -Eo "\"server_port\"\s*:\s*[0-9]+[^,]" | cut -d: -f2 | tr -d ' ')"
+        while [ -z "$shadowsocks_port" ] || [ "$shadowsocks_port" = "$ssh_port" ]; do
+            shadowsocks_port=$(shuf -i 10000-65535 -n 1 2>/dev/null) ||
+                shadowsocks_port=$(awk -v min=10000 -v max=65535 'BEGIN{srand(); print int(min+rand()*(max-min+1))}')
+        done
+        [ -z "$shadowsocks_port" ] && error "Shadowsocks port is required with --shadowsocks, please re-run the script with --shadowsocks-port option"
+    }
+
+    [ -z "$shadowsocks_obfs_host" ] && {
+        [ -f "$shadowsocks_config" ] && shadowsocks_obfs_host="$(grep 2>/dev/null <"$shadowsocks_config" -Eo "obfs-host=.*[^,\"]" | cut -d'=' -f2)"
+        [ -z "$shadowsocks_obfs_host" ] && {
+            warn "shadowsocks obfs host is not set, will use gateway.icloud.com as default"
+            shadowsocks_obfs_host="gateway.icloud.com"
+        }
+    }
 }
 
-[ -z "$shadowsocks_password" ] && [ "$install_shadowsocks" = true ] && {
-    shadowsocks_password="$(pwgen -ns 32 1 2>/dev/null)" ||
-        shadowsocks_password="$(busybox pwgen -ns 32 1 2>/dev/null)"
+[ "$install_shadow_tls" = true ] && {
+    [ -z "$snell_port" ] && {
+        [ -f "$snell_config_file" ] && snell_port="$(grep 2>/dev/null <"$snell_config_file" -oE "listen = .*" | awk -F ':' '{print $NF}' | tr -d ' ')"
+        while [ -z "$snell_port" ] || [ "$snell_port" = "$shadowsocks_port" ] || [ "$snell_port" = "$ssh_port" ]; do
+            snell_port=$(shuf -i 10000-65535 -n 1 2>/dev/null) ||
+                snell_port=$(awk -v min=10000 -v max=65535 'BEGIN{srand(); print int(min+rand()*(max-min+1))}')
+        done
+        [ -z "$snell_port" ] && error "Snell port is required with --shadow-tls, please re-run the script with --snell-port option"
+    }
+
+    [ -z "$snell_psk" ] && {
+        [ -f "$snell_config_file" ] && snell_psk="$(grep 2>/dev/null <"$snell_config_file" -oE "psk = .*" | awk -F '=' '{print $NF}' | tr -d ' ')"
+        [ -z "$snell_psk" ] && {
+            snell_psk="$(pwgen -ns 32 1 2>/dev/null)" ||
+                snell_psk="$(uuidgen -r 2>/dev/null)" ||
+                snell_psk="$(tr </dev/urandom -dc 'a-zA-Z0-9' | fold -w 32 | head -n 1 2>/dev/null)"
+        }
+        [ -z "$snell_psk" ] && error "Snell PSK is required with --shadow-tls, please re-run the script with --snell-psk option"
+    }
+
+    [ -z "$shadow_tls_password" ] && {
+        [ -f "$shadow_tls_default_file" ] && shadow_tls_password=$(grep 2>/dev/null <"$shadow_tls_default_file" -oE "shadow_tls_password=.*" | awk -F '=' '{print $NF}' | tr -d ' ')
+        [ -z "$shadow_tls_password" ] && {
+            shadow_tls_password="$(pwgen -ns 32 1 2>/dev/null)" ||
+                shadow_tls_password="$(uuidgen -r 2>/dev/null)" ||
+                shadow_tls_password="$(tr </dev/urandom -dc 'a-zA-Z0-9' | fold -w 32 | head -n 1 2>/dev/null)"
+        }
+        [ -z "$shadow_tls_password" ] && error "Shadow TLS password is required with --shadow-tls, please re-run the script with --shadow-tls-password option"
+    }
+
+    [ -z "$shadow_tls_port" ] && {
+        [ -f "$shadow_tls_default_file" ] && shadow_tls_port=$(grep 2>/dev/null <"$shadow_tls_default_file" -oE "shadow_tls_port=.*" | awk -F '=' '{print $NF}' | tr -d ' ')
+        # should not use snell port
+        while [ -z "$shadow_tls_port" ] || [ "$shadow_tls_port" = "$shadowsocks_port" ] || [ "$shadow_tls_port" = "$snell_port" ] || [ "$shadow_tls_port" = "$ssh_port" ]; do
+            shadow_tls_port=$(shuf -i 10000-65535 -n 1 2>/dev/null) ||
+                shadow_tls_port=$(awk -v min=10000 -v max=65535 'BEGIN{srand(); print int(min+rand()*(max-min+1))}')
+        done
+        [ -z "$shadow_tls_port" ] && error "Shadow TLS port is required with --shadow-tls, please re-run the script with --shadow-tls-port option"
+    }
+
+    [ -z "$shadow_tls_obfs_host" ] && {
+        [ -f "$snell_config_file" ] && shadow_tls_obfs_host="$(grep 2>/dev/null <"$snell_config_file" -oE "obfs-host = .*" | awk -F '=' '{print $NF}' | tr -d ' ')"
+        [ -z "$shadow_tls_obfs_host" ] && [ -f "$shadow_tls_default_file" ] && {
+            shadow_tls_obfs_host="$(grep 2>/dev/null <"$shadow_tls_default_file" -oE "obfs_host=.*" | awk -F '=' '{print $NF}' | tr -d ' ')"
+        }
+        [ -z "$shadow_tls_obfs_host" ] && {
+            warn "Shadow TLS obfs host is not set, will use gateway.icloud.com as default"
+            shadow_tls_obfs_host="gateway.icloud.com"
+        }
+    }
+
+    [ -z "$snell_version" ] && {
+        [ -f "$snell_config_file" ] && snell_version="$(grep 2>/dev/null <"$snell_config_file" -oE "version = .*" | awk -F '=' '{print $NF}' | tr -d ' ')"
+        [ -z "$snell_version" ] && {
+            warn "Snell version is not set, will use 4 as default"
+            snell_version=4
+        }
+    }
 }
 
 [ -n "$authorized_keys_url" ] && {
@@ -443,17 +614,27 @@ ssh_private_key=""
     }
 }
 
-ip_address="$(ip_address)"
-netmask="$(netmask)"
-gateway="$(default_gateway)"
-dns="$(dns)"
-[ -z "$ip_address" ] && echo "failed to get ip address" && exit 1
-[ -z "$netmask" ] && echo "failed to get netmask" && exit 1
-[ -z "$gateway" ] && echo "failed to get gateway" && exit 1
-[ -z "$dns" ] && dns="1.1.1.1"
+[ -z "$ssh_port" ] && {
+    ssh_port="$(grep <"/etc/ssh/sshd_config" "Port " 2>/dev/null | cut -d' ' -f2)"
+    [ -z "$ssh_port" ] && ssh_port="22"
+}
+
+[ -z "$ip_address" ] && ip_address="$(ip_address)"
+[ -z "$netmask" ] && netmask="$(netmask)"
+[ -z "$gateway" ] && gateway="$(default_gateway)"
+[ -z "$dns" ] && dns="$(dns)"
+[ -z "$ip_address" ] && error "failed to get ip address"
+[ -z "$netmask" ] && error "failed to get netmask"
+[ -z "$gateway" ] && error "failed to get gateway"
+[ -z "$dns" ] && {
+    warn "failed to get dns, will use 1.1.1.1 as default"
+    dns="1.1.1.1"
+}
 
 [ "$network_console" = true ] && {
     nc_password="$(pwgen -nsy 16 1 2>/dev/null)" ||
+        nc_password="$(openssl rand -base64 16 2>/dev/null)" ||
+        nc_password="$(busybox mkpasswd -l 16 -C 8 -s 4 2>/dev/null)" ||
         nc_password="$(busybox pwgen -nsy 16 1 2>/dev/null)" ||
         nc_password="$(LC_ALL=C tr </dev/urandom -dc 'a-zA-Z0-9' | head -c 16 2>/dev/null)"
 }
@@ -470,14 +651,28 @@ warn "timezone:                $timezone"
 warn "ntp server:              $ntp_server"
 warn "network console:         $network_console"
 [ -n "$nc_password" ] && warn "netwrk console password: $nc_password"
-warn "shadowsocks password:    $shadowsocks_password"
+warn "install Shadowsocks:     $install_shadowsocks"
+[ "$install_shadowsocks" = true ] && {
+    warn "shadowsocks port:        $shadowsocks_port"
+    warn "shadowsocks password:    $shadowsocks_password"
+    warn "sahdowsocks obfs host:   $shadowsocks_obfs_host"
+}
 warn "interface:               $interface"
 warn "ip:                      $ip_address"
 warn "netmask:                 $netmask"
 warn "gateway:                 $gateway"
 warn "dns:                     $dns"
+warn "ssh port:                $ssh_port"
 [ -n "$ssh_private_key" ] && warn "ssh private key: \n$ssh_private_key"
 [ -n "$authorized_keys" ] && warn "ssh public key: \n$authorized_keys"
+warn "install Shadow TLS       $install_shadow_tls"
+[ "$install_shadow_tls" = true ] && {
+    warn "snell port:              $snell_port"
+    warn "snell psk:               $snell_psk"
+    warn "shadow-tls port:         $shadow_tls_port"
+    warn "shadow-tls password:     $shadow_tls_password"
+    warn "shadow-tls obfs host:    $shadow_tls_obfs_host"
+}
 warn "#######################################################################"
 
 mirror="http://ports.ubuntu.com"
@@ -498,8 +693,7 @@ preseed_file="$boot_dir/preseed.cfg"
 [ -d "$wd" ] && rm -rf "$wd"
 mkdir -p "$boot_dir"
 if [ ! -d "$wd" ] || [ ! -d "$boot_dir" ]; then
-    echo "failed to create $wd or $boot_dir"
-    exit 1
+    error "failed to create $wd or $boot_dir"
 fi
 
 # should remove the trailing slash if any
@@ -513,8 +707,8 @@ mirror_folder="$(echo "$mirror" | awk -F''"${mirror_host}"'' '{print $2}')"
 download "$initrd_url" "$initrd_gz"
 download "$linux_url" "$vmlinuz_img"
 
-[ ! -f "$initrd_gz" ] && echo "initrd image not downloadded" && exit 1
-[ ! -f "$vmlinuz_img" ] && echo "vmlinuz not downloadded" && exit 1
+[ ! -f "$initrd_gz" ] && error "initrd image not downloadded"
+[ ! -f "$vmlinuz_img" ] && error "vmlinuz not downloadded"
 
 cat >>"$preseed_file" <<EOF
 ### Localization
@@ -534,20 +728,37 @@ d-i base-installer/kernel/override-image string $kernel
 d-i netcfg/choose_interface select $interface
 
 # increase dhcp timeout
-d-i netcfg/dhcp_timeout string 30
-d-i netcfg/dhcpv6_timeout string 30
+d-i netcfg/dhcp_timeout string 60
+d-i netcfg/dhcpv6_timeout string 60
+EOF
 
+if [ "$static_ip" = true ]; then
+    # Static IP configuration.
+    cat >>"$preseed_file" <<EOF
+# Static IP configuration.
+d-i netcfg/disable_autoconfig boolean true
+EOF
+else
+    # DHCP configuration.
+    cat >>"$preseed_file" <<EOF
+# DHCP configuration.
 d-i netcfg/dhcp_failed note
 d-i netcfg/dhcp_options select Configure network manually
+EOF
+fi
+cat >>"$preseed_file" <<EOF
 d-i netcfg/get_ipaddress string $ip_address
 d-i netcfg/get_netmask string $netmask
 d-i netcfg/get_gateway string $gateway
 d-i netcfg/get_nameservers string $dns
 d-i netcfg/hostname string $hostname
+d-i netcfg/domain string $domain
+d-i netcfg/get_hostname string $hostname
+d-i netcfg/get_domain string$domain
 d-i netcfg/no_default_route boolean true
 d-i netcfg/confirm_static boolean true
-
 d-i hw-detect/load_firmware boolean true
+
 EOF
 
 [ "$network_console" = true ] && {
@@ -574,6 +785,7 @@ EOF
 }
 
 cat >>"$preseed_file" <<EOF
+
 # Mirror settings
 d-i mirror/country string manual
 d-i mirror/http/hostname string $mirror_host
@@ -592,11 +804,11 @@ d-i passwd/user-uid string $uid
 d-i user-setup/allow-password-weak boolean false
 d-i user-setup/encrypt-home boolean false
 
-#Clock and time zone setup
-d-i clock-setup/utc boolean true
+# Clock and time zone setup
 d-i time/zone string $timezone
-#d-i clock-setup/ntp-server string $ntp_server
-#d-i clock-setup/ntp boolean true
+d-i clock-setup/utc boolean true
+d-i clock-setup/ntp boolean true
+d-i clock-setup/ntp-server string $ntp_server
 
 EOF
 
@@ -632,7 +844,7 @@ else
         echo "d-i partman-auto/disk string $disk" >>"$preseed_file"
     fi
 
-    [ "$gpt" == "true" ] && {
+    [ "$gpt" = true ] && {
         cat >>"$preseed_file" <<EOF
 d-i partman-basicfilesystems/choose_label string gpt
 d-i partman-basicfilesystems/default_label string gpt
@@ -642,6 +854,7 @@ d-i partman/choose_label string gpt
 d-i partman/default_label string gpt
 EOF
     }
+
     cat >>"$preseed_file" <<EOF
 d-i partman/default_filesystem string $filesystem
 EOF
@@ -653,7 +866,7 @@ EOF
     if [ "$efi" = true ]; then
         # shellcheck disable=SC2129
         cat >>"$preseed_file" <<EOF
-        $esp $esp $esp fat32                       \\
+    $esp $esp $esp fat32                       \\
 EOF
         cat >>"$preseed_file" <<"EOF"
             $iflabel{ gpt }                     \
@@ -665,7 +878,7 @@ EOF
 EOF
 
         cat >>"$preseed_file" <<EOF
-        $boot $boot $boot ext4                        \\
+        $boot_size $boot_size $boot_size ext4                        \\
 EOF
 
         cat >>"$preseed_file" <<"EOF"
@@ -719,6 +932,13 @@ d-i partman-partitioning/confirm_write_new_label boolean true
 d-i partman/choose_partition select finish
 d-i partman/confirm boolean true
 d-i partman/confirm_nooverwrite boolean true
+# If one of the disks that are going to be automatically partitioned
+# contains an old LVM configuration, the user will normally receive a
+# warning. Preseed this away
+d-i partman-lvm/device_remove_lvm boolean true
+
+# And the same goes for the confirmation to write the lvm partitions.
+d-i partman-lvm/confirm boolean true
 EOF
 fi
 
@@ -744,52 +964,77 @@ d-i debian-installer/quiet boolean false
 d-i debian-installer/splash boolean false
 EOF
 
-late_command="curl -sL https://install.lol/provision | bash -s --"
+[ "$provision" = true ] && {
+    late_command="curl -sL https://install.lol/provision | bash -s --"
 
-if ipv6_enabled; then
-    late_command="$late_command --ipv6-dhcp"
-fi
+    if ipv6_enabled; then
+        late_command="$late_command --ipv6-dhcp"
+    fi
 
-[ -n "$username" ] && late_command="$late_command --username \"$username\""
-[ -n "$ssh_port" ] && late_command="$late_command --ssh \"$ssh_port\""
-[ -n "$shadowsocks_password" ] && late_command="$late_command --shadowsocks --shadowsocks-password \"$shadowsocks_password\""
-[ -n "$authorized_keys" ] && late_command="$late_command --authorized-keys \"$authorized_keys\""
-[ "$install_socat" = true ] && late_command="$late_command --socat"
-[ "$install_go" = true ] && late_command="$late_command --go"
-[ "$install_im" = true ] && late_command="$late_command --im"
-[ "$install_neofetch" = true ] && late_command="$late_command --neofetch"
-[ "$install_fish" = true ] && late_command="$late_command --fish"
-[ "$bbr" = true ] && late_command="$late_command --bbr"
-[ "$use_backports" = true ] && late_command="$late_command --backports"
-[ "$byobu" = true ] && late_command="$late_command --byobu"
-[ "$sudo_without_password" = true ] && late_command="$late_command --sudo-without-password"
+    [ -n "$username" ] && late_command="$late_command --username \"$username\""
+    [ -n "$ssh_port" ] && late_command="$late_command --ssh \"$ssh_port\""
+    [ -n "$authorized_keys" ] && late_command="$late_command --authorized-keys \"$authorized_keys\""
+    [ "$install_socat" = true ] && late_command="$late_command --socat"
+    [ "$install_go" = true ] && late_command="$late_command --go"
+    [ "$install_im" = true ] && late_command="$late_command --im"
+    [ "$install_neofetch" = true ] && late_command="$late_command --neofetch"
+    [ "$install_fish" = true ] && late_command="$late_command --fish"
+    [ "$bbr" = true ] && late_command="$late_command --bbr"
+    [ "$use_backports" = true ] && late_command="$late_command --backports"
+    [ "$byobu" = true ] && late_command="$late_command --byobu"
+    [ "$sudo_without_password" = true ] && late_command="$late_command --sudo-without-password"
 
-[ -n "$late_command" ] && {
-    cat >>"$preseed_file" <<EOF
+    [ "$install_shadowsocks" = true ] && {
+        late_command="$late_command --shadowsocks"
+        [ -n "$shadowsocks_port" ] && late_command="$late_command --shadowsocks-port \"$shadowsocks_port\""
+        [ -n "$shadowsocks_password" ] && late_command="$late_command --shadowsocks-password \"$shadowsocks_password\""
+        [ -n "$shadowsocks_obfs_host" ] && late_command="$late_command --shadowsocks-obfs-host \"$shadowsocks_obfs_host\""
+    }
+
+    [ "$install_shadow_tls" = true ] && {
+        late_command="$late_command --shadow-tls"
+        [ -n "$shadow_tls_password" ] && late_command="$late_command --shadow-tls-password \"$shadow_tls_password\""
+        [ -n "$shadow_tls_port" ] && late_command="$late_command --shadow-tls-port \"$shadow_tls_port\""
+        [ -n "$shadow_tls_obfs_host" ] && late_command="$late_command --shadow-tls-obfs \"$shadow_tls_obfs_host\""
+        [ -n "$snell_port" ] && late_command="$late_command --snell-port \"$snell_port\""
+        [ -n "$snell_psk" ] && late_command="$late_command --snell-psk \"$snell_psk\""
+    }
+
+    [ -n "$late_command" ] && {
+        cat >>"$preseed_file" <<EOF
 # Provisioning
 d-i preseed/late_command string in-target sh -c '$late_command'
 EOF
+    }
 }
 
 pushd "$boot_dir" >/dev/null 2>&1 || exit 1
 # extract initrd
-gzip -d <"$initrd_gz" | cpio --extract --verbose --make-directories --no-absolute-filenames >>/dev/null 2>&1
+if ! gzip -d <"$initrd_gz" | cpio --extract --verbose --make-directories --no-absolute-filenames >>/dev/null 2>&1; then
+    error "failed to extract $initrd_gz"
+fi
 # add preseed.cfg
 find . | cpio -H newc --create --verbose | gzip -9 >"$initrd_img"
 popd >/dev/null 2>&1 || exit 1
 
-[ ! -f "$initrd_img" ] && echo "updated initrd image not found" && exit 1
+[ ! -f "$initrd_img" ] && error "updated initrd image not found"
 
 cp -f "$initrd_img" "/boot/$initrd" || sudo cp -f "$initrd_img" "/boot/$initrd"
 cp -f "$vmlinuz_img" "/boot/$vmlinuz" || sudo cp -f "$vmlinuz_img" "/boot/$vmlinuz"
 
-grub_cfg=$(grub_config)
-cp "$grub_cfg" "$grub_cfg.bak$(date +%s)"
+grub_dir=$(find /boot -type d -name "grub*" 2>/dev/null | head -n1)
+grub_cfg=$(find "$grub_dir" -regextype posix-egrep -regex ".*/(grub.conf|grub.cfg)" 2>/dev/null)
+[ -z "$grub_cfg" ] && grub_cfg=$(find /boot -regextype posix-egrep -regex ".*/(grub.conf|grub.cfg)" 2>/dev/null | head -n1)
+[ -z "$grub_cfg" ] && error "Failed to find grub.cfg"
+[ ! -f "$grub_cfg" ] && error "Failed to find grub.cfg at $grub_cfg"
+[ "$dry_run" == false ] && cp "$grub_cfg" "$grub_cfg.$timestamp.bak"
 grub_custom_file="$grub_d/40_custom"
 
 rm -f "$grub_custom_file" || sudo rm -f "$grub_custom_file"
 # try to update grub.cfg before adding custom entry
-grub-mkconfig -o "$grub_cfg" || sudo grub-mkconfig -o "$grub_cfg"
+grub-mkconfig -o "$grub_cfg" 2>/dev/null || grub2-mkconfig -o "$grub_cfg" 2>/dev/null || {
+    err 'Could not find "grub-mkconfig" or "grub2-mkconfig" command'
+}
 menu_entries=$(sed <"$grub_cfg" -n '1h;1!H;$g;s/\n/%%%%%%%/g;$p' | grep -Pom 1 'menuentry\ [^{]*({(((?>[^{}]+)|(?1))*)})' | sed 's/%%%%%%%/\n/g')
 second_menuentry_start=$(awk '/menuentry/{print NR}' <<<"$menu_entries" | sed -n 2p)
 if [ -z "$second_menuentry_start" ]; then
@@ -817,7 +1062,7 @@ for old_initrd in $old_initrds; do
     install_menu_entry=${install_menu_entry//$old_initrd/$initrd}
 done
 
-cat >>"$grub_custom_file" <<"EOF"
+cat >"$grub_custom_file" <<"EOF"
 #!/bin/sh
 exec tail -n +3 $0
 # This file provides an easy way to add custom menu entries.  Simply type the
@@ -831,14 +1076,31 @@ fi
 
 echo "$install_menu_entry" >>"$grub_custom_file"
 
-[ ! -f "$grub_custom_file" ] && echo "grub menu not generated" && exit 1
+[[ ! -f "$grub_custom_file" ]] && error "grub menu not generated"
 
 chmod +x "$grub_custom_file"
-grub-mkconfig -o "$grub_cfg" || sudo grub-mkconfig -o "$grub_cfg"
-! grep -q "$title" "$grub_cfg" && echo "grub menu not updated" && exit 1
+# create a temp file to hold the grub.cfg if we are doing a dry run
+[ "$dry_run" = true ] && grub_cfg=$wd/grub.cfg
+grub-mkconfig -o "$grub_cfg" 2>/dev/null || grub2-mkconfig -o "$grub_cfg" 2>/dev/null || {
+    err 'Could not find "grub-mkconfig" or "grub2-mkconfig" command'
+}
+[ ! -f "$grub_cfg" ] && error "grub menu not generated"
+! grep -q "$title" "$grub_cfg" && error "grub menu not updated"
+echo "$grub_cfg updated"
+popd >/dev/null 2>&1 || error "Failed to change directory from $wd"
 
-echo "grub menu updated"
-grub-reboot "$title" || sudo grub-reboot "$title"
+[ "$dry_run" = true ] && {
+    echo "Dry run complete"
+    info "#######################################################################"
+    info "preseed file: $preseed_file"
+    info "grub menu   : $grub_cfg"
+    info "#######################################################################"
+    exit 0
+}
+
+grub-reboot "$title" 2>/dev/null || grub2-reboot "$title" 2>/dev/null || {
+    err 'Could not find "grub-reboot" or "grub2-reboot" command'
+}
 echo "rebooting..."
 sleep 3
-reboot || sudo reboot
+reboot
