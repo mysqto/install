@@ -49,11 +49,16 @@ function _install_fish() {
         add-apt-repository -y ppa:fish-shell/release-3
     elif [ "$distro" == "debian" ]; then
         debian_release="$(lsb_release -rs 2>/dev/null)"
-        echo "deb http://download.opensuse.org/repositories/shells:/fish:/release:/3/Debian_$debian_release/ /" |
-            tee /etc/apt/sources.list.d/shells:fish:release:3.list
-        curl -fsSL "https://download.opensuse.org/repositories/shells:fish:release:3/Debian_$debian_release/Release.key" |
-            gpg --dearmor | tee /etc/apt/trusted.gpg.d/shells_fish_release_3.gpg >/dev/null
-        apt -y update
+        latest_debian_stable_version=$(curl -sL https://www.debian.org/releases/stable/ | grep -oP 'Debian \K\d+' | head -n1 2>/dev/null)
+        [ -z "$latest_debian_stable_version" ] && error "failed to get debian release version"
+        ((debian_release <= latest_debian_stable_version)) && {
+            echo "deb http://download.opensuse.org/repositories/shells:/fish:/release:/3/Debian_$debian_release/ /" |
+                tee /etc/apt/sources.list.d/shells:fish:release:3.list
+            curl -fsSL "https://download.opensuse.org/repositories/shells:fish:release:3/Debian_$debian_release/Release.key" |
+                gpg --dearmor | tee /etc/apt/trusted.gpg.d/shells_fish_release_3.gpg >/dev/null
+            apt -y update
+        } || warn "current debian release $debian_release is not stable, use default version of fish"
+
     fi
     apt -y --no-install-recommends install fish
 }
