@@ -151,7 +151,7 @@ function download_shadow_tls() {
         arch="armv7"
         ;;
     *)
-        err "Unsupported architecture: $(uname -m)"
+        error "Unsupported architecture: $(uname -m)"
         ;;
     esac
     installed_version="$(shadow-tls -V 2>/dev/null | grep "shadow-tls" | cut -d ' ' -f 2)"
@@ -160,12 +160,12 @@ function download_shadow_tls() {
     if [ "$installed_version" == "$latest_release" ]; then
         warn "Installed shadow-tls version is $installed_version, latest shadow-tls version is $latest_release, no need to update shadow-tls!"
     fi
-    [ -z "$latest_release" ] && err "Failed to get latest release of shadow-tls"
+    [ -z "$latest_release" ] && error "Failed to get latest release of shadow-tls"
     download_url="$(curl -sL "https://api.github.com/repos/$shadow_tls_repo/releases/tags/$latest_release" | grep "browser_download_url" | grep "$arch-.*-linux" | cut -d '"' -f 4)"
-    [ -z "$download_url" ] && err "Failed to get download url of shadow-tls"
+    [ -z "$download_url" ] && error "Failed to get download url of shadow-tls"
     download "$download_url" "$prefix/bin/shadow-tls"
     chmod +x "$prefix/bin/shadow-tls"
-    ! command -v shadow-tls >/dev/null 2>&1 && err "Failed to install shadow-tls"
+    ! command -v shadow-tls >/dev/null 2>&1 && error "Failed to install shadow-tls"
 }
 
 function enable_shadow_tls() {

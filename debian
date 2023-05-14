@@ -275,7 +275,7 @@ fi
             arch=i386
             ;;
         *)
-            err 'No "--architecture" specified'
+            error 'No "--architecture" specified'
             ;;
         esac
     }
@@ -435,7 +435,7 @@ while [ $# -gt 0 ]; do
         shift 2
         ;;
     --force-lowmem)
-        [ "$2" != 0 ] && [ "$2" != 1 ] && [ "$2" != 2 ] && err 'Low memory level can only be 0, 1 or 2'
+        [ "$2" != 0 ] && [ "$2" != 1 ] && [ "$2" != 2 ] && error 'Low memory level can only be 0, 1 or 2'
         force_lowmem=$2
         shift
         ;;
@@ -1258,7 +1258,7 @@ mkrelpath=$installer_directory
 [ "$dry_run" = true ] && mkrelpath=/boot
 installer_directory=$(grub-mkrelpath "$mkrelpath" 2>/dev/null) ||
     installer_directory=$(grub2-mkrelpath "$mkrelpath" 2>/dev/null) || {
-    err 'Could not find "grub-mkrelpath" or "grub2-mkrelpath" command'
+    error 'Could not find "grub-mkrelpath" or "grub2-mkrelpath" command'
 }
 [ "$dry_run" = true ] && installer_directory="$installer_directory/debian-$suite"
 
@@ -1299,7 +1299,7 @@ chmod +x "$grub_custom_file"
 # create a temp file to hold the grub.cfg if we are doing a dry run
 [ "$dry_run" = true ] && grub_cfg=$wd/grub.cfg
 grub-mkconfig -o "$grub_cfg" 2>/dev/null || grub2-mkconfig -o "$grub_cfg" 2>/dev/null || {
-    err 'Could not find "grub-mkconfig" or "grub2-mkconfig" command'
+    error 'Could not find "grub-mkconfig" or "grub2-mkconfig" command'
 }
 [ ! -f "$grub_cfg" ] && error "grub menu not generated"
 ! grep -q "$title" "$grub_cfg" && error "grub menu not updated"
@@ -1316,7 +1316,7 @@ popd >/dev/null 2>&1 || error "Failed to change directory from $wd"
 }
 
 grub-reboot "$title" 2>/dev/null || grub2-reboot "$title" 2>/dev/null || {
-    err 'Could not find "grub-reboot" or "grub2-reboot" command'
+    error 'Could not find "grub-reboot" or "grub2-reboot" command'
 }
 echo "rebooting..."
 sleep 3

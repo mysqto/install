@@ -25,7 +25,7 @@ function arch() {
             arch=i386
             ;;
         *)
-            err 'No "--architecture" specified'
+            error 'No "--architecture" specified'
             ;;
         esac
     }
@@ -99,7 +99,7 @@ function fix_grub() {
     [ -z "$disk" ] && warn "failed to get the disk" && return
     [[ "$disk" =~ ^/dev/ ]] || disk="/dev/$disk"
     local arch=
-    arch="$(uname -m)" || err "failed to get the architecture"
+    arch="$(uname -m)" || error "failed to get the architecture"
     grub_target="x86_64-efi"
     [ "$arch" == "aarch64" ] && grub_target="arm64-efi"
     grub-install "$disk" --target="$grub_target" --efi-directory=/boot/efi --boot-directory=/boot --recheck

@@ -1033,7 +1033,7 @@ grub_custom_file="$grub_d/40_custom"
 rm -f "$grub_custom_file" || sudo rm -f "$grub_custom_file"
 # try to update grub.cfg before adding custom entry
 grub-mkconfig -o "$grub_cfg" 2>/dev/null || grub2-mkconfig -o "$grub_cfg" 2>/dev/null || {
-    err 'Could not find "grub-mkconfig" or "grub2-mkconfig" command'
+    error 'Could not find "grub-mkconfig" or "grub2-mkconfig" command'
 }
 menu_entries=$(sed <"$grub_cfg" -n '1h;1!H;$g;s/\n/%%%%%%%/g;$p' | grep -Pom 1 'menuentry\ [^{]*({(((?>[^{}]+)|(?1))*)})' | sed 's/%%%%%%%/\n/g')
 second_menuentry_start=$(awk '/menuentry/{print NR}' <<<"$menu_entries" | sed -n 2p)
@@ -1082,7 +1082,7 @@ chmod +x "$grub_custom_file"
 # create a temp file to hold the grub.cfg if we are doing a dry run
 [ "$dry_run" = true ] && grub_cfg=$wd/grub.cfg
 grub-mkconfig -o "$grub_cfg" 2>/dev/null || grub2-mkconfig -o "$grub_cfg" 2>/dev/null || {
-    err 'Could not find "grub-mkconfig" or "grub2-mkconfig" command'
+    error 'Could not find "grub-mkconfig" or "grub2-mkconfig" command'
 }
 [ ! -f "$grub_cfg" ] && error "grub menu not generated"
 ! grep -q "$title" "$grub_cfg" && error "grub menu not updated"
@@ -1099,7 +1099,7 @@ popd >/dev/null 2>&1 || error "Failed to change directory from $wd"
 }
 
 grub-reboot "$title" 2>/dev/null || grub2-reboot "$title" 2>/dev/null || {
-    err 'Could not find "grub-reboot" or "grub2-reboot" command'
+    error 'Could not find "grub-reboot" or "grub2-reboot" command'
 }
 echo "rebooting..."
 sleep 3
