@@ -139,23 +139,29 @@ function _config_ssh() {
     [ $# -ne 2 ] && warn "config_ssh requires 2 arguments" && return 1
     username="$1"
     ssh_authorized_keys="$2"
-    [ -d "/home/$username/.ssh" ] && rm -rf "/home/$username/.ssh"
-    mkdir -p "/home/$username/.ssh"
+    user_home=$(eval echo "~$username")
+    [ -z "$user_home" ] && error "failed to get user $username home directory"
+    user_ssh_dir="$user_home/.ssh"
+    user_ssh_authorized_keys="$user_ssh_dir/authorized_keys"
+    [ -d "$user_ssh_dir" ] && rm -rf "$user_ssh_dir"
+    mkdir -p "$user_ssh_dir"
 
-    if grep -q "$ssh_authorized_keys" "/home/$username/.ssh/authorized_keys"; then
+    if grep -q "$ssh_authorized_keys" "$user_ssh_authorized_keys"; then
         warn "ssh_authorized_keys already exists"
     else
-        echo "$ssh_authorized_keys" >>"/home/$username/.ssh/authorized_keys"
+        echo "$ssh_authorized_keys" >>"$user_ssh_authorized_keys"
     fi
 
-    chown -R "$username:$username" "/home/$username/.ssh"
-    chmod 700 /home/"$username"/.ssh
-    chmod 600 /home/"$username"/.ssh/authorized_keys
+    chown -R "$username:$username" "$user_ssh_dir"
+    chmod 700 "$user_ssh_dir"
+    chmod 600 "$user_ssh_authorized_keys"
 
     # update sshd config
     sed -ri 's/^#?PasswordAuthentication.*/PasswordAuthentication no/g' /etc/ssh/sshd_config
     # disable root login
-    sed -ri 's/^#?PermitRootLogin.*/PermitRootLogin no/g' /etc/ssh/sshd_config
+    [ "$username" != "root" ] && {
+        sed -ri 's/^#?PermitRootLogin.*/PermitRootLogin no/g' /etc/ssh/sshd_config
+    }
 }
 
 function _create_user() {
