@@ -13,7 +13,8 @@ ExecStart=/etc/socat start
 TimeoutSec=0
 StandardOutput=tty
 RemainAfterExit=yes
-User=nobody
+Restart=always
+RestartSec=5s
 
 [Install]
 WantedBy=multi-user.target
