@@ -201,6 +201,8 @@ function _config_fish() {
         # install fisher
         su - "$username" -c 'set -U fish_user_paths /sbin'
         su - "$username" -c 'curl -sL https://git.io/fisher | source && fisher install jorgebucaran/fisher && fisher install mysqto/flash'
+        # run this twice to make sure fisher is installed
+        su - "$username" -c 'curl -sL https://git.io/fisher | source && fisher install jorgebucaran/fisher && fisher install mysqto/flash'
         echo "wait 5 seconds for fisher to install plugins" && sleep 5
     }
 }
