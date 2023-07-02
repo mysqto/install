@@ -122,14 +122,11 @@ has_cloud_kernel() {
     local arch="$2"
     local use_bpo_kernel="$3"
     case $suite in
-    stretch | oldoldstable)
-        [ "$arch" = amd64 ] && [ "$use_bpo_kernel" = true ] && return
-        ;;
-    buster | oldstable)
+    buster | oldoldstable)
         [ "$arch" = amd64 ] && return
         [ "$arch" = arm64 ] && [ "$use_bpo_kernel" = true ] && return
         ;;
-    bullseye | stable | bookworm | testing | sid | unstable)
+    bullseye | oldstable | bookworm | stable | trixie | testing | sid | unstable)
         [ "$arch" = amd64 ] || [ "$arch" = arm64 ] && return
         ;;
     esac
@@ -145,7 +142,7 @@ has_cloud_kernel() {
 has_backports() {
     local suite="$1"
     case $suite in
-    stretch | oldoldstable | buster | oldstable | bullseye | stable | bookworm | testing) return ;;
+    buster | oldoldstable | bullseye | oldstable | bookworm | stable | trixie | testing) return ;;
     esac
 
     warn "No backports kernel is available for $suite"
@@ -564,16 +561,16 @@ set -- "${POSITIONAL[@]}" # restore positional parameters
 }
 
 case $version in
-9 | stretch | oldoldstable)
-    suite=stretch
-    ;;
-10 | buster | oldstable)
+10 | buster | oldoldstable)
     suite=buster
     ;;
-11 | bullseye | stable)
+11 | bullseye | oldstable)
     suite=bullseye
     ;;
-12 | bookworm | testing)
+12 | bookworm | stable)
+    suite=bookworm
+    ;;
+13 | trixie | testing)
     suite=bookworm
     ;;
 sid | unstable)
@@ -599,10 +596,10 @@ esac
 
 [ -z "$daily" ] && {
     case $suite in
-    stretch | oldoldstable | buster | oldstable | bullseye | stable)
+    buster | oldoldstable | bullseye | oldstable | bookworm | stable)
         daily=false
         ;;
-    bookworm | testing | sid | unstable)
+    trixie | testing | sid | unstable)
         daily=true
         ;;
     esac
@@ -1096,10 +1093,10 @@ EOF
 
 [ -z "$security_archive" ] && {
     case $suite in
-    stretch | oldoldstable | buster | oldstable)
+    buster | oldoldstable | bullseye | oldstable)
         security_archive="$suite/updates"
         ;;
-    bullseye | stable | bookworm | testing)
+    bookworm | stable | trixie | testing)
         security_archive="$suite-security"
         ;;
     sid | unstable)
@@ -1213,9 +1210,6 @@ EOF
 
 pushd "$wd" >/dev/null 2>&1 || error "Failed to change directory to $wd"
 base_url="$mirror_protocol://$mirror_host$mirror_directory/dists/$suite/main/installer-$arch/current/images/netboot/debian-installer/$arch"
-[ "$suite" = stretch ] && [ "$efi" = true ] && {
-    base_url="$mirror_protocol://$mirror_host$mirror_directory/dists/buster/main/installer-$arch/current/images/netboot/debian-installer/$arch"
-}
 [ "$daily" = true ] && {
     new_base_url="https://d-i.debian.org/daily-images/$arch/daily/netboot/debian-installer/$arch"
     if curl -s --head "$new_base_url/initrd.gz" | head -n 1 | grep -q 200; then
