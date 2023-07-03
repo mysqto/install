@@ -89,9 +89,24 @@ function _enable_bbr() {
     sysctl -p
 }
 
+has_backports() {
+    local suite="$1"
+    case $suite in
+    stretch | oldoldstable | buster | oldstable | bullseye | stable | bookworm | testing) return ;;
+    esac
+
+    warn "backports is not avaiable on $suite"
+    return 1
+}
+
 function _enable_backports() {
     echo "Enabling backports for Debian"
-    debian_codename="$(lsb_release -cs 2>/dev/null)"
+    debian_codename="$(lsb_release -cs 2>/dev/null)" ||
+        debian_codename="$(awk -F= '/VERSION_CODENAME=/ {gsub(/"/,""); print $2}' /etc/os-release 2>/dev/null)" ||
+        debian_codename="$(dpkg --status tzdata | awk -F'[:-]' '$1=="Provides"{print $NF}' 2>/dev/null)"
+
+    has_backports "$debian_codename" || return
+
     #use backports for debian
     apt_source_list="/etc/apt/sources.list"
     grep -q "$debian_codename-backports" "$apt_source_list" || cat >>"$apt_source_list" <<EOF
