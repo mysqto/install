@@ -120,33 +120,29 @@ function get_disk() {
 has_cloud_kernel() {
     local suite="$1"
     local arch="$2"
-    local use_bpo_kernel="$3"
-    case $suite in
-    buster | oldoldstable)
-        [ "$arch" = amd64 ] && return
-        [ "$arch" = arm64 ] && [ "$use_bpo_kernel" = true ] && return
-        ;;
-    bullseye | oldstable | bookworm | stable | trixie | testing | sid | unstable)
-        [ "$arch" = amd64 ] || [ "$arch" = arm64 ] && return
-        ;;
-    esac
+    local use_backports="$3"
+    [ "$use_backports" == true ] && suite="$suite-backports"
+    kernel_image_url="https://packages.debian.org/$suite/$arch/linux-image-cloud-$arch/download"
+    kernels="$(curl -sL "$kernel_image_url" | grep -c "linux-image-cloud.*$arch.deb")"
+    if [ "$kernels" -gt 0 ]; then
+        return 0
+    fi
 
-    local tmp
-    tmp=''
-    [ "$use_bpo_kernel" = true ] && tmp='-backports'
-    warn "No cloud kernel is available for $arch/$suite$tmp"
-
+    warn "No cloud kernel is available for $arch/$suite"
     return 1
 }
 
 has_backports() {
-    local suite="$1"
-    case $suite in
-    buster | oldoldstable | bullseye | oldstable | bookworm | stable | trixie | testing) return ;;
-    esac
+    local suite="$1-backports"
+    local arch="$2"
+    local debian_packages=""
+    packages_url="http://ftp.de.debian.org/debian/dists/$suite/main/binary-$arch/Packages.xz"
+    debian_packages="$(curl -sL "$packages_url" | xzgrep -c "Package: .*")"
+    if [ "$debian_packages" -gt 0 ]; then
+        return 0
+    fi
 
     warn "No backports kernel is available for $suite"
-
     return 1
 }
 
@@ -211,7 +207,7 @@ kernel=
 bpo_kernel=true
 cloud_kernel=false
 kernel_params=
-packages="net-tools curl wget git tig build-essential vim"
+packages="openssh-server build-essential curl wget net-tools git vim tig"
 
 # extra packages config
 provision=false
@@ -251,7 +247,7 @@ grub_custom_file="$grub_d/40_custom"
 if installed apt; then
     update_dpkg_config && {
         DEBIAN_FRONTEND=noninteractive apt -y update && apt -y --no-install-recommends install systemd pwgen \
-            whois curl cpio openssh-client jq
+            whois curl cpio openssh-client jq xz-utils
     } && restore_dpkg_config
 fi
 
@@ -581,17 +577,18 @@ sid | unstable)
     ;;
 esac
 
+[ $bpo_kernel == true ] && {
+    if ! has_backports "$suite" "$arch"; then
+        warn "backports repository is not available for $suite, use stable repository instead"
+        bpo_kernel=false
+        use_backports=false
+    fi
+}
+
 [ -z "$kernel" ] && {
     kernel="linux-image-$arch"
     [ "$cloud_kernel" == true ] && has_cloud_kernel "$suite" "$arch" "$bpo_kernel" && kernel="linux-image-cloud-$arch"
-    [ "$bpo_kernel" == true ] && has_backports "$suite" && packages="$kernel/$suite-backports $packages"
-}
-
-[ $use_backports == true ] && {
-    if ! has_backports "$suite"; then
-        warn "backports repository is not available for $suite, use stable repository instead"
-        use_backports=false
-    fi
+    [ "$bpo_kernel" == true ] && has_backports "$suite" "$arch" && packages="$kernel/$suite-backports $packages"
 }
 
 [ -z "$daily" ] && {
@@ -1108,13 +1105,21 @@ EOF
     esac
 }
 
+if [ "$use_backports" = true ]; then
+    cat >>"$preseed_file" <<EOF
+# Apt setup
+d-i apt-setup/services-select multiselect updates, backports
+EOF
+else 
+    cat >>"$preseed_file" <<EOF
+# Apt setup
+d-i apt-setup/services-select multiselect updates
+EOF
+fi
+
 # If not sid/unstable
 [ -n "$security_archive" ] && {
     cat >>"$preseed_file" <<EOF
-
-# Apt setup
-
-d-i apt-setup/services-select multiselect updates, backports
 d-i apt-setup/local0/repository string $security_repository $security_archive main
 d-i apt-setup/local0/source boolean true
 EOF
@@ -1123,7 +1128,6 @@ EOF
 cat >>"$preseed_file" <<EOF
 
 # Package selection
-
 tasksel tasksel/first multiselect ssh-server
 d-i pkgsel/include string $packages
 d-i pkgsel/upgrade select $upgrade
