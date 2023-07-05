@@ -446,7 +446,7 @@ while [ $# -gt 0 ]; do
         ;;
     --provision)
         provision=true
-        version=sid
+        version=stable
         install_shadowsocks=true
         install_shadow_tls=true
         install_go=true
