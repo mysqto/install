@@ -6,16 +6,6 @@ function installed() {
     command -v "$1" >/dev/null 2>&1
 }
 
-function update_dpkg_config() {
-    [ ! -d "/etc/apt/apt.conf.d" ] && mkdir -p "/etc/apt/apt.conf.d"
-    [ -f /etc/apt/apt.conf.d/local ] && mv /etc/apt/apt.conf.d/local /etc/apt/apt.conf.d/local.bak
-    echo 'DPkg::options { "--force-confdef"; "--force-confold"; }' >/etc/apt/apt.conf.d/local
-}
-
-function restore_dpkg_config() {
-    [ -f /etc/apt/apt.conf.d/local.bak ] && mv /etc/apt/apt.conf.d/local.bak /etc/apt/apt.conf.d/local
-}
-
 function warn() {
     echo -e "\033[1;33m${*}\033[0m"
 }
@@ -258,15 +248,57 @@ grub_d="/etc/grub.d"
 grub_custom_file="$grub_d/40_custom"
 
 # prepare for dpkg and install necessary packages
-if installed apt; then
-    update_dpkg_config && {
-        DEBIAN_FRONTEND=noninteractive apt -y update && apt -y --no-install-recommends install systemd pwgen \
-            whois curl cpio openssh-client jq xz-utils
-    } && restore_dpkg_config
+if installed apt-get; then
+    dependencies=(
+        systemd
+        pwgen
+        whois
+        curl
+        cpio
+        openssh-client
+        jq
+        xz-utils
+    )
+
+    to_install=()
+    for dependency in "${dependencies[@]}"; do
+        if ! dpkg -s "$dependency" >/dev/null 2>&1; then
+            to_install+=("$dependency")
+        fi
+    done
+
+    DEBIAN_FRONTEND=noninteractive \
+        apt -y update &&
+        apt -y \
+            -o Dpkg::Options::="--force-confdef" \
+            -o Dpkg::Options::="--force-confold" \
+            --force-yes \
+            --no-install-recommends \
+            install \
+            "${to_install[@]}"
 fi
 
 if installed yum; then
-    yum -y install systemd expect whois curl cpio openssh-clients jq
+    dependencies=(
+        systemd
+        expect
+        whois
+        curl
+        cpio
+        openssh-clients
+        jq
+        xz-utils
+    )
+
+    to_install=()
+
+    for dependency in "${dependencies[@]}"; do
+        if ! rpm -q "$dependency" >/dev/null 2>&1; then
+            to_install+=("$dependency")
+        fi
+    done
+
+    yum -y install "${to_install[@]}"
 fi
 
 [ -z "$arch" ] && {
@@ -1101,7 +1133,7 @@ EOF
 cat >>"$preseed_file" <<EOF
 
 # Base system installation
-d-i base-installer/kernel/image string $kernel
+d-i base-installer/kernel/image string none
 d-i base-installer/install-recommends boolean false
 EOF
 
