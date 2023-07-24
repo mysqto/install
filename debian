@@ -117,13 +117,13 @@ function get_disk() {
     lsblk -oMOUNTPOINT,PKNAME -P | grep 'MOUNTPOINT="/"' | cut -d'"' -f4 | sed 's/[0-9]//g'
 }
 
-has_cloud_kernel() {
+function has_cloud_kernel() {
     local suite="$1"
     local arch="$2"
     local use_backports="$3"
     [ "$use_backports" == true ] && suite="$suite-backports"
-    kernel_image_url="https://packages.debian.org/$suite/$arch/linux-image-cloud-$arch/download"
-    kernels="$(curl -sL "$kernel_image_url" | grep -c "linux-image-cloud.*$arch.deb")"
+    packages_url="https://ftp.debian.org/debian/dists/$suite/main/binary-$arch/Packages.xz"
+    kernels="$(curl -sL "$packages_url" | xzgrep -c 'Package: linux-image-cloud-'"$arch"'$')"
     if [ "$kernels" -gt 0 ]; then
         return 0
     fi
@@ -132,17 +132,31 @@ has_cloud_kernel() {
     return 1
 }
 
-has_backports() {
+function has_backports() {
     local suite="$1-backports"
     local arch="$2"
     local debian_packages=""
-    packages_url="http://ftp.de.debian.org/debian/dists/$suite/main/binary-$arch/Packages.xz"
+    packages_url="https://ftp.debian.org/debian/dists/$suite/main/binary-$arch/Packages.xz"
     debian_packages="$(curl -sL "$packages_url" | xzgrep -c "Package: .*")"
     if [ "$debian_packages" -gt 0 ]; then
         return 0
     fi
 
-    warn "No backports kernel is available for $suite"
+    warn "backports repository is not available for $arch/$suite"
+    return 1
+}
+
+has_bpo_kernel() {
+    local suite="$1-backports"
+    local arch="$2"
+    local debian_packages=""
+    packages_url="https://ftp.debian.org/debian/dists/$suite/main/binary-$arch/Packages.xz"
+    debian_packages="$(curl -sL "$packages_url" | xzgrep -c 'Package: linux-image-'"$arch"'$')"
+    if [ "$debian_packages" -gt 0 ]; then
+        return 0
+    fi
+
+    warn "bpo kernel is not available for $arch/$suite"
     return 1
 }
 
@@ -456,6 +470,8 @@ while [ $# -gt 0 ]; do
         use_backports=true
         bbr=true
         byobu=true
+        bpo_kernel=true
+        cloud_kernel=true
         shift
         ;;
     -ak | --authorized-keys)
@@ -577,18 +593,32 @@ sid | unstable)
     ;;
 esac
 
+[ -z "$force_lowmem" ] && {
+    memory_size=$(awk '/MemTotal/ {print $2}' /proc/meminfo 2>/dev/null)
+    [ -n "$memory_size" ] || force_lowmem=0
+    [ "$memory_size" -le "524288" ] && {
+        warn "memory size <= 512MB, force to use low memory mode & cloud kernel"
+        force_lowmem=1
+        cloud_kernel=true
+        bpo_kernel=true
+    } || force_lowmem=0
+}
+
 [ $bpo_kernel == true ] && {
     if ! has_backports "$suite" "$arch"; then
         warn "backports repository is not available for $suite, use stable repository instead"
-        bpo_kernel=false
         use_backports=false
+    fi
+    if ! has_bpo_kernel "$suite" "$arch"; then
+        warn "bpo kernel is not available for $suite, use stable kernel instead"
+        bpo_kernel=false
     fi
 }
 
 [ -z "$kernel" ] && {
     kernel="linux-image-$arch"
-    [ "$cloud_kernel" == true ] && has_cloud_kernel "$suite" "$arch" "$bpo_kernel" && kernel="linux-image-cloud-$arch"
-    [ "$bpo_kernel" == true ] && has_backports "$suite" "$arch" && packages="$kernel/$suite-backports $packages"
+    [ "$cloud_kernel" == true ] && has_cloud_kernel "$suite" "$arch" "$use_backports" && kernel="linux-image-cloud-$arch"
+    [ "$bpo_kernel" == true ] && has_bpo_kernel "$suite" "$arch" && packages="$kernel/$suite-backports $packages"
 }
 
 [ -z "$daily" ] && {
@@ -600,17 +630,6 @@ esac
         daily=true
         ;;
     esac
-}
-
-[ -z "$force_lowmem" ] && {
-    memory_size=$(awk '/MemTotal/ {print $2}' /proc/meminfo 2>/dev/null)
-    [ -n "$memory_size" ] || force_lowmem=0
-    [ "$memory_size" -le "524288" ] && {
-        warn "memory size <= 512MB, force to use low memory mode & cloud kernel"
-        force_lowmem=1
-        cloud_kernel=true
-        bpo_kernel=true
-    } || force_lowmem=0
 }
 
 [ -z "$efi" ] && {
@@ -1110,7 +1129,7 @@ if [ "$use_backports" = true ]; then
 # Apt setup
 d-i apt-setup/services-select multiselect updates, backports
 EOF
-else 
+else
     cat >>"$preseed_file" <<EOF
 # Apt setup
 d-i apt-setup/services-select multiselect updates
