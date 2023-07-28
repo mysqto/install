@@ -199,7 +199,7 @@ filesystem=ext4
 firmware=false
 disk=
 efi=
-gpt=false
+gpt=true
 esp=
 boot_size=
 # boot related
@@ -272,7 +272,6 @@ if installed apt-get; then
         apt -y \
             -o Dpkg::Options::="--force-confdef" \
             -o Dpkg::Options::="--force-confold" \
-            --force-yes \
             --no-install-recommends \
             install \
             "${to_install[@]}"
@@ -1133,7 +1132,7 @@ EOF
 cat >>"$preseed_file" <<EOF
 
 # Base system installation
-d-i base-installer/kernel/image string none
+d-i base-installer/kernel/image string $kernel
 d-i base-installer/install-recommends boolean false
 EOF
 
@@ -1186,10 +1185,13 @@ d-i pkgsel/upgrade select $upgrade
 popularity-contest popularity-contest/participate boolean false
 EOF
 
+boot_disk="$disk"
+[ -z "$boot_disk" ] && boot_disk="default"
+
 cat >>"$preseed_file" <<EOF
 # Boot loader installation
 
-d-i grub-installer/bootdev string default
+d-i grub-installer/bootdev string $boot_disk
 EOF
 
 [ "$force_efi_extra_removable" = true ] && {
