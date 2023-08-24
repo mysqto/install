@@ -335,7 +335,7 @@ while [ $# -gt 0 ]; do
         mirror_protocol=https
         [ "$1" = '--aws' ] && mirror_host=cdn-aws.deb.debian.org
         security_repository=mirror
-        shift 1
+        shift
         ;;
     --cn | --china | -cn | --aliyun)
         dns='223.5.5.5 223.6.6.6'
@@ -343,7 +343,7 @@ while [ $# -gt 0 ]; do
         mirror_host=mirrors.aliyun.com
         ntp_server=ntp.aliyun.com
         security_repository=mirror
-        shift 1
+        shift
         ;;
     -a | --architecture)
         arch="$2"
@@ -497,6 +497,18 @@ while [ $# -gt 0 ]; do
         install_shadowsocks=true
         install_shadow_tls=true
         install_go=true
+        install_im=true
+        install_fish=true
+        install_neofetch=true
+        use_backports=true
+        bbr=true
+        byobu=true
+        bpo_kernel=true
+        cloud_kernel=true
+        shift
+        ;;
+    -m | --minimal)
+        version=stable
         install_im=true
         install_fish=true
         install_neofetch=true
