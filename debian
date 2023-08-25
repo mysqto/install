@@ -508,6 +508,7 @@ while [ $# -gt 0 ]; do
         shift
         ;;
     -m | --minimal)
+        provision=true
         version=stable
         install_im=true
         install_fish=true
