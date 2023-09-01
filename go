@@ -15,12 +15,20 @@ function getgo() {
 
 	gopkg="$(basename "$url")"
 	os="$(uname | tr '[:upper:]' '[:lower:]')"
+	arch=$(uname -m)
+	target=/usr/local/bin
 
 	[ -z "$gopkg" ] && echo "Fatal: invalid url $url" && return 255
 
 	[ -z "$prefix" ] && {
 		[ "$os" == "linux" ] && prefix=/opt
-		[ "$os" == "darwin" ] && prefix=/usr/local/opt
+		[ "$os" == "darwin" ] && {
+			prefix=/usr/local/opt
+			[ "$arch" == "arm64" ] && {
+				prefix=/opt/homebrew/opt
+				target=/opt/homebrew/bin
+			}
+		}
 	}
 	go_root="$prefix/go"
 	[ -d "$go_root" ] && echo "removing old $go_root" && rm -rf "$go_root"
@@ -41,7 +49,7 @@ function getgo() {
 		if installed update-alternatives; then
 			update-alternatives --install /usr/bin/"$bin" "$bin" "$(_realpath "$file")" 1
 		else
-			rm -rf /usr/local/bin/"${bin:?}" && ln -s "$(_realpath "$file")" /usr/local/bin/"${bin:?}"
+			rm -rf $target/"${bin:?}" && ln -s "$(_realpath "$file")" $target/"${bin:?}"
 		fi
 	done
 }
