@@ -217,6 +217,8 @@ function _config_fish() {
         chsh -s "$fish_shell" "$username"
     }
 
+    # get current shell again
+    current_shell="$(getent passwd "$username" | cut -d: -f7)"
     [ "$current_shell" == "$fish_shell" ] && {
                 # install fisher
         su - "$username" -c 'set -U fish_user_paths /sbin'
