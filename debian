@@ -774,6 +774,7 @@ else
     domain=" $domain"
 fi
 
+[ -z "$timezone" ] && timezone="$(curl -sL http://ifconfig.co/json | jq -r ".time_zone")"
 [ -z "$timezone" ] && timezone="$(cat /etc/timezone 2>/dev/null)"
 [ -z "$timezone" ] && timezone="$(realpath /etc/localtime 2>/dev/null | sed 's/\/usr\/share\/zoneinfo\///')"
 [ -z "$timezone" ] && timezone="$(timedatectl 2>/dev/null | awk '/Time zone:/ {print $3}')"
@@ -919,6 +920,7 @@ ssh_private_key=""
 
 warn "#######################################################################"
 warn "version:                 $version"
+warn "mirror:                  $mirror_protocol://$mirror_host$mirror_directory"
 warn "username:                $username"
 warn "uid:                     $uid"
 [ -n "$password" ] && warn "password:                $password"
