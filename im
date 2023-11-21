@@ -1,5 +1,31 @@
 #!/usr/bin/env bash
 
+if ((EUID != 0)); then
+    echo "Granting root privileges for ""$(basename "$0")"
+    if [ -t 1 ]; then
+        sudo "$0" "$@"
+    else
+        exec 1>output_file
+        gksu "$0" "$@"
+    fi
+    exit
+fi
+
+base_url="https://debian.lol"
+github_base="https://raw.githubusercontent.com/mysqto/install/gh-pages"
+
+# check connection to base url
+if ! curl -sL --connect-timeout 5 "$base_url" >/dev/null 2>&1; then
+    echo "Failed to connect to $base_url"
+    echo "try to use github url $github_base"
+    base_url="$github_base"
+    # check connection to base url again
+    if ! curl -sL --connect-timeout 5 "$base_url" >/dev/null 2>&1; then
+        echo "Failed to connect to $base_url"
+        exit 1
+    fi
+fi
+
 lookbusy_base="http://www.devin.com/lookbusy/"
 
 function get_disk() {
@@ -133,12 +159,12 @@ function upgrade() {
 }
 
 function update_ss() {
-    curl -sL debian.lol/ss-libev | bash -s --
+    curl -sL "$base_url/ss-libev" | bash -s --
 }
 
 function shadow_tls() {
-    curl -sL debian.lol/Surge/Snell/install | bash -s -- --shadow-tls
-    #curl -sL debian.lol/Surge/Snell/install -o /tmp/shadow-tls && chmod +x /tmp/shadow-tls && /tmp/shadow-tls && rm /tmp/shadow-tls
+    curl -sL "$base_url/Surge/Snell/install" | bash -s -- --shadow-tls
+    #curl -sL "$base_url/Surge/Snell/install" -o /tmp/shadow-tls && chmod +x /tmp/shadow-tls && /tmp/shadow-tls && rm /tmp/shadow-tls
 }
 
 function install_speedtest() {
@@ -187,7 +213,7 @@ function install_pyenv() {
 }
 
 function self_update() {
-    new_script=$(curl -sL debian.lol/im)
+    new_script=$(curl -sL "$base_url/im")
     [ -z "$new_script" ] && echo "failed to get the latest script" && return 1
     script_path=$(readlink -f "$0")
     [ ! -f "$script_path" ] && echo "failed to get the script path" && return 1
@@ -198,7 +224,7 @@ function self_update() {
 function provision() {
     local user="$1"
     [ -z "$user" ] && echo "username is required when provisioning the server" && return 1
-    curl -sL debian.lol/provision | bash -s -- -u "$user" -s
+    curl -sL "$base_url/provision" | bash -s -- -u "$user" -s
 }
 
 function reset() {
@@ -208,10 +234,10 @@ function reset() {
     [ -z "$user" ] && echo "username is required when reseting the server" && return 1
     case "$system" in
     ubuntu)
-        curl -sL debian.lol/ubuntu | bash -s -- -u "$user"
+        curl -sL "$base_url/ubuntu" | bash -s -- -u "$user"
         ;;
     *)
-        curl -sL debian.lol/debian | bash -s -- --user "$user" --bpo --provision
+        curl -sL "$base_url/debian" | bash -s -- --user "$user" --bpo --provision
         ;;
     esac
 }
@@ -318,17 +344,6 @@ function enable_lookbusy() {
     # create a cron job to run speedtest every day at 02:00 GMT+8 with user $username
     add_cronjob "$username" "0 2 * * * speedtest --accept-license --accept-gdpr"
 }
-
-if ((EUID != 0)); then
-    echo "Granting root privileges for ""$(basename "$0")"
-    if [ -t 1 ]; then
-        sudo "$0" "$@"
-    else
-        exec 1>output_file
-        gksu "$0" "$@"
-    fi
-    exit
-fi
 
 _install_pyenv=false
 _install_speedtest=false
