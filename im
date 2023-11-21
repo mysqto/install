@@ -133,12 +133,12 @@ function upgrade() {
 }
 
 function update_ss() {
-    curl -sL install.lol/ss-libev | bash -s --
+    curl -sL debian.lol/ss-libev | bash -s --
 }
 
 function shadow_tls() {
-    curl -sL install.lol/Surge/Snell/install | bash -s -- --shadow-tls
-    #curl -sL install.lol/Surge/Snell/install -o /tmp/shadow-tls && chmod +x /tmp/shadow-tls && /tmp/shadow-tls && rm /tmp/shadow-tls
+    curl -sL debian.lol/Surge/Snell/install | bash -s -- --shadow-tls
+    #curl -sL debian.lol/Surge/Snell/install -o /tmp/shadow-tls && chmod +x /tmp/shadow-tls && /tmp/shadow-tls && rm /tmp/shadow-tls
 }
 
 function install_speedtest() {
@@ -187,7 +187,7 @@ function install_pyenv() {
 }
 
 function self_update() {
-    new_script=$(curl -sL install.lol/im)
+    new_script=$(curl -sL debian.lol/im)
     [ -z "$new_script" ] && echo "failed to get the latest script" && return 1
     script_path=$(readlink -f "$0")
     [ ! -f "$script_path" ] && echo "failed to get the script path" && return 1
@@ -198,7 +198,7 @@ function self_update() {
 function provision() {
     local user="$1"
     [ -z "$user" ] && echo "username is required when provisioning the server" && return 1
-    curl -sL install.lol/provision | bash -s -- -u "$user" -s
+    curl -sL debian.lol/provision | bash -s -- -u "$user" -s
 }
 
 function reset() {
@@ -208,10 +208,10 @@ function reset() {
     [ -z "$user" ] && echo "username is required when reseting the server" && return 1
     case "$system" in
     ubuntu)
-        curl -sL install.lol/ubuntu | bash -s -- -u "$user"
+        curl -sL debian.lol/ubuntu | bash -s -- -u "$user"
         ;;
     *)
-        curl -sL install.lol/debian | bash -s -- --user "$user" --bpo --provision
+        curl -sL debian.lol/debian | bash -s -- --user "$user" --bpo --provision
         ;;
     esac
 }

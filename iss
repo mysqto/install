@@ -20,7 +20,7 @@ done
 set -- "${POSITIONAL[@]}" # restore positional parameters
 
 if [ -z "$password" ]; then
-    curl -sL install.lol/ss-libev | bash -s --
+    curl -sL debian.lol/ss-libev | bash -s --
 else
-    curl -sL install.lol/ss-libev | bash -s -- --password "$password"
+    curl -sL debian.lol/ss-libev | bash -s -- --password "$password"
 fi
