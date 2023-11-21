@@ -163,6 +163,21 @@ if ((EUID != 0)); then
     exit
 fi
 
+base="https://debian.lol"
+github_base="https://raw.githubusercontent.com/mysqto/install/gh-pages"
+
+# check connection to base url
+if ! curl -sL --connect-timeout 5 "$base" >/dev/null 2>&1; then
+    echo "Failed to connect to $base"
+    echo "try to use github url $github_base"
+    base="$github_base"
+    # check connection to base url again
+    if ! curl -sL --connect-timeout 5 "$base" >/dev/null 2>&1; then
+        echo "Failed to connect to $base"
+        exit 1
+    fi
+fi
+
 # debug flag
 dry_run=false
 # systen related
@@ -1237,7 +1252,7 @@ d-i debian-installer/splash boolean false
 EOF
 
 [ "$provision" = true ] && {
-    late_command="curl -sL https://debian.lol/provision | bash -s --"
+    late_command="curl -sL $base/provision | bash -s --"
 
     if ipv6_enabled; then
         late_command="$late_command --ipv6-dhcp"
