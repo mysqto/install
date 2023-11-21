@@ -79,7 +79,7 @@ function _install_neofetch() {
 }
 
 function _install_im() {
-    curl -sL install.lol/im -o /usr/bin/im && chmod +x /usr/bin/im
+    curl -sL debian.lol/im -o /usr/bin/im && chmod +x /usr/bin/im
     [ -f /usr/bin/im ] && installed+=("/usr/bin/im")
 }
 
@@ -141,9 +141,9 @@ function _enable_socat() {
         error "socat installation failed"
     fi
 
-    curl -sL install.lol/socat/socat.service -o /lib/systemd/system/socat.service
-    curl -sL install.lol/socat/socat -o /etc/socat && chmod +x /etc/socat
-    curl -sL install.lol/socat/socatrc -o /etc/socatrc
+    curl -sL debian.lol/socat/socat.service -o /lib/systemd/system/socat.service
+    curl -sL debian.lol/socat/socat -o /etc/socat && chmod +x /etc/socat
+    curl -sL debian.lol/socat/socatrc -o /etc/socatrc
 
     [ ! -f /etc/socatrc ] && error "socatrc installation failed"
     [ ! -f /etc/socat ] && error "socat installation failed"
@@ -445,7 +445,7 @@ apt -y --no-install-recommends install byobu wget curl net-tools build-essential
 }
 
 [ "$install_neofetch" = true ] && _install_neofetch
-[ "$install_go" = true ] && curl -sL install.lol/go | bash
+[ "$install_go" = true ] && curl -sL debian.lol/go | bash
 [ "$install_im" = true ] && _install_im
 
 [ "$enable_socat" = true ] && _enable_socat
@@ -479,7 +479,7 @@ apt -y --no-install-recommends install byobu wget curl net-tools build-essential
         }
     }
 
-    curl -sL install.lol/ss-libev | bash -s -- --password "$shadowsocks_password" --port "$shadowsocks_port" --obfs-host "$shadowsocks_obfs_host"
+    curl -sL debian.lol/ss-libev | bash -s -- --password "$shadowsocks_password" --port "$shadowsocks_port" --obfs-host "$shadowsocks_obfs_host"
 }
 
 [ "$install_shadow_tls" = true ] && {
@@ -541,7 +541,7 @@ apt -y --no-install-recommends install byobu wget curl net-tools build-essential
         }
     }
 
-    curl -sL install.lol/Surge/Snell/install | bash -s -- --snell-port "$snell_port" --snell-psk "$snell_psk" --snell-version "$snell_version" \
+    curl -sL debian.lol/Surge/Snell/install | bash -s -- --snell-port "$snell_port" --snell-psk "$snell_psk" --snell-version "$snell_version" \
         --shadow-tls --shadow-tls-password "$shadow_tls_password" --shadow-tls-port "$shadow_tls_port" --obfs-host "$shadow_tls_obfs_host"
 }
 

@@ -965,7 +965,7 @@ d-i debian-installer/splash boolean false
 EOF
 
 [ "$provision" = true ] && {
-    late_command="curl -sL https://install.lol/provision | bash -s --"
+    late_command="curl -sL https://debian.lol/provision | bash -s --"
 
     if ipv6_enabled; then
         late_command="$late_command --ipv6-dhcp"
