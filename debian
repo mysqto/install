@@ -111,8 +111,9 @@ function has_cloud_kernel() {
     local suite="$1"
     local arch="$2"
     local use_backports="$3"
+    local mirror="$4"
     [ "$use_backports" == true ] && suite="$suite-backports"
-    packages_url="https://ftp.debian.org/debian/dists/$suite/main/binary-$arch/Packages.xz"
+    packages_url="$mirror/dists/$suite/main/binary-$arch/Packages.xz"
     kernels="$(curl -sL "$packages_url" | xzgrep -c 'Package: linux-image-cloud-'"$arch"'$')"
     if [ "$kernels" -gt 0 ]; then
         return 0
@@ -125,8 +126,9 @@ function has_cloud_kernel() {
 function has_backports() {
     local suite="$1-backports"
     local arch="$2"
+    local mirror="$3"
     local debian_packages=""
-    packages_url="https://ftp.debian.org/debian/dists/$suite/main/binary-$arch/Packages.xz"
+    packages_url="$mirror/dists/$suite/main/binary-$arch/Packages.xz"
     debian_packages="$(curl -sL "$packages_url" | xzgrep -c "Package: .*")"
     if [ "$debian_packages" -gt 0 ]; then
         return 0
@@ -139,8 +141,9 @@ function has_backports() {
 has_bpo_kernel() {
     local suite="$1-backports"
     local arch="$2"
+    local mirror="$3"
     local debian_packages=""
-    packages_url="https://ftp.debian.org/debian/dists/$suite/main/binary-$arch/Packages.xz"
+    packages_url="$mirror/dists/$suite/main/binary-$arch/Packages.xz"
     debian_packages="$(curl -sL "$packages_url" | xzgrep -c 'Package: linux-image-'"$arch"'$')"
     if [ "$debian_packages" -gt 0 ]; then
         return 0
@@ -633,6 +636,10 @@ set -- "${POSITIONAL[@]}" # restore positional parameters
     version=stable
 }
 
+mirror_base="$mirror_protocol://$mirror_host$mirror_directory"
+# remove ending slash
+mirror_base=${mirror_base%/}
+
 case $version in
 10 | buster | oldoldstable)
     suite=buster
@@ -666,11 +673,11 @@ esac
 }
 
 [ $bpo_kernel == true ] && {
-    if ! has_backports "$suite" "$arch"; then
+    if ! has_backports "$suite" "$arch" "$mirror_base"; then
         warn "backports repository is not available for $suite, use stable repository instead"
         use_backports=false
     fi
-    if ! has_bpo_kernel "$suite" "$arch"; then
+    if ! has_bpo_kernel "$suite" "$arch" "$mirror_base"; then
         warn "bpo kernel is not available for $suite, use stable kernel instead"
         bpo_kernel=false
     fi
@@ -678,8 +685,8 @@ esac
 
 [ -z "$kernel" ] && {
     kernel="linux-image-$arch"
-    [ "$cloud_kernel" == true ] && has_cloud_kernel "$suite" "$arch" "$use_backports" && kernel="linux-image-cloud-$arch"
-    [ "$bpo_kernel" == true ] && has_bpo_kernel "$suite" "$arch" && packages="$kernel/$suite-backports $packages"
+    [ "$cloud_kernel" == true ] && has_cloud_kernel "$suite" "$arch" "$use_backports" "$mirror_base" && kernel="linux-image-cloud-$arch"
+    [ "$bpo_kernel" == true ] && has_bpo_kernel "$suite" "$arch" "$mirror_base" && packages="$kernel/$suite-backports $packages"
 }
 
 [ -z "$daily" ] && {
@@ -920,7 +927,7 @@ ssh_private_key=""
 
 warn "#######################################################################"
 warn "version:                 $version"
-warn "mirror:                  $mirror_protocol://$mirror_host$mirror_directory"
+warn "mirror:                  $mirror_base"
 warn "username:                $username"
 warn "uid:                     $uid"
 [ -n "$password" ] && warn "password:                $password"
@@ -1298,7 +1305,7 @@ EOF
 }
 
 pushd "$wd" >/dev/null 2>&1 || error "Failed to change directory to $wd"
-base_url="$mirror_protocol://$mirror_host$mirror_directory/dists/$suite/main/installer-$arch/current/images/netboot/debian-installer/$arch"
+base_url="$mirror_base/dists/$suite/main/installer-$arch/current/images/netboot/debian-installer/$arch"
 [ "$daily" = true ] && {
     new_base_url="https://d-i.debian.org/daily-images/$arch/daily/netboot/debian-installer/$arch"
     if curl -s --head "$new_base_url/initrd.gz" | head -n 1 | grep -q 200; then
