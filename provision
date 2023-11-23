@@ -161,9 +161,9 @@ function _config_ssh() {
     user_ssh_dir="$user_home/.ssh"
     user_ssh_authorized_keys="$user_ssh_dir/authorized_keys"
     [ -d "$user_ssh_dir" ] && rm -rf "$user_ssh_dir"
-    mkdir -p "$user_ssh_dir"
+    mkdir -p "$user_ssh_dir" && touch "$user_ssh_authorized_keys"
 
-    if grep -q "$ssh_authorized_keys" "$user_ssh_authorized_keys"; then
+    if grep -q "$ssh_authorized_keys" "$user_ssh_authorized_keys" 2>/dev/null; then
         warn "ssh_authorized_keys already exists"
     else
         echo "$ssh_authorized_keys" >>"$user_ssh_authorized_keys"
