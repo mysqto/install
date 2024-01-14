@@ -104,7 +104,8 @@ function ipv6_enabled() {
 }
 
 function get_disk() {
-    lsblk -oMOUNTPOINT,PKNAME -P | grep 'MOUNTPOINT="/"' | cut -d'"' -f4 | sed 's/[0-9]//g'
+    # lsblk -oMOUNTPOINT,PKNAME -P | grep 'MOUNTPOINT="/"' | cut -d'"' -f4 | sed 's/[n][0-9]//g'
+    lsblk -oMOUNTPOINT,PKNAME -rn | awk '$1 ~ /^\/$/ { print $2 }'
 }
 
 function has_cloud_kernel() {
