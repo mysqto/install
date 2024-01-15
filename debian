@@ -65,12 +65,16 @@ function netmask() {
     else
         mask=$(cidr_to_netmask "$(ip -"$type" -o addr show "$if" | head -1 | awk '{split($4,a,"/"); print a[2]}')")
     fi
-    # dirty hack for google cloud
+    # dirty hack for google cloud, and Nerocloud Ltd
     if [ "$type" == "4" ] && [ "$mask" == "255.255.255.255" ]; then
-        asn=$(curl -s "https://ipconfig.io/json" | jq -r '.asn_org' 2>/dev/null)
+        asn=$(curl -s -"$type" "https://ipconfig.io/json" | jq -r '.asn_org' 2>/dev/null)
         if [ "$asn" == "GOOGLE-CLOUD-PLATFORM" ]; then
             mask="255.255.255.0"
             mirror_protocol="http"
+        fi
+        if [ "$asn" == "Nerocloud Ltd" ]; then
+            mask="255.255.255.0"
+            gateway=""
         fi
     fi
     [ -z "$mask" ] && error "failed to get netmask"
@@ -907,8 +911,8 @@ ssh_private_key=""
 }
 
 [ -z "$ip_address" ] && ip_address="$(ip_address)"
+[ -z "$gateway" ] && gateway="$(default_gateway)" # make sure netmask is set after gateway
 [ -z "$netmask" ] && netmask="$(netmask)"
-[ -z "$gateway" ] && gateway="$(default_gateway)"
 [ -z "$dns" ] && dns="$(dns)"
 [ -z "$ip_address" ] && error "failed to get ip address"
 [ -z "$netmask" ] && error "failed to get netmask"
