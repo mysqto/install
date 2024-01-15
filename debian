@@ -918,6 +918,11 @@ ssh_private_key=""
     dns="1.1.1.1"
 }
 
+[ "$static_ip" == true ] && {
+    interface="$(default_interface)"
+    [ -z "$interface" ] && error "failed to get interface with static ip"
+}
+
 [ "$network_console" = true ] && {
     nc_password="$(pwgen -nsy 16 1 2>/dev/null)" ||
         nc_password="$(openssl rand -base64 16 2>/dev/null)" ||
@@ -945,6 +950,7 @@ warn "install Shadowsocks:     $install_shadowsocks"
     warn "shadowsocks password:    $shadowsocks_password"
     warn "sahdowsocks obfs host:   $shadowsocks_obfs_host"
 }
+warn "use static ip:           $static_ip"
 warn "interface:               $interface"
 warn "ip:                      $ip_address"
 warn "netmask:                 $netmask"
@@ -977,10 +983,6 @@ d-i lowmem/low note
 # netcfg will choose an interface that has link if possible. This makes it
 # skip displaying a list if there is more than one interface.
 d-i netcfg/choose_interface select $interface
-
-# increase dhcp timeout
-d-i netcfg/dhcp_timeout string 60
-d-i netcfg/dhcpv6_timeout string 60
 EOF
 
 if [ "$static_ip" = true ]; then
@@ -993,6 +995,8 @@ else
     # DHCP configuration.
     cat >>"$preseed_file" <<EOF
 # DHCP configuration.
+d-i netcfg/dhcp_timeout string 60
+d-i netcfg/dhcpv6_timeout string 60
 d-i netcfg/dhcp_failed note
 d-i netcfg/dhcp_options select Configure network manually
 EOF
