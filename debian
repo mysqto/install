@@ -1304,7 +1304,7 @@ EOF
     [ -n "$late_command" ] && {
         cat >>"$preseed_file" <<EOF
 # Provisioning
-d-i preseed/late_command string in-target sh -c '$late_command'
+d-i preseed/late_command string in-target sh -c '$late_command > /var/log/provision.log 2>&1'
 EOF
     }
 }
