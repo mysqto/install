@@ -72,10 +72,6 @@ function netmask() {
             mask="255.255.255.0"
             mirror_protocol="http"
         fi
-        if [ "$asn" == "Nerocloud Ltd" ]; then
-            mask="255.255.255.0"
-            gateway=""
-        fi
     fi
     [ -z "$mask" ] && error "failed to get netmask"
     echo "$mask"
@@ -911,7 +907,7 @@ ssh_private_key=""
 }
 
 [ -z "$ip_address" ] && ip_address="$(ip_address)"
-[ -z "$gateway" ] && gateway="$(default_gateway)" # make sure netmask is set after gateway
+[ -z "$gateway" ] && gateway="$(default_gateway)"
 [ -z "$netmask" ] && netmask="$(netmask)"
 [ -z "$dns" ] && dns="$(dns)"
 [ -z "$ip_address" ] && error "failed to get ip address"
