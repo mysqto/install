@@ -115,7 +115,7 @@ function has_cloud_kernel() {
     local mirror="$4"
     [ "$use_backports" == true ] && suite="$suite-backports"
     packages_url="$mirror/dists/$suite/main/binary-$arch/Packages.xz"
-    kernels="$(curl -sL "$packages_url" | xzgrep -c 'Package: linux-image-cloud-'"$arch"'$')"
+    kernels="$(curl -sL "$packages_url" | xzgrep -c 'Package: linux-image-cloud-'"$arch"'$' 2>/dev/null)"
     if [ "$kernels" -gt 0 ]; then
         return 0
     fi
@@ -130,7 +130,7 @@ function has_backports() {
     local mirror="$3"
     local debian_packages=""
     packages_url="$mirror/dists/$suite/main/binary-$arch/Packages.xz"
-    debian_packages="$(curl -sL "$packages_url" | xzgrep -c "Package: .*")"
+    debian_packages="$(curl -sL "$packages_url" | xzgrep -c "Package: .*" 2>/dev/null)"
     if [ "$debian_packages" -gt 0 ]; then
         return 0
     fi
@@ -145,7 +145,7 @@ has_bpo_kernel() {
     local mirror="$3"
     local debian_packages=""
     packages_url="$mirror/dists/$suite/main/binary-$arch/Packages.xz"
-    debian_packages="$(curl -sL "$packages_url" | xzgrep -c 'Package: linux-image-'"$arch"'$')"
+    debian_packages="$(curl -sL "$packages_url" | xzgrep -c 'Package: linux-image-'"$arch"'$' 2>/dev/null)"
     if [ "$debian_packages" -gt 0 ]; then
         return 0
     fi
@@ -514,7 +514,6 @@ while [ $# -gt 0 ]; do
         provision=true
         version=stable
         install_shadowsocks=true
-        install_shadow_tls=true
         install_go=true
         install_im=true
         install_fish=true
@@ -531,7 +530,6 @@ while [ $# -gt 0 ]; do
         version=stable
         install_im=true
         install_fish=true
-        install_neofetch=true
         use_backports=true
         bbr=true
         byobu=true
@@ -919,6 +917,7 @@ ssh_private_key=""
 }
 
 [ "$static_ip" == true ] && {
+    warn "static ip is enabled, will select interface with static ip"
     interface="$(default_interface)"
     [ -z "$interface" ] && error "failed to get interface with static ip"
 }
