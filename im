@@ -162,6 +162,27 @@ function update_ss() {
     curl -sL "$base_url/ss-libev" | bash -s --
 }
 
+function update_ss_obfs_host() {
+    obfs_host="$1"
+    [ -z "$obfs_host" ] && echo "obfs host is required" && return 1
+    ss_libev_config="/etc/shadowsocks-libev/config.json"
+    [ ! -f "$ss_libev_config" ] && echo "shadowsocks-libev config file not found" && return 1
+    if grep -q "$obfs_host" "$ss_libev_config"; then
+        echo "obfs host already exists"
+        return 0
+    fi
+    sed -i -E 's/obfs-host=[^;"]+/obfs-host='"$obfs_host"'/g' "$ss_libev_config"
+
+    if grep -q "$obfs_host" "$ss_libev_config"; then
+        echo "obfs host updated, restarting shadowsocks-libev..."
+        sudo systemctl restart shadowsocks-libev
+        return 0
+    else
+        echo "failed to update obfs host"
+        return 1
+    fi
+}
+
 function shadow_tls() {
     curl -sL "$base_url/Surge/Snell/install" | bash -s -- --shadow-tls
     #curl -sL "$base_url/Surge/Snell/install" -o /tmp/shadow-tls && chmod +x /tmp/shadow-tls && /tmp/shadow-tls && rm /tmp/shadow-tls
@@ -350,6 +371,8 @@ _install_speedtest=false
 _install_lookbusy=false
 _update=false
 _update_ss=false
+_update_ss_obfs_host=false
+_ss_obfs_host=""
 _upgrade=false
 _remove_old_kernels=false
 _auto=false
@@ -374,32 +397,33 @@ _host=""
 function usage() {
     echo "Usage: $(basename "$0") [options]"
     echo "Options:"
-    echo "  -h, --help                    show this help message and exit"
-    echo "  -d, --distro,                 show the distro"
-    echo "  -f, --fix-grub,                fix grub boot menu"
-    echo "  -ist, --install-speedtest,    install speedtest-cli"
-    echo "  -ilb, --install-lookbusy,     install lookbusy"
-    echo "  -ipe, --install-pyenv,        install pyenv"
-    echo "  -c, --cleanup,                cleanup the server"
-    echo "  -e, --edge-kernel,            install edge kernel"
-    echo "  -l, --lookbusy,               enable lookbusy"
-    echo "  -uu, --update,                update the server"
-    echo "  -uuu, --ugrade,               upgrade the server if needed"
-    echo "  -ui, --self-update,           update $(basename "$0")"
-    echo "  -uss, --update-shadowsocks,   update shadowsocks-libev"
-    echo "  -ro, --remove-old-kernels,    remove old kernels"
-    echo "  -a, --auto,                   auto update or upgrade the server"
-    echo "  -rr, --reset,                 reset the server, need -u to specify the username"
-    echo "  -rrd, --reset-with-debian,    reset the server with debian, need -u to specify the username"
-    echo "  -rru, --reset-with-ubuntu,    reset the server with ubuntu, need -u to specify the username"
-    echo "  -r, --reboot,                 reboot the server"
-    echo "  -s, --midea-unlock-test,      stream media unlock test"
-    echo "  -ss, --shadowsocks,           enable shadowsocks"
-    echo "  -stls, --shadow-tls,          enable snell and shadow-tls"
-    echo "  -st, --speedtest,             run speedtest"
-    echo "  -p, --provision,              provision the server, need -u to specify the username"
-    echo "  -u, --username,               specify the username when reseting or provisioning the server"
-    echo "  -nf, --netflix-test,          netflix unlock test"
+    echo "  -h, --help                              show this help message and exit"
+    echo "  -d, --distro,                           show the distro"
+    echo "  -f, --fix-grub,                          fix grub boot menu"
+    echo "  -ist, --install-speedtest,              install speedtest-cli"
+    echo "  -ilb, --install-lookbusy,               install lookbusy"
+    echo "  -ipe, --install-pyenv,                  install pyenv"
+    echo "  -c, --cleanup,                          cleanup the server"
+    echo "  -e, --edge-kernel,                      install edge kernel"
+    echo "  -l, --lookbusy,                         enable lookbusy"
+    echo "  -uu, --update,                          update the server"
+    echo "  -uuu, --ugrade,                         upgrade the server if needed"
+    echo "  -ui, --self-update,                     update $(basename "$0")"
+    echo "  -uss, --update-shadowsocks,             update shadowsocks-libev"
+    echo "  -usoh, --update-shadowsocks-obfs-host   update shadowsocks-libev with obfs host"
+    echo "  -ro, --remove-old-kernels,              remove old kernels"
+    echo "  -a, --auto,                             auto update or upgrade the server"
+    echo "  -rr, --reset,                           reset the server, need -u to specify the username"
+    echo "  -rrd, --reset-with-debian,              reset the server with debian, need -u to specify the username"
+    echo "  -rru, --reset-with-ubuntu,              reset the server with ubuntu, need -u to specify the username"
+    echo "  -r, --reboot,                           reboot the server"
+    echo "  -s, --midea-unlock-test,                stream media unlock test"
+    echo "  -ss, --shadowsocks,                     enable shadowsocks"
+    echo "  -stls, --shadow-tls,                    enable snell and shadow-tls"
+    echo "  -st, --speedtest,                       run speedtest"
+    echo "  -p, --provision,                        provision the server, need -u to specify the username"
+    echo "  -u, --username,                         specify the username when reseting or provisioning the server"
+    echo "  -nf, --netflix-test,                    netflix unlock test"
 }
 
 POSITIONAL=()
@@ -429,6 +453,11 @@ while [ $# -gt 0 ]; do
     -ss | -uss | --shadowsocks | --update-shadowsocks)
         _update_ss=true
         shift 1
+        ;;
+    -usoh | --update-shadowsocks-obfs-host)
+        _update_ss_obfs_host=true
+        _ss_obfs_host="$2"
+        shift 2
         ;;
     -stls | --shadow-tls)
         _shadow_tls=true
@@ -518,6 +547,8 @@ action() {
         upgrade
     elif [ "$_update_ss" == true ]; then
         update_ss
+    elif [ "$_update_ss_obfs_host" == true ]; then
+        update_ss_obfs_host "$_ss_obfs_host"
     elif [ "$_shadow_tls" == true ]; then
         shadow_tls
     elif [ "$_self_update" == true ]; then

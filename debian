@@ -36,6 +36,31 @@ function download() {
     fi
 }
 
+function ipv6_prefix_length_to_subnet_mask() {
+    local prefix_length=$1
+    local subnet_mask=""
+
+    # Ensure that prefix length is valid
+    if [ "$prefix_length" -lt 0 ] || [ "$prefix_length" -gt 128 ]; then
+        echo "Invalid IPv6 prefix length."
+        exit 1
+    fi
+
+    # Calculate subnet mask in hexadecimal format
+    for (( i = 0; i < 32; i++ )); do
+        if [ "$i" -lt "$((prefix_length/4))" ]; then
+            subnet_mask+="f"
+        else
+            subnet_mask+="0"
+        fi
+        if [ "$((i % 4))" -eq 3 ] && [ "$i" -ne 31 ]; then
+            subnet_mask+=":"
+        fi
+    done
+    echo "$subnet_mask"
+}
+
+
 function cidr_to_netmask() {
     set -- $((5 - ($1 / 8))) 255 255 255 255 $(((255 << (8 - ($1 % 8))) & 255)) 0 0 0
     # shellcheck disable=SC2015
@@ -50,7 +75,8 @@ function ip_address() {
     [ -z "$type" ] && type="4"
     # shellcheck disable=SC2119
     [ -z "$if" ] && if="$(default_interface)"
-    ip -"$type" -o addr show "$if" | head -1 | awk '{split($4,a,"/"); print a[1]}'
+    [ "$type" == "4" ] && ip -"$type" -o addr show "$if" | head -1 | awk '{split($4,a,"/"); print a[1]}'
+    [ "$type" == "6" ] && ip -"$type" -o addr show "$if" | head -1 | awk '{print $4}'
 }
 # shellcheck disable=SC2120
 function netmask() {
@@ -61,11 +87,12 @@ function netmask() {
     [ -z "$if" ] && if="$(default_interface)"
     local mask=""
     if [ "$type" == "6" ]; then
-        mask=$(ip -"$type" -o addr show "$if" | awk '{split($4,a,"/"); print a[2]}')
+        prefix_length=$(ip -"$type" -o addr show "$if" | awk '{split($4,a,"/"); print a[2]}' | head -1)
+        mask=$(ipv6_prefix_length_to_subnet_mask "$prefix_length")
     else
         mask=$(cidr_to_netmask "$(ip -"$type" -o addr show "$if" | head -1 | awk '{split($4,a,"/"); print a[2]}')")
     fi
-    # dirty hack for google cloud, and Nerocloud Ltd
+    # dirty hack for google cloud platform
     if [ "$type" == "4" ] && [ "$mask" == "255.255.255.255" ]; then
         asn=$(curl -s -"$type" "https://ipconfig.io/json" | jq -r '.asn_org' 2>/dev/null)
         if [ "$asn" == "GOOGLE-CLOUD-PLATFORM" ]; then
@@ -88,7 +115,13 @@ function default_gateway() {
 function default_interface() {
     type="$1"
     [ -z "$type" ] && type="4"
-    ip -"$type" route show default | awk '{print $5}' | head -n1
+    result="$(ip -"$type" route show default | awk '{print $5}' | head -n1)"
+
+    # if there is no default interface, maybe bc it's ipv6 only, try to get the interface with ipv6 address
+    if [ -z "$result" ] && [ "$type" == "4" ]; then
+        result="$(ip -"$type" route show default | awk '{print $5}' | head -n1)"
+    fi
+    echo "$result"
 }
 
 # get current dns server
@@ -205,6 +238,7 @@ authorized_keys=
 authorized_keys_url=
 # network related
 static_ip=false
+network_type=
 interface=auto
 hostname=
 domain=
@@ -271,7 +305,6 @@ if installed apt-get; then
     dependencies=(
         systemd
         pwgen
-        whois
         curl
         cpio
         openssh-client
@@ -300,7 +333,6 @@ if installed yum; then
     dependencies=(
         systemd
         expect
-        whois
         curl
         cpio
         openssh-clients
@@ -458,6 +490,10 @@ while [ $# -gt 0 ]; do
         ;;
     -s | --static-ip)
         static_ip=true
+        shift
+        ;;
+    -6 | --ipv6 | --ipv6-only)
+        network_type=6
         shift
         ;;
     -ip | --ip-address)
@@ -904,21 +940,26 @@ ssh_private_key=""
     [ -z "$ssh_port" ] && ssh_port="22"
 }
 
-[ -z "$ip_address" ] && ip_address="$(ip_address)"
-[ -z "$gateway" ] && gateway="$(default_gateway)"
-[ -z "$netmask" ] && netmask="$(netmask)"
-[ -z "$dns" ] && dns="$(dns)"
+# check if it's ipv6 only
+[ -z "$network_type" ] && {
+    [ -z "$(ip -4 route 2>/dev/null)" ] && network_type=6
+}
+
+[ -z "$ip_address" ] && ip_address="$(ip_address "$(default_interface "$network_type")" "$network_type")"
+[ -z "$gateway" ] && gateway="$(default_gateway "$network_type")"
+[ -z "$netmask" ] && netmask="$(netmask "$(default_interface "$network_type")" "$network_type")"
+[ -z "$dns" ] && dns="$(dns "$network_type")"
 [ -z "$ip_address" ] && error "failed to get ip address"
-[ -z "$netmask" ] && error "failed to get netmask"
 [ -z "$gateway" ] && error "failed to get gateway"
 [ -z "$dns" ] && {
     warn "failed to get dns, will use 1.1.1.1 as default"
-    dns="1.1.1.1"
+    [ "$network_type" = 4 ] && dns="1.1.1.1"
+    [ "$network_type" = 6 ] && dns="2606:4700:4700::1111"
 }
 
 [ "$static_ip" == true ] && {
     warn "static ip is enabled, will select interface with static ip"
-    interface="$(default_interface)"
+    interface="$(default_interface "$network_type")"
     [ -z "$interface" ] && error "failed to get interface with static ip"
 }
 
