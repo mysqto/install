@@ -47,8 +47,8 @@ function ipv6_prefix_length_to_subnet_mask() {
     fi
 
     # Calculate subnet mask in hexadecimal format
-    for (( i = 0; i < 32; i++ )); do
-        if [ "$i" -lt "$((prefix_length/4))" ]; then
+    for ((i = 0; i < 32; i++)); do
+        if [ "$i" -lt "$((prefix_length / 4))" ]; then
             subnet_mask+="f"
         else
             subnet_mask+="0"
@@ -59,7 +59,6 @@ function ipv6_prefix_length_to_subnet_mask() {
     done
     echo "$subnet_mask"
 }
-
 
 function cidr_to_netmask() {
     set -- $((5 - ($1 / 8))) 255 255 255 255 $(((255 << (8 - ($1 % 8))) & 255)) 0 0 0
@@ -238,6 +237,7 @@ authorized_keys=
 authorized_keys_url=
 # network related
 static_ip=false
+use_ethx=false
 network_type=
 interface=auto
 hostname=
@@ -279,14 +279,14 @@ byobu=false
 sudo_without_password=false
 
 # Shadowsocks related
-install_shadowsocks=
+install_shadowsocks=false
 shadowsocks_password=
 shadowsocks_port=
 shadowsocks_obfs_host=
 shadowsocks_config="/etc/shadowsocks-libev/config.json"
 
 # Shadow-TLS related
-install_shadow_tls=
+install_shadow_tls=false
 snell_port=
 snell_psk=
 shadow_tls_port=
@@ -421,7 +421,8 @@ while [ $# -gt 0 ]; do
         shift 2
         ;;
     --ethx)
-        kernel_params="$kernel_params net.ifnames=0 biosdevname=0"
+        use_ethx=true
+        shift
         ;;
     -f | --filesystem)
         filesystem="$2"
@@ -961,6 +962,15 @@ ssh_private_key=""
     warn "static ip is enabled, will select interface with static ip"
     interface="$(default_interface "$network_type")"
     [ -z "$interface" ] && error "failed to get interface with static ip"
+    # check if `interface` started with eth
+    [[ "$interface" == eth* ]] && {
+        warn "interface $interface is legacy, will use ethx instead"
+        use_ethx=true
+    }
+}
+
+[ "$use_ethx" == true ] && {
+    kernel_params="$kernel_params net.ifnames=0 biosdevname=0"
 }
 
 [ "$network_console" = true ] && {
