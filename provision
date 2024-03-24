@@ -338,6 +338,7 @@ shadow_tls_obfs_host=
 snell_version=4
 snell_config_file="/etc/snell/snell-server.conf"
 shadow_tls_default_file="/etc/default/shadow-tls"
+ethx=false
 
 distro="$(lsb_release -is 2>/dev/null)"
 
@@ -436,6 +437,10 @@ while [ $# -gt 0 ]; do
     --shadow-tls-obfs)
         shadow_tls_obfs_host="$2"
         shift 2
+        ;;
+    --ethx)
+        ethx=true
+        shift
         ;;
     *)
         POSITIONAL+=("$1")
@@ -582,3 +587,10 @@ if [ -n "$username" ]; then
     # config sudo
     _config_sudo "$username" "$sudo_without_password"
 fi
+
+[ "$ethx" = true ] && {
+    [ -f '/etc/grub/default' ] && {
+        sed -ri 's/^#?GRUB_CMDLINE_LINUX_DEFAULT.*/GRUB_CMDLINE_LINUX_DEFAULT="net.ifnames=0 biosdevname=0"/g' /etc/default/grub
+        update-grub 2>/dev/null || update-grub2 2>/dev/null
+    }
+}

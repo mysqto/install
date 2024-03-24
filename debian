@@ -384,15 +384,42 @@ while [ $# -gt 0 ]; do
         ;;
     --cdn | --aws)
         mirror_protocol=https
-        [ "$1" = '--aws' ] && mirror_host=cdn-aws.deb.debian.org
+        [ "$1" = '--aws' ] && {
+            mirror_host=cdn-aws.deb.debian.org
+            ntp_server=time.aws.com
+        }
         security_repository=mirror
         shift
         ;;
-    --cn | --china | -cn | --aliyun)
+    --aliyun)
         dns='223.5.5.5 223.6.6.6'
+        dns6='2400:3200::1 2400:3200:baba::1'
         mirror_protocol=https
         mirror_host=mirrors.aliyun.com
         ntp_server=ntp.aliyun.com
+        security_repository=mirror
+        shift
+        ;;
+    --ustc | --china)
+        dns='119.29.29.29'
+        dns6='2402:4e00::'
+        mirror_host=mirrors.ustc.edu.cn
+        ntp_server=time.amazonaws.cn
+        security_repository=mirror
+        shift
+        ;;
+    --tuna)
+        dns='119.29.29.29'
+        dns6='2402:4e00::'
+        mirror_host=mirrors.tuna.tsinghua.edu.cn
+        ntp_server=time.amazonaws.cn
+        security_repository=mirror
+        shift
+        ;;
+    --cloudflare)
+        dns='1.1.1.1 1.0.0.1'
+        dns6='2606:4700:4700::1111 2606:4700:4700::1001'
+        ntp_server=time.cloudflare.com
         security_repository=mirror
         shift
         ;;
@@ -958,6 +985,13 @@ ssh_private_key=""
     [ "$network_type" = 6 ] && dns="2606:4700:4700::1111"
 }
 
+[ "$network_type" = 6 ] && {
+    # if dns is not ipv6, use google dns
+    [[ "$dns" != *":"* ]] && {
+        dns="$dns6"
+    }
+}
+
 [ "$static_ip" == true ] && {
     warn "static ip is enabled, will select interface with static ip"
     interface="$(default_interface "$network_type")"
@@ -1350,6 +1384,8 @@ EOF
         [ -n "$snell_port" ] && late_command="$late_command --snell-port \"$snell_port\""
         [ -n "$snell_psk" ] && late_command="$late_command --snell-psk \"$snell_psk\""
     }
+
+    [ "$use_ethx" = true ] && late_command="$late_command --ethx"
 
     [ -n "$late_command" ] && {
         cat >>"$preseed_file" <<EOF
