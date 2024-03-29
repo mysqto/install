@@ -140,12 +140,24 @@ function get_disk() {
     lsblk -oMOUNTPOINT,PKNAME -rn | awk '$1 ~ /^\/$/ { print $2 }'
 }
 
+function has_kernel() {
+    local suite="$1"
+    local arch="$2"
+    local mirror="$3"
+    packages_url="$mirror/dists/$suite/main/binary-$arch/Packages.xz"
+    kernels="$(curl -sL "$packages_url" | xzgrep -c 'Package: linux-image-'"$arch"'$' 2>/dev/null)"
+    if [ "$kernels" -gt 0 ]; then
+        return 0
+    fi
+
+    warn "No kernel is available for $arch/$suite"
+    return 1
+}
+
 function has_cloud_kernel() {
     local suite="$1"
     local arch="$2"
-    local use_backports="$3"
-    local mirror="$4"
-    [ "$use_backports" == true ] && suite="$suite-backports"
+    local mirror="$3"
     packages_url="$mirror/dists/$suite/main/binary-$arch/Packages.xz"
     kernels="$(curl -sL "$packages_url" | xzgrep -c 'Package: linux-image-cloud-'"$arch"'$' 2>/dev/null)"
     if [ "$kernels" -gt 0 ]; then
@@ -168,21 +180,6 @@ function has_backports() {
     fi
 
     warn "backports repository is not available for $arch/$suite"
-    return 1
-}
-
-has_bpo_kernel() {
-    local suite="$1-backports"
-    local arch="$2"
-    local mirror="$3"
-    local debian_packages=""
-    packages_url="$mirror/dists/$suite/main/binary-$arch/Packages.xz"
-    debian_packages="$(curl -sL "$packages_url" | xzgrep -c 'Package: linux-image-'"$arch"'$' 2>/dev/null)"
-    if [ "$debian_packages" -gt 0 ]; then
-        return 0
-    fi
-
-    warn "bpo kernel is not available for $arch/$suite"
     return 1
 }
 
@@ -261,7 +258,6 @@ force_lowmem=
 #kernel and upgrade related
 upgrade=safe-upgrade
 kernel=
-bpo_kernel=true
 cloud_kernel=false
 kernel_params=
 packages="openssh-server build-essential curl wget net-tools git vim tig"
@@ -479,10 +475,6 @@ while [ $# -gt 0 ]; do
         hostname="$2"
         shift 2
         ;;
-    -bpo | --backports-kernel)
-        bpo_kernel=true
-        shift
-        ;;
     -cloud | --cloud-kernel)
         cloud_kernel=true
         shift
@@ -574,7 +566,7 @@ while [ $# -gt 0 ]; do
         firmware=true
         shift
         ;;
-    --provision)
+    -provision | --provision)
         provision=true
         version=stable
         install_shadowsocks=true
@@ -585,11 +577,10 @@ while [ $# -gt 0 ]; do
         use_backports=true
         bbr=true
         byobu=true
-        bpo_kernel=true
         cloud_kernel=true
         shift
         ;;
-    -m | --minimal)
+    -m | -minimal | --minimal)
         provision=true
         version=stable
         install_im=true
@@ -597,7 +588,6 @@ while [ $# -gt 0 ]; do
         use_backports=true
         bbr=true
         byobu=true
-        bpo_kernel=true
         cloud_kernel=true
         shift
         ;;
@@ -731,25 +721,53 @@ esac
         warn "memory size <= 512MB, force to use low memory mode & cloud kernel"
         force_lowmem=1
         cloud_kernel=true
-        bpo_kernel=true
     } || force_lowmem=0
 }
 
-[ $bpo_kernel == true ] && {
+[ $use_backports == true ] && {
     if ! has_backports "$suite" "$arch" "$mirror_base"; then
         warn "backports repository is not available for $suite, use stable repository instead"
         use_backports=false
     fi
-    if ! has_bpo_kernel "$suite" "$arch" "$mirror_base"; then
-        warn "bpo kernel is not available for $suite, use stable kernel instead"
-        bpo_kernel=false
-    fi
+}
+
+# check kernel
+[ $cloud_kernel == true ] && {
+    [ $use_backports == true ] && {
+        # bpo cloud kernel
+        if has_cloud_kernel "$suite-backports" "$arch" "$mirror_base"; then
+            kernel="linux-image-cloud-$arch/$suite-backports"
+        fi
+    }
+    # stable cloud kernel
+    [ -z "$kernel" ] && {
+        warn "No cloud kernel is available for $arch/$suite-backports, fallback to $suite"
+        if has_cloud_kernel "$suite" "$arch" "$mirror_base"; then
+            kernel="linux-image-cloud-$arch"
+        fi
+    }
 }
 
 [ -z "$kernel" ] && {
-    kernel="linux-image-$arch"
-    [ "$cloud_kernel" == true ] && has_cloud_kernel "$suite" "$arch" "$use_backports" "$mirror_base" && kernel="linux-image-cloud-$arch"
-    [ "$bpo_kernel" == true ] && has_bpo_kernel "$suite" "$arch" "$mirror_base" && packages="$kernel/$suite-backports $packages"
+    # bpo kernel
+    warn "No cloud kernel is available for $arch/$suite-backports or $suite, fallback to check normal kernel"
+    [ $use_backports == true ] && {
+        if has_kernel "$suite-backports" "$arch" "$mirror_base"; then
+            kernel="linux-image-$arch/$suite-backports"
+        fi
+    }
+
+    [ -z "$kernel" ] && {
+        warn "No kernel is available for $arch/$suite-backports, fallback to stable repository"
+        if has_kernel "$suite" "$arch" "$mirror_base"; then
+            kernel="linux-image-$arch"
+        fi
+    }
+}
+
+# still can not find kernel
+[ -z "$kernel" ] && {
+    error "No kernel is available for $arch/$suite"
 }
 
 [ -z "$daily" ] && {
@@ -1017,6 +1035,7 @@ ssh_private_key=""
 
 warn "#######################################################################"
 warn "version:                 $version"
+warn "kernel:                  $kernel"
 warn "mirror:                  $mirror_base"
 warn "username:                $username"
 warn "uid:                     $uid"
@@ -1028,8 +1047,8 @@ warn "timezone:                $timezone"
 warn "ntp server:              $ntp_server"
 warn "network console:         $network_console"
 [ -n "$nc_password" ] && warn "netwrk console password: $nc_password"
-warn "install Shadowsocks:     $install_shadowsocks"
 [ "$install_shadowsocks" = true ] && {
+    warn "install shadowsocks:     $install_shadowsocks"
     warn "shadowsocks port:        $shadowsocks_port"
     warn "shadowsocks password:    $shadowsocks_password"
     warn "sahdowsocks obfs host:   $shadowsocks_obfs_host"
@@ -1043,8 +1062,8 @@ warn "dns:                     $dns"
 warn "ssh port:                $ssh_port"
 [ -n "$ssh_private_key" ] && warn "ssh private key: \n$ssh_private_key"
 [ -n "$authorized_keys" ] && warn "ssh public key: \n$authorized_keys"
-warn "install Shadow TLS       $install_shadow_tls"
 [ "$install_shadow_tls" = true ] && {
+    warn "install shadowTLS        $install_shadow_tls"
     warn "snell port:              $snell_port"
     warn "snell psk:               $snell_psk"
     warn "shadow-tls port:         $shadow_tls_port"
@@ -1365,7 +1384,6 @@ EOF
     [ "$install_neofetch" = true ] && late_command="$late_command --neofetch"
     [ "$install_fish" = true ] && late_command="$late_command --fish"
     [ "$bbr" = true ] && late_command="$late_command --bbr"
-    [ "$use_backports" = true ] && late_command="$late_command --backports"
     [ "$byobu" = true ] && late_command="$late_command --byobu"
     [ "$sudo_without_password" = true ] && late_command="$late_command --sudo-without-password"
 
