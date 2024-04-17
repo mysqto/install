@@ -287,6 +287,7 @@ install_fish=false
 install_neofetch=false
 install_go=false
 install_im=false
+install_docker=false
 
 enable_bbr=false
 enable_shadowsocks=false
@@ -402,6 +403,10 @@ while [ $# -gt 0 ]; do
         ;;
     --ethx)
         ethx=true
+        shift
+        ;;
+    -d | --docker)
+        install_docker=true
         shift
         ;;
     *)
@@ -551,4 +556,13 @@ fi
         sed -ri 's/^#?GRUB_CMDLINE_LINUX_DEFAULT.*/GRUB_CMDLINE_LINUX_DEFAULT="net.ifnames=0 biosdevname=0"/g' /etc/default/grub
         update-grub 2>/dev/null || update-grub2 2>/dev/null
     }
+}
+
+[ "$install_docker" = true ] && {
+    [ -z "$username" ] && {
+        warn "no user specified, please add your user to docker group manually"
+    }
+    curl -sL "$base_url/docker" | bash
+
+    [ -n "$username" ] && usermod -aG docker "$username"
 }

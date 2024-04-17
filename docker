@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+
+if ((EUID != 0)); then
+    echo "Granting root privileges for ""$(basename "$0")"
+    if [ -t 1 ]; then
+        sudo "$0" "$@"
+    else
+        exec 1>output_file
+        gksu "$0" "$@"
+    fi
+    exit
+fi
+
+function warn() {
+    echo -e "\033[1;33m${*}\033[0m"
+}
+
+function error() {
+    echo -e "\033[1;31m${*}\033[0m"
+    exit 1
+}
+
+function installed() {
+    command -v "$1" &>/dev/null
+}
+
+distro="$(lsb_release -is 2>/dev/null)" || distro="$(grep -oP '^ID=\K.*' /etc/os-release)"
+distro="${distro,,}"
+[ -z "$distro" ] && error "Unable to determine the distribution"
+# debian and ubuntu only
+[ "$distro" != "debian" ] && [ "$distro" != "ubuntu" ] && error "Unsupported distribution: $distro"
+
+code_name="$(lsb_release -cs 2>/dev/null)" || code_name="$(grep -oP '^VERSION_CODENAME=\K.*' /etc/os-release)"
+
+docker_base=https://download.docker.com
+docker_sign_key=/etc/apt/keyrings/docker.asc
+apt update
+apt install -y ca-certificates curl
+install -m 0755 -d /etc/apt/keyrings
+curl -fsSL "$docker_base/linux/debian/gpg" -o "$docker_sign_key"
+chmod a+r "$docker_sign_key"
+
+echo "deb [arch=$(dpkg --print-architecture) signed-by=$docker_sign_key] https://download.docker.com/linux/$distro $code_name stable" | \
+  tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+apt update
+apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+
+if ! installed docker; then
+    error "Docker installation failed"
+fi
+
+info "Docker installed successfully"

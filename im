@@ -366,6 +366,16 @@ function enable_lookbusy() {
     add_cronjob "$username" "0 2 * * * speedtest --accept-license --accept-gdpr"
 }
 
+function install_docker() {
+    username="$1"
+    [ -z "$username" ] && {
+        warn "no user specified, please add your user to docker group manually"
+    }
+    curl -sL "$base_url/docker" | bash
+
+    [ -n "$username" ] && usermod -aG docker "$username"
+}
+
 _install_pyenv=false
 _install_speedtest=false
 _install_lookbusy=false
@@ -391,6 +401,7 @@ _speedtest=false
 _distro=false
 _fix_grub=false
 _shadow_tls=false
+_install_docker=false
 username=""
 _host=""
 
@@ -424,6 +435,7 @@ function usage() {
     echo "  -p, --provision,                        provision the server, need -u to specify the username"
     echo "  -u, --username,                         specify the username when reseting or provisioning the server"
     echo "  -nf, --netflix-test,                    netflix unlock test"
+    echo "  --docker,                               install docker"
 }
 
 POSITIONAL=()
@@ -432,6 +444,10 @@ while [ $# -gt 0 ]; do
     case "$1" in
     -d | --distro)
         _distro=true
+        shift 1
+        ;;
+    --docker)
+        _install_docker=true
         shift 1
         ;;
     -f | --fix-grub)
@@ -589,6 +605,8 @@ action() {
         distro
     elif [ "$_fix_grub" == true ]; then
         fix_grub
+    elif [ "$_install_docker" == true ]; then
+        install_docker "$username"
     elif [ "$_auto" == true ]; then
         do_all
     else

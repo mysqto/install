@@ -261,6 +261,7 @@ kernel=
 cloud_kernel=false
 kernel_params=
 packages="openssh-server build-essential curl wget net-tools git vim tig"
+install_docker=false
 
 # extra packages config
 provision=false
@@ -673,6 +674,10 @@ while [ $# -gt 0 ]; do
         ;;
     --sudo-without-password)
         sudo_without_password=true
+        shift
+        ;;
+    --docker)
+        install_docker=true
         shift
         ;;
     *)
@@ -1368,7 +1373,9 @@ d-i debian-installer/quiet boolean false
 d-i debian-installer/splash boolean false
 EOF
 
+# update provision based on user input
 [ "$provision" = true ] && {
+
     late_command="curl -sL $base/provision | bash -s --"
 
     if ipv6_enabled; then
@@ -1404,6 +1411,7 @@ EOF
     }
 
     [ "$use_ethx" = true ] && late_command="$late_command --ethx"
+    [ "$install_docker" = true ] && late_command="$late_command --docker"
 
     [ -n "$late_command" ] && {
         cat >>"$preseed_file" <<EOF
