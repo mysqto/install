@@ -31,23 +31,45 @@ nopassword=(
     make
 )
 
+function info() {
+    echo -e "\033[1;34m${*}\033[0m"
+}
+
 function warn() {
     echo -e "\033[1;33m${*}\033[0m"
 }
 
 function error() {
     echo -e "\033[1;31m${*}\033[0m"
-    exit 1
+    exit 0
 }
 
 function _installed() {
     command -v "$1" &>/dev/null
 }
 
+function faketty() {
+    script -qfc "$(printf "%q " "$@")" /dev/null
+}
+
+# shellcheck disable=SC2120
+function default_interface() {
+    type="$1"
+    [ -z "$type" ] && type="4"
+    result="$(ip -"$type" route show default | awk '{print $5}' | head -n1)"
+
+    # if there is no default interface, maybe bc it's ipv6 only, try to get the interface with ipv6 address
+    if [ -z "$result" ] && [ "$type" == "4" ]; then
+        result="$(ip -"$type" route show default | awk '{print $5}' | head -n1)"
+    fi
+    echo "$result"
+}
+
 function _install_fish() {
     local distro="$1"
+    local username="$2"
     if [ "$distro" == "ubuntu" ]; then
-        apt install -y software-properties-common
+        DEBIAN_FRONTEND=noninteractive UCF_FORCE_CONFFOLD=1 apt install -y software-properties-common
         add-apt-repository -y ppa:fish-shell/release-3
     elif [ "$distro" == "debian" ]; then
         debian_release="$(lsb_release -rs 2>/dev/null)" ||
@@ -59,15 +81,24 @@ function _install_fish() {
                 tee /etc/apt/sources.list.d/shells:fish:release:3.list
             curl -fsSL "https://download.opensuse.org/repositories/shells:fish:release:3/Debian_$debian_release/Release.key" |
                 gpg --dearmor | tee /etc/apt/trusted.gpg.d/shells_fish_release_3.gpg >/dev/null
-            apt -y update
+            DEBIAN_FRONTEND=noninteractive UCF_FORCE_CONFFOLD=1 apt -y update
         }
     fi
     apt -y --no-install-recommends install fish
+    if ! _installed fish; then
+        warn "fish installation failed" && return
+    fi
+    [ -n "$username" ] && _config_fish "$username"
 }
 
 function _install_neofetch() {
     # install neofetch
-    pushd /tmp >>/dev/null 2>&1 || exit
+    temp_dir="$(mktemp -d 2>/dev/null)"
+    [ -z "$temp_dir" ] && {
+        warn "failed to create temp directory, using /tmp instead"
+        temp_dir="/tmp/neofetch"
+    }
+    pushd "$temp_dir" >>/dev/null 2>&1 || exit
     rm -rf neofetch
     git clone https://github.com/dylanaraps/neofetch
     if [ -d neofetch ]; then
@@ -76,6 +107,8 @@ function _install_neofetch() {
         popd >>/dev/null 2>&1 || exit
     fi
     popd >>/dev/null 2>&1 || exit
+    rm -rf "$temp_dir"
+    ! _installed neofetch && warn "neofetch installation failed"
 }
 
 function _install_im() {
@@ -88,7 +121,7 @@ function _enable_bbr() {
         echo "net.core.default_qdisc=fq" >>/etc/sysctl.conf
         echo "net.ipv4.tcp_congestion_control=bbr" >>/etc/sysctl.conf
     fi
-    sysctl -p
+    sysctl -p >/dev/null 2>&1
 }
 
 function _enable_ipv6() {
@@ -103,7 +136,7 @@ function _enable_ipv6() {
 }
 
 function _enable_socat() {
-    apt -y --no-install-recommends install socat
+    DEBIAN_FRONTEND=noninteractive UCF_FORCE_CONFFOLD=1 apt -y --no-install-recommends install socat
     if ! _installed socat; then
         error "socat installation failed"
     fi
@@ -120,7 +153,7 @@ function _enable_socat() {
 }
 
 function _config_ssh() {
-    [ $# -ne 2 ] && warn "config_ssh requires 2 arguments" && return 1
+    [ $# -ne 2 ] && warn "config_ssh requires 2 arguments" && return
     username="$1"
     ssh_authorized_keys="$2"
     user_home=$(eval echo "~$username")
@@ -149,7 +182,7 @@ function _config_ssh() {
 }
 
 function _create_user() {
-    [ $# -ne 1 ] && warn "create_user requires username" && return 1
+    [ $# -ne 1 ] && warn "create_user requires username" && return
     username="$1"
     # create user if not exists
     if ! id -u "$username" >/dev/null 2>&1; then
@@ -171,10 +204,11 @@ function _create_user() {
 }
 
 function _config_fish() {
-    [ $# -ne 1 ] && warn "config_fish requires username" && return 1
     username="$1"
+    [ -z "$username" ] && warn "config_fish requires username" && return
     if ! _installed fish; then
-        _install_fish "$distro"
+        warn "fish is not installed, please install fish first"
+        return 1
     fi
 
     fish_shell="$(which fish 2>/dev/null)"
@@ -187,17 +221,18 @@ function _config_fish() {
     # get current shell again
     current_shell="$(getent passwd "$username" | cut -d: -f7)"
     [ "$current_shell" == "$fish_shell" ] && {
-                # install fisher
-        su - "$username" -c 'set -U fish_user_paths /sbin'
-        su - "$username" -c 'curl -sL '"$fisher_link"' | source && fisher install jorgebucaran/fisher && fisher install mysqto/flash'
-        # run this twice to make sure fisher is installed
-        su - "$username" -c 'curl -sL '"$fisher_link"' | source && fisher install jorgebucaran/fisher && fisher install mysqto/flash'
-        echo "wait 5 seconds for fisher to install plugins" && sleep 5
+        # install fisher
+        info "installing fisher for $username"
+        faketty su - "$username" -s "$fish_shell" -c 'curl -sL '"$fisher_link"' | source && fisher install jorgebucaran/fisher jethrokuan/z mysqto/flash'
+        info "waiting for fisher to install plugins" && sleep 30
+        #shellcheck disable=SC2016
+        faketty su - "$username" -s "$fish_shell" -c 'set -U fish_user_paths /sbin $fish_user_paths'
+        info "fisher installed for $username"
     }
 }
 
 function _config_sudo() {
-    [ $# -ne 2 ] && warn "config_sudo requires username and sudo_without_password" && return 1
+    [ $# -ne 2 ] && warn "config_sudo requires username and sudo_without_password" && return
     username="$1"
     sudo_without_password="$2"
     [ -f "/etc/sudoers.d/$username" ] && rm -f "/etc/sudoers.d/$username"
@@ -222,13 +257,14 @@ function _config_sudo() {
 }
 
 function _enable_byobu() {
-    [ $# -ne 1 ] && warn "enable_byobu requires username" && return 1
+    [ $# -ne 1 ] && warn "enable_byobu requires username" && return
     username="$1"
     if ! _installed byobu; then
-        apt -y --no-install-recommends install byobu
+        DEBIAN_FRONTEND=noninteractive UCF_FORCE_CONFFOLD=1 apt -y --no-install-recommends install byobu
     fi
-
-    su - "$username" -c 'byobu-enable'
+    info "enabling byobu for $username"
+    faketty su - "$username" -c 'byobu-enable'
+    info "byobu enabled for $username"
 }
 
 distro="$(lsb_release -is 2>/dev/null)"
@@ -246,7 +282,7 @@ distro="$(echo "$distro" | tr '[:upper:]' '[:lower:]')"
 # check sudo installed
 if ! command -v sudo &>/dev/null; then
     echo "sudo could not be found"
-    ((EUID == 0)) && apt update && apt install -y sudo || echo "Please install sudo first" && exit 1
+    ((EUID == 0)) && apt update && UCF_FORCE_CONFFOLD=1 apt install -y sudo || echo "Please install sudo first" && exit 1
 fi
 
 if ((EUID != 0)); then
@@ -306,6 +342,7 @@ snell_version=4
 snell_config_file="/etc/snell/snell-server.conf"
 shadow_tls_default_file="/etc/default/shadow-tls"
 ethx=false
+grub_default="/etc/default/grub"
 
 distro="$(lsb_release -is 2>/dev/null)"
 
@@ -418,17 +455,20 @@ done
 
 set -- "${POSITIONAL[@]}" # restore positional parameters
 
-apt update && apt upgrade -y
+apt update && DEBIAN_FRONTEND=noninteractive UCF_FORCE_CONFFOLD=1 apt upgrade -y
 apt -y --no-install-recommends install byobu wget curl net-tools build-essential git vim tig jq dnsutils tig pwgen
 
-[ "$install_fish" = true ] && {
-    if ! _installed fish; then
-        _install_fish "$distro"
-    fi
-}
-
 [ "$install_neofetch" = true ] && _install_neofetch
-[ "$install_go" = true ] && curl -sL "$base_url/go" | bash
+[ "$install_go" = true ] && {
+    go_script="$(mktemp 2>/dev/null)"
+    curl -sL "$base_url/go" -o "$go_script"
+    [ ! -f "$go_script" ] && warn "failed to download go script" && return
+    chmod +x "$go_script"
+    info "installing go"
+    faketty "$go_script"
+    [ -f "$go_script" ] && rm -f "$go_script"
+    ! _installed go && warn "go installation failed, please check the script output"
+}
 [ "$install_im" = true ] && _install_im
 
 [ "$enable_socat" = true ] && _enable_socat
@@ -461,8 +501,15 @@ apt -y --no-install-recommends install byobu wget curl net-tools build-essential
             shadowsocks_obfs_host="gateway.icloud.com"
         }
     }
-
-    curl -sL "$base_url/ss-libev" | bash -s -- --password "$shadowsocks_password" --port "$shadowsocks_port" --obfs-host "$shadowsocks_obfs_host"
+    ss_script="$(mktemp 2>/dev/null)"
+    curl -sL "$base_url/ss-libev" -o "$ss_script"
+    [ ! -f "$ss_script" ] && warn "failed to download shadowsocks-libev script" && return
+    chmod +x "$ss_script"
+    info "installing shadowsocks-libev"
+    faketty "$ss_script" --password "$shadowsocks_password" --port "$shadowsocks_port" --obfs-host "$shadowsocks_obfs_host"
+    [ -f "$ss_script" ] && rm -f "$ss_script"
+    ! _installed ss-server && warn "shadowsocks-libev installation failed, please check the script output"
+    info "shadowsocks-libev installed"
 }
 
 [ "$install_shadow_tls" = true ] && {
@@ -524,8 +571,16 @@ apt -y --no-install-recommends install byobu wget curl net-tools build-essential
         }
     }
 
-    curl -sL "$base_url//Surge/Snell/install" | bash -s -- --snell-port "$snell_port" --snell-psk "$snell_psk" --snell-version "$snell_version" \
+    snell_script="$(mktemp 2>/dev/null)"
+    curl -sL "$base_url/snell" -o "$snell_script"
+    [ ! -f "$snell_script" ] && warn "failed to download snell script" && return
+    chmod +x "$snell_script"
+    info "installing snell"
+    "$snell_script" --snell-port "$snell_port" --snell-psk "$snell_psk" --snell-version "$snell_version" \
         --shadow-tls --shadow-tls-password "$shadow_tls_password" --shadow-tls-port "$shadow_tls_port" --obfs-host "$shadow_tls_obfs_host"
+    [ -f "$snell_script" ] && rm -f "$snell_script"
+    ! _installed snell-server && warn "snell installation failed, please check the script output" && return
+    info "snell installed"
 }
 
 #enable bbr
@@ -543,26 +598,42 @@ if [ -n "$username" ]; then
     _create_user "$username"
     # config ssh
     [ -n "$ssh_authorized_keys" ] && _config_ssh "$username" "$ssh_authorized_keys"
-    # config fish
-    _config_fish "$username"
-    # config byobu
-    [ "$enable_byobu" = true ] && _enable_byobu "$username"
     # config sudo
     _config_sudo "$username" "$sudo_without_password"
 fi
 
-[ "$ethx" = true ] && {
-    [ -f '/etc/grub/default' ] && {
-        sed -ri 's/^#?GRUB_CMDLINE_LINUX_DEFAULT.*/GRUB_CMDLINE_LINUX_DEFAULT="net.ifnames=0 biosdevname=0"/g' /etc/default/grub
-        update-grub 2>/dev/null || update-grub2 2>/dev/null
+[ "$ethx" = true ] && [ -f "$grub_default" ] && {
+    info "configuring network interface to eth0"
+    sed -ri 's/^#?GRUB_CMDLINE_LINUX_DEFAULT.*/GRUB_CMDLINE_LINUX_DEFAULT="net.ifnames=0 biosdevname=0"/g' "$grub_default"
+    update-grub 2>/dev/null || update-grub2 2>/dev/null
+    # get default network interface
+    default_nic="$(default_interface)"
+
+    # default interface not started with eth
+    [ -n "$default_nic" ] && [[ "$default_nic" != "eth"* ]] && {
+        info "default network interface is $default_nic, renaming to eth0"
+        [ -f "/etc/network/interfaces" ] && {
+            sed -ri "s/^#?iface $default_nic inet dhcp.*/iface $default_nic inet dhcp/g" /etc/network/interfaces
+        }
     }
+    info "rebooting to apply changes"
 }
 
 [ "$install_docker" = true ] && {
     [ -z "$username" ] && {
         warn "no user specified, please add your user to docker group manually"
     }
-    curl -sL "$base_url/docker" | bash
+    docker_script="$(mktemp 2>/dev/null)"
+    curl -sL "$base_url/docker" -o "$docker_script" && chmod +x "$docker_script" && faketty "$docker_script" && rm -f "$docker_script"
+
+    ! _installed docker && warn "docker installation failed, please check the script output" && return
 
     [ -n "$username" ] && usermod -aG docker "$username"
 }
+
+[ "$install_fish" = true ] && {
+    _install_fish "$distro" "$username"
+}
+
+# byobu-enable need to be run after fish installation
+[ "$enable_byobu" = true ] && [ -n "$username" ] && _enable_byobu "$username"

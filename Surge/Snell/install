@@ -361,8 +361,8 @@ wd=$(mktemp -t "snell.XXXXXXXXXXXXXXXX" -d 2>/dev/null)
 [ ! -d "$wd" ] && error "failed to create working directory"
 
 if installed apt || installed apt-get; then
-    apt-get update
-    apt-get install -y wget curl unzip
+    apt update
+    DEBIAN_FRONTEND=noninteractive UCF_FORCE_CONFFOLD=1 apt install -y wget curl unzip
 elif installed yum; then
     yum install -y wget curl unzip
 elif installed pacman; then

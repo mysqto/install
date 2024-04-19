@@ -424,8 +424,8 @@ aarch64 | arm64) arch=arm64 ;;
 esac
 
 update_dpkg_config && {
-    DEBIAN_FRONTEND=noninteractive apt -y update && apt -y --no-install-recommends install systemd pwgen \
-        whois curl cpio openssh-client jq
+    DEBIAN_FRONTEND=noninteractive apt -y update && DEBIAN_FRONTEND=noninteractive UCF_FORCE_CONFFOLD=1 apt -y \
+        --no-install-recommends install systemd pwgen whois curl cpio openssh-client jq
 }
 
 restore_dpkg_config
@@ -980,7 +980,7 @@ d-i debian-installer/splash boolean false
 EOF
 
 [ "$provision" = true ] && {
-    late_command="curl -sL $base/provision | bash -s --"
+    late_command="bash <(curl -sL "$base/provision")"
 
     if ipv6_enabled; then
         late_command="$late_command --ipv6-dhcp"

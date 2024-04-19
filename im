@@ -147,11 +147,11 @@ function update() {
     info "checking for updates"
     if kernal_updateable; then
         warn "kernal updateable, update and reboot the server"
-        apt -y upgrade
+        DEBIAN_FRONTEND=noninteractive UCF_FORCE_CONFFOLD=1 apt -y upgrade
         reboot
     elif updateable; then
         warn "update available, update the server"
-        apt -y upgrade
+        DEBIAN_FRONTEND=noninteractive UCF_FORCE_CONFFOLD=1 apt -y upgrade
         [ -f "/var/run/reboot-required" ] && warn "reboot required" && reboot
     fi
 }
@@ -170,7 +170,7 @@ function upgrade() {
 }
 
 function update_ss() {
-    curl -sL "$base_url/ss-libev" | bash -s --
+    bash <(curl -sL "$base_url/ss-libev")
 }
 
 function update_ss_obfs_host() {
@@ -194,7 +194,7 @@ function update_ss_obfs_host() {
 }
 
 function shadow_tls() {
-    curl -sL "$base_url/Surge/Snell/install" | bash -s -- --shadow-tls
+    bash <(curl -sL "$base_url/Surge/Snell/install") --shadow-tls
 }
 
 function install_speedtest() {
@@ -253,7 +253,7 @@ function self_update() {
 function provision() {
     local user="$1"
     [ -z "$user" ] && error "username is required when provisioning the server"
-    curl -sL "$base_url/provision" | bash -s -- -u "$user" -s
+    bash <(curl -sL "$base_url/provision") -u "$user" -s
 }
 
 function reset() {
@@ -263,10 +263,10 @@ function reset() {
     [ -z "$user" ] && error "username is required when reseting the server"
     case "$system" in
     ubuntu)
-        curl -sL "$base_url/ubuntu" | bash -s -- -u "$user"
+        bash <(curl -sL "$base_url/ubuntu") -u "$user"
         ;;
     *)
-        curl -sL "$base_url/debian" | bash -s -- --user "$user" --provision
+        bash <(curl -sL "$base_url/debian") -u "$user" --provision
         ;;
     esac
 }
@@ -319,7 +319,7 @@ function install_edge_kernel() {
         warn "edge kernel already installed"
         return 0
     fi
-    apt -y install "$edge_kernel" && info "edge kernel installed"
+    DEBIAN_FRONTEND=noninteractive UCF_FORCE_CONFFOLD=1 apt -y install "$edge_kernel" && info "edge kernel installed"
     warn "rebooting the server"
     /sbin/reboot
 }

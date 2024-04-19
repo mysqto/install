@@ -39,7 +39,7 @@ code_name="$(lsb_release -cs 2>/dev/null)" || code_name="$(grep -oP '^VERSION_CO
 docker_base=https://download.docker.com
 docker_sign_key=/etc/apt/keyrings/docker.asc
 apt update
-apt install -y ca-certificates curl
+DEBIAN_FRONTEND=noninteractive UCF_FORCE_CONFFOLD=1 apt install -y ca-certificates curl
 install -m 0755 -d /etc/apt/keyrings
 curl -fsSL "$docker_base/linux/debian/gpg" -o "$docker_sign_key"
 chmod a+r "$docker_sign_key"
@@ -48,7 +48,7 @@ echo "deb [arch=$(dpkg --print-architecture) signed-by=$docker_sign_key] https:/
   tee /etc/apt/sources.list.d/docker.list > /dev/null
 
 apt update
-apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+DEBIAN_FRONTEND=noninteractive UCF_FORCE_CONFFOLD=1 apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 
 if ! installed docker; then
     error "Docker installation failed"

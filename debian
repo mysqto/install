@@ -260,12 +260,13 @@ upgrade=safe-upgrade
 kernel=
 cloud_kernel=false
 kernel_params=
-packages="openssh-server build-essential curl wget net-tools git vim tig"
+packages="openssh-server build-essential curl wget net-tools git vim tig libpam-systemd"
 grub_cfg=
 install_docker=false
 
 # extra packages config
 provision=false
+debug_provision=false
 install_socat=false
 ssh_port=
 install_go=false
@@ -319,7 +320,7 @@ if installed apt-get; then
 
     DEBIAN_FRONTEND=noninteractive \
         apt -y update &&
-        apt -y \
+        DEBIAN_FRONTEND=noninteractive UCF_FORCE_CONFFOLD=1 apt -y \
             -o Dpkg::Options::="--force-confdef" \
             -o Dpkg::Options::="--force-confold" \
             --no-install-recommends \
@@ -347,6 +348,44 @@ if installed yum; then
     done
 
     yum -y install "${to_install[@]}"
+fi
+
+if installed apk; then
+    # check and enable community repository and testing repository
+    apk_repositories="/etc/apk/repositories"
+    # extract alpine from /etc/apk/repositories
+    # get /alpine/v3.14 or /alpine/edge from /etc/apk/repositories
+    alpine_version=$(grep -oE '/alpine/[^/]+/' "$apk_repositories" | cut -d'/' -f3 | head -n1)
+    [ -z "$alpine_version" ] && error "failed to get alpine version"
+    # check and enable community repository
+    if ! grep -q "^http://dl-cdn.alpinelinux.org/alpine/$alpine_version/community" "$apk_repositories"; then
+        echo "@community http://dl-cdn.alpinelinux.org/alpine/$alpine_version/community" >>"$apk_repositories"
+    fi
+    # check and enable testing repository
+    if ! grep -q "^http://dl-cdn.alpinelinux.org/alpine/$alpine_version/testing" "$apk_repositories"; then
+        echo "@testing http://dl-cdn.alpinelinux.org/alpine/$alpine_version/testing" >>"$apk_repositories"
+    fi
+
+    apk update
+
+    dependencies=(
+        pwgen
+        curl
+        cpio@community
+        openssh-client
+        jq
+        xz
+    )
+
+    to_install=()
+
+    for dependency in "${dependencies[@]}"; do
+        if ! apk info -vv | grep -q "^$dependency" 2>/dev/null; then
+            to_install+=("$dependency")
+        fi
+    done
+
+    apk add --no-cache "${to_install[@]}"
 fi
 
 [ -z "$arch" ] && {
@@ -379,6 +418,10 @@ while [ $# -gt 0 ]; do
     -v | --version)
         version="$2"
         shift 2
+        ;;
+    --sid | --unstable)
+        version=sid
+        shift
         ;;
     --cdn | --aws)
         mirror_protocol=https
@@ -436,6 +479,10 @@ while [ $# -gt 0 ]; do
     -d | --disk)
         disk="$2"
         shift 2
+        ;;
+    --debug)
+        debug_provision=true
+        shift
         ;;
     -e | --efi)
         efi=true
@@ -584,17 +631,16 @@ while [ $# -gt 0 ]; do
         bbr=true
         byobu=true
         cloud_kernel=true
+        network_console=true
         shift
         ;;
     -m | -minimal | --minimal)
         provision=true
         version=stable
-        install_im=true
-        install_fish=true
         use_backports=true
         bbr=true
-        byobu=true
         cloud_kernel=true
+        network_console=true
         shift
         ;;
     -ak | --authorized-keys)
@@ -872,7 +918,9 @@ else
     domain=" $domain"
 fi
 
-[ -z "$timezone" ] && timezone="$(curl -sL http://ifconfig.co/json | jq -r ".time_zone")"
+[ -z "$timezone" ] && timezone="$(curl -sL http://ip-api.com/json 2>/dev/null | jq -r ".timezone")"
+[ -z "$timezone" ] && timezone="$(curl -sL https://ipinfo.io 2>/dev/null | jq -r ".timezone")"
+[ -z "$timezone" ] && timezone="$(curl -sL https://ifconfig.co/json 2>/dev/null | jq -r ".time_zone")"
 [ -z "$timezone" ] && timezone="$(cat /etc/timezone 2>/dev/null)"
 [ -z "$timezone" ] && timezone="$(realpath /etc/localtime 2>/dev/null | sed 's/\/usr\/share\/zoneinfo\///')"
 [ -z "$timezone" ] && timezone="$(timedatectl 2>/dev/null | awk '/Time zone:/ {print $3}')"
@@ -1134,7 +1182,7 @@ EOF
 # Network console
 
 d-i anna/choose_modules string network-console
-d-i preseed/early_command string anna-install network-console
+d-i preseed/early_command string anna-install network-console bash
 EOF
     if [ -n "$authorized_keys_url" ]; then
         cat >>"$preseed_file" <<EOF
@@ -1380,8 +1428,9 @@ EOF
 
 # update provision based on user input
 [ "$provision" = true ] && {
-
-    late_command="curl -sL $base/provision | bash -s --"
+    provision_file="/tmp/provision_$(date '+%Y%m%d%H%M%S').sh"
+    provision_log="/var/log/provision_$(date '+%Y%m%d%H%M%S').log"
+    late_command="curl -sL $base/provision -o $provision_file; chmod +x $provision_file; $provision_file"
 
     if ipv6_enabled; then
         late_command="$late_command --ipv6-dhcp"
@@ -1419,9 +1468,14 @@ EOF
     [ "$install_docker" = true ] && late_command="$late_command --docker"
 
     [ -n "$late_command" ] && {
+        if [ "$debug_provision" = true ]; then
+            late_command="$late_command >>$provision_log 2>&1"
+        else
+            late_command="$late_command >>$provision_log 2>&1; rm -rf \"$provision_file\" \"$provision_log\""
+        fi
         cat >>"$preseed_file" <<EOF
 # Provisioning
-d-i preseed/late_command string in-target sh -c '$late_command > /var/log/provision.log 2>&1'
+d-i preseed/late_command string in-target sh -c '$late_command'
 EOF
     }
 }
