@@ -261,6 +261,7 @@ kernel=
 cloud_kernel=false
 kernel_params=
 packages="openssh-server build-essential curl wget net-tools git vim tig"
+grub_cfg=
 install_docker=false
 
 # extra packages config
@@ -467,6 +468,10 @@ while [ $# -gt 0 ]; do
     -g | --gpt)
         gpt=true
         shift
+        ;;
+    --grub-config)
+        grub_cfg="$2"
+        shift 2
         ;;
     -i | --interface)
         interface="$2"
@@ -1469,9 +1474,12 @@ installer_directory=$(grub-mkrelpath "$mkrelpath" 2>/dev/null) ||
 }
 [ "$dry_run" = true ] && installer_directory="$installer_directory/debian-$suite"
 
-grub_dir=$(find /boot -type d -name "grub*" 2>/dev/null | head -n1)
-grub_cfg=$(find "$grub_dir" -regextype posix-egrep -regex ".*/(grub.conf|grub.cfg)" 2>/dev/null)
-[ -z "$grub_cfg" ] && grub_cfg=$(find /boot -regextype posix-egrep -regex ".*/(grub.conf|grub.cfg)" 2>/dev/null | head -n1)
+[ -z "$grub_cfg" ] && {
+    grub_dir=$(find /boot -type d -name "grub*" 2>/dev/null | head -n1)
+    grub_cfg=$(find "$grub_dir" -regextype posix-egrep -regex ".*/(grub.conf|grub.cfg)" 2>/dev/null)
+    [ -z "$grub_cfg" ] && grub_cfg=$(find /boot -regextype posix-egrep -regex ".*/(grub.conf|grub.cfg)" 2>/dev/null | head -n1)
+}
+
 [ -z "$grub_cfg" ] && error "Failed to find grub.cfg"
 [ ! -f "$grub_cfg" ] && error "Failed to find grub.cfg at $grub_cfg"
 [ "$dry_run" == false ] && cp "$grub_cfg" "$grub_cfg.$timestamp.bak"
