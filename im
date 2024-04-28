@@ -382,6 +382,23 @@ function install_docker() {
     [ -n "$username" ] && usermod -aG docker "$username"
 }
 
+function install_socat() {
+    DEBIAN_FRONTEND=noninteractive UCF_FORCE_CONFFOLD=1 apt -y --no-install-recommends install socat
+    if ! installed socat; then
+        error "socat installation failed"
+    fi
+
+    curl -sL "$base_url/socat/socat.service" -o /lib/systemd/system/socat.service
+    curl -sL "$base_url/socat/socat" -o /etc/socat && chmod +x /etc/socat
+    curl -sL "$base_url/socat/socatrc" -o /etc/socatrc
+
+    [ ! -f /etc/socatrc ] && error "socatrc installation failed"
+    [ ! -f /etc/socat ] && error "socat installation failed"
+    [ ! -f /lib/systemd/system/socat.service ] && error "socat.service installation failed"
+
+    systemctl enable socat.service
+}
+
 _install_pyenv=false
 _install_speedtest=false
 _install_lookbusy=false
@@ -408,6 +425,7 @@ _distro=false
 _fix_grub=false
 _shadow_tls=false
 _install_docker=false
+_install_socat=false
 username=""
 _host=""
 
@@ -438,6 +456,7 @@ function usage() {
     info "  -ss, --shadowsocks,                     enable shadowsocks"
     info "  -stls, --shadow-tls,                    enable snell and shadow-tls"
     info "  -st, --speedtest,                       run speedtest"
+    info "  -so, --socat,                           install socat"
     info "  -p, --provision,                        provision the server, need -u to specify the username"
     info "  -u, --username,                         specify the username when reseting or provisioning the server"
     info "  -nf, --netflix-test,                    netflix unlock test"
@@ -553,6 +572,10 @@ while [ $# -gt 0 ]; do
         _netflix_test=true
         shift 1
         ;;
+    -so | --socat)
+        _install_socat=true
+        shift
+        ;;
     *)
         POSITIONAL+=("$1")
         shift
@@ -613,6 +636,8 @@ action() {
         fix_grub
     elif [ "$_install_docker" == true ]; then
         install_docker "$username"
+    elif [ "$_install_socat" == true ]; then
+        install_socat
     elif [ "$_auto" == true ]; then
         do_all
     else
