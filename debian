@@ -93,7 +93,7 @@ function netmask() {
     fi
     # dirty hack for google cloud platform
     if [ "$type" == "4" ] && [ "$mask" == "255.255.255.255" ]; then
-        asn=$(curl -s -"$type" "https://ipconfig.io/json" | jq -r '.asn_org' 2>/dev/null)
+        asn=$(curl --connect-timeout 30 -s -"$type" "https://ipconfig.io/json" | jq -r '.asn_org' 2>/dev/null)
         if [ "$asn" == "GOOGLE-CLOUD-PLATFORM" ]; then
             mask="255.255.255.0"
             mirror_protocol="http"
@@ -918,9 +918,9 @@ else
     domain=" $domain"
 fi
 
-[ -z "$timezone" ] && timezone="$(curl -sL http://ip-api.com/json 2>/dev/null | jq -r ".timezone")"
-[ -z "$timezone" ] && timezone="$(curl -sL https://ipinfo.io 2>/dev/null | jq -r ".timezone")"
-[ -z "$timezone" ] && timezone="$(curl -sL https://ifconfig.co/json 2>/dev/null | jq -r ".time_zone")"
+[ -z "$timezone" ] && timezone="$(curl --connect-timeout 30 -sL http://ip-api.com/json 2>/dev/null | jq -r ".timezone")"
+[ -z "$timezone" ] && timezone="$(curl --connect-timeout 30 -sL https://ipinfo.io 2>/dev/null | jq -r ".timezone")"
+[ -z "$timezone" ] && timezone="$(curl --connect-timeout 30 -sL https://ifconfig.co/json 2>/dev/null | jq -r ".time_zone")"
 [ -z "$timezone" ] && timezone="$(cat /etc/timezone 2>/dev/null)"
 [ -z "$timezone" ] && timezone="$(realpath /etc/localtime 2>/dev/null | sed 's/\/usr\/share\/zoneinfo\///')"
 [ -z "$timezone" ] && timezone="$(timedatectl 2>/dev/null | awk '/Time zone:/ {print $3}')"
