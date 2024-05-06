@@ -145,7 +145,7 @@ function has_kernel() {
     local arch="$2"
     local mirror="$3"
     packages_url="$mirror/dists/$suite/main/binary-$arch/Packages.xz"
-    kernels="$(curl -sL "$packages_url" | xzgrep -c 'Package: linux-image-'"$arch"'$' 2>/dev/null)"
+    kernels="$(curl -sL --connect-timeout 30 "$packages_url" | xzgrep -c 'Package: linux-image-'"$arch"'$' 2>/dev/null)"
     if [ "$kernels" -gt 0 ]; then
         return 0
     fi
@@ -159,7 +159,7 @@ function has_cloud_kernel() {
     local arch="$2"
     local mirror="$3"
     packages_url="$mirror/dists/$suite/main/binary-$arch/Packages.xz"
-    kernels="$(curl -sL "$packages_url" | xzgrep -c 'Package: linux-image-cloud-'"$arch"'$' 2>/dev/null)"
+    kernels="$(curl -sL --connect-timeout 30 "$packages_url" | xzgrep -c 'Package: linux-image-cloud-'"$arch"'$' 2>/dev/null)"
     if [ "$kernels" -gt 0 ]; then
         return 0
     fi
@@ -174,7 +174,7 @@ function has_backports() {
     local mirror="$3"
     local debian_packages=""
     packages_url="$mirror/dists/$suite/main/binary-$arch/Packages.xz"
-    debian_packages="$(curl -sL "$packages_url" | xzgrep -c "Package: .*" 2>/dev/null)"
+    debian_packages="$(curl -sL --connect-timeout 30 "$packages_url" | xzgrep -c "Package: .*" 2>/dev/null)"
     if [ "$debian_packages" -gt 0 ]; then
         return 0
     fi
@@ -1030,9 +1030,9 @@ fi
 }
 
 [ -n "$authorized_keys_url" ] && {
-    authorized_keys="$(curl -sL "$authorized_keys_url" 2>/dev/null)" ||
-        authorized_keys="$(wget -qO- "$authorized_keys_url" 2>/dev/null)" ||
-        authorized_keys="$(busybox wget -qO- "$authorized_keys_url" 2>/dev/null)"
+    authorized_keys="$(curl -sL --connect-timeout 30 "$authorized_keys_url" 2>/dev/null)" ||
+        authorized_keys="$(wget -t 1 -T 30 -qO- "$authorized_keys_url" 2>/dev/null)" ||
+        authorized_keys="$(busybox wget -T 30 -qO- "$authorized_keys_url" 2>/dev/null)"
 }
 
 [ -z "$authorized_keys" ] && authorized_keys="$(cat /home/"$username"/.ssh/authorized_keys 2>/dev/null)"
@@ -1101,9 +1101,9 @@ ssh_private_key=""
     
     # check if nc_authorized_keys_url exists
     [ -n "$nc_authorized_keys_url" ] && {
-        nc_authorized_keys="$(curl -sL "$nc_authorized_keys_url" 2>/dev/null)" ||
-            nc_authorized_keys="$(wget -qO- "$nc_authorized_keys_url" 2>/dev/null)" ||
-            nc_authorized_keys="$(busybox wget -qO- "$nc_authorized_keys_url" 2>/dev/null)"
+        nc_authorized_keys="$(curl -sL --timeout 30 "$nc_authorized_keys_url" 2>/dev/null)" ||
+            nc_authorized_keys="$(wget -t 1 -T 30 -qO- "$nc_authorized_keys_url" 2>/dev/null)" ||
+            nc_authorized_keys="$(busybox wget -T 30 -qO- "$nc_authorized_keys_url" 2>/dev/null)"
         [ -z "$nc_authorized_keys" ] && {
             warn "failed to get network console authorized keys, will use password instead"
             nc_authorized_keys_url=""
@@ -1450,7 +1450,7 @@ EOF
 [ "$provision" = true ] && {
     provision_file="/tmp/provision_$(date '+%Y%m%d%H%M%S').sh"
     provision_log="/var/log/provision_$(date '+%Y%m%d%H%M%S').log"
-    late_command="curl -sL $base/provision -o $provision_file; chmod +x $provision_file; $provision_file"
+    late_command="curl -sL --connect-timeout 30 $base/provision -o $provision_file; chmod +x $provision_file; $provision_file"
 
     if ipv6_enabled; then
         late_command="$late_command --ipv6-dhcp"
