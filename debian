@@ -243,6 +243,7 @@ timezone=
 ntp_server=
 network_console=false
 nc_password=
+nc_authorized_keys_url=
 bbr=false
 # partition related
 filesystem=ext4
@@ -649,6 +650,14 @@ while [ $# -gt 0 ]; do
         ;;
     -aku | --authorized-keys-url)
         authorized_keys_url="$2"
+        shift 2
+        ;;
+    -ncp | --network-console-password)
+        nc_password="$2"
+        shift 2
+        ;;
+    -nck | --network-console-authorized-key-url)
+        nc_authorized_keys_url="$2"
         shift 2
         ;;
     -stls | --shadow-tls)
@@ -1089,6 +1098,17 @@ ssh_private_key=""
         nc_password="$(busybox mkpasswd -l 16 -C 8 -s 4 2>/dev/null)" ||
         nc_password="$(busybox pwgen -nsy 16 1 2>/dev/null)" ||
         nc_password="$(LC_ALL=C tr </dev/urandom -dc 'a-zA-Z0-9' | head -c 16 2>/dev/null)"
+    
+    # check if nc_authorized_keys_url exists
+    [ -n "$nc_authorized_keys_url" ] && {
+        nc_authorized_keys="$(curl -sL "$nc_authorized_keys_url" 2>/dev/null)" ||
+            nc_authorized_keys="$(wget -qO- "$nc_authorized_keys_url" 2>/dev/null)" ||
+            nc_authorized_keys="$(busybox wget -qO- "$nc_authorized_keys_url" 2>/dev/null)"
+        [ -z "$nc_authorized_keys" ] && {
+            warn "failed to get network console authorized keys, will use password instead"
+            nc_authorized_keys_url=""
+        }
+    }
 }
 
 warn "#######################################################################"
@@ -1184,9 +1204,9 @@ EOF
 d-i anna/choose_modules string network-console
 d-i preseed/early_command string anna-install network-console bash
 EOF
-    if [ -n "$authorized_keys_url" ]; then
+    if [ -n "$nc_authorized_keys_url" ]; then
         cat >>"$preseed_file" <<EOF
-d-i network-console/authorized_keys_url string $authorized_keys_url
+d-i network-console/authorized_keys_url string $nc_authorized_keys_url
 EOF
     else
         cat >>"$preseed_file" <<EOF
