@@ -1,5 +1,18 @@
 #!/bin/bash
 
+function warn() {
+    echo -e "\033[1;33m${*}\033[0m"
+}
+
+function error() {
+    echo -e "\033[1;31m${*}\033[0m"
+    exit 1
+}
+
+function info() {
+    echo -e "\033[1;32m${*}\033[0m"
+}
+
 # shellcheck disable=SC2120
 function default_interface() {
     type="$1"
@@ -34,6 +47,8 @@ obfs_hosts=(
     "gateway.messenger.live.com"
     "gateway.icloud.com"
 )
+nproc=$(lscpu | grep -E '^CPU\(s\):' | awk '{print $2}')
+[ -z "$nproc" ] && nproc=4
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -79,7 +94,7 @@ set -- "${POSITIONAL[@]}" # restore positional parameters
 wd=$(mktemp -t "ss-libev.XXXXXXXXXXXXXXXX" -d 2>/dev/null)
 
 [ ! -d "$wd" ] && wd=/tmp/$(date +%s) && mkdir -p "$wd" 2>/dev/null
-[ ! -d "$wd" ] && echo "failed to create working directory" && exit 1
+[ ! -d "$wd" ] && error "failed to create working directory"
 
 pushd "$wd" >>/dev/null 2>&1 || exit
 
@@ -87,42 +102,66 @@ sudo apt -y update && DEBIAN_FRONTEND=noninteractive UCF_FORCE_CONFFOLD=1 sudo -
     build-essential autoconf libtool libpcre3-dev asciidoc xmlto libev-dev libc-ares-dev automake libmbedtls-dev libsodium-dev pkg-config
 
 # Installation of Libsodium
-rm -rf "libsodium"
-git clone https://github.com/jedisct1/libsodium.git "libsodium"
-[ ! -d "libsodium" ] && echo "failed to clone libsodium" && exit 1
-pushd "libsodium" >>/dev/null 2>&1 || exit
-git checkout "$libsodium_version"
-./autogen.sh
-./configure --prefix=/usr && make
-sudo make install
-popd >>/dev/null 2>&1 || exit
+libsodium_directory="libsodium-$libsodium_version"
+[ -d "$libsodium_directory" ] && rm -rf "$libsodium_directory"
+# download libsodium
+libsodium_download_url=$(curl -sL "$libsodium_releases_url" 2>/dev/null | grep "browser_download_url" | grep "libsodium-$libsodium_version.tar.gz" | head -n 1 | cut -d '"' -f 4)
+if [ -z "$libsodium_download_url" ]; then
+    warn "failed to get libsodium download url, will use git clone"
+    git clone https://github.com/jedisct1/libsodium.git "$libsodium_directory"
+    [ ! -d "$libsodium_directory" ] && error "failed to clone libsodium"
+    pushd "$libsodium_directory" >>/dev/null 2>&1 || error "failed to enter libsodium directory"
+    git checkout "$libsodium_version"
+    popd >>/dev/null 2>&1 || error "failed to leave libsodium directory"
+else
+    libsodium_tarball="libsodium-$libsodium_version.tar.gz"
+    curl -sL "$libsodium_download_url" -o "$libsodium_tarball" || error "failed to download libsodium"
+    tar zxvf "$libsodium_tarball" || error "failed to extract libsodium"
+    [ ! -d "$libsodium_directory" ] && error "failed to extract libsodium"
+fi
+
+pushd "$libsodium_directory" >>/dev/null 2>&1 || error "failed to enter libsodium directory"
+[ -z "$libsodium_version" ] && error "libsodium version is not specified"
+./autogen.sh || error "failed to run autogen.sh for libsodium"
+./configure --prefix=/usr || error "failed to configure libsodium"
+# shellcheck disable=SC2046
+make -j$(nproc) || error "failed to make libsodium"
+sudo make install || error "failed to install libsodium"
+popd >>/dev/null 2>&1 || error "failed to leave libsodium directory"
 sudo ldconfig
 
 # Installation of MbedTLS
 rm -rf "mbedtls"
 git clone https://github.com/ARMmbed/mbedtls.git "mbedtls"
-[ ! -d "mbedtls" ] && echo "failed to clone mbedtls" && exit 1
-pushd "mbedtls" >>/dev/null 2>&1 || exit
+[ ! -d "mbedtls" ] && error "failed to clone mbedtls"
+pushd "mbedtls" >>/dev/null 2>&1 || error "failed to enter mbedtls directory"
 git checkout "$mbedtls_version"
-make SHARED=1 CFLAGS=-fPIC
+# shellcheck disable=SC2046
+make SHARED=1 CFLAGS=-fPIC -j$(nproc) || error "failed to make mbedtls"
 sudo make DESTDIR=/usr install
-popd >>/dev/null 2>&1 || exit
+popd >>/dev/null 2>&1 || error "failed to leave mbedtls directory"
 sudo ldconfig
 
 rm -rf simple-obfs
 git clone https://github.com/shadowsocks/simple-obfs.git
-pushd simple-obfs >>/dev/null 2>&1 || exit
+pushd simple-obfs >>/dev/null 2>&1 || error "failed to enter simple-obfs directory"
 git submodule update --init --recursive
-./autogen.sh
-./configure --prefix=/usr && make
+./autogen.sh || error "failed to run autogen.sh for simple-obfs"
+# shellcheck disable=SC2046
+./configure --prefix=/usr || error "failed to make simple-obfs"
+# shellcheck disable=SC2046
+make -j$(nproc) || error "failed to make simple-obfs"
 sudo make install
-popd >>/dev/null 2>&1 || exit
+popd >>/dev/null 2>&1 || error "failed to leave simple-obfs directory"
 
 rm -rf shadowsocks-libev
 git clone https://github.com/shadowsocks/shadowsocks-libev.git
-pushd shadowsocks-libev >>/dev/null 2>&1 || exit
+pushd shadowsocks-libev >>/dev/null 2>&1 || error "failed to enter shadowsocks-libev directory"
 git submodule update --init --recursive
-./autogen.sh && ./configure --prefix=/usr && make
+./autogen.sh || error "failed to run autogen.sh for shadowsocks-libev"
+./configure --prefix=/usr || error "failed to configure shadowsocks-libev"
+# shellcheck disable=SC2046
+make -j$(nproc) || error "failed to make shadowsocks-libev"
 sudo make install
 if [ ! -e "/etc/shadowsocks-libev/config.json" ]; then
     [ ! -d "/etc/shadowsocks-libev/" ] && sudo mkdir -p /etc/shadowsocks-libev/
@@ -180,5 +219,5 @@ default_if=$(default_interface -6 2>/dev/null)
     fi
 }
 sudo systemctl start shadowsocks-libev
-popd >>/dev/null 2>&1 || exit
-popd >>/dev/null 2>&1 || exit
+popd >>/dev/null 2>&1 || error "failed to leave shadowsocks-libev directory"
+popd >>/dev/null 2>&1 || error "failed to leave working directory"
