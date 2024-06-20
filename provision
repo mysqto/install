@@ -613,7 +613,9 @@ if [ -n "$username" ]; then
     _config_sudo "$username" "$sudo_without_password"
 fi
 
-grub_cmdline=""
+grub_cmdline=$(grep -oP '^GRUB_CMDLINE_LINUX_DEFAULT="\K[^"]+' "$grub_default" 2>/dev/null)
+
+[ -z "$grub_cmdline" ] && grub_cmdline=""
 
 [ "$disable_ipv6" == true ] && {
     info "disabling ipv6"
