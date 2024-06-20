@@ -40,6 +40,7 @@ mbedtls_default_version=
 mbed_releases_url="https://api.github.com/repos/ARMmbed/mbedtls/releases"
 libsodium_releases_url="https://api.github.com/repos/jedisct1/libsodium/releases"
 systemd_service_file="/lib/systemd/system/shadowsocks-libev.service"
+dns_servers=
 
 obfs_hosts=(
     "microsoft.com"
@@ -72,6 +73,10 @@ while [ $# -gt 0 ]; do
         mbedtls_version="$2"
         shift 2
         ;;
+    -d | --dns-server)
+        dns_server="$2"
+        shift 2
+        ;;
     *)
         POSITIONAL+=("$1")
         shift
@@ -80,6 +85,8 @@ while [ $# -gt 0 ]; do
 done
 
 set -- "${POSITIONAL[@]}" # restore positional parameters
+
+[ -z "$dns_servers" ] && dns_servers="8.8.8.8"
 
 [ -n "$libsodium_version" ] || {
     libsodium_version=$(curl -sL "$libsodium_releases_url" 2>/dev/null | grep "tag_name" | head -n 1 | cut -d '"' -f4 | cut -d'-' -f1)
@@ -192,6 +199,7 @@ if [ ! -e "/etc/shadowsocks-libev/config.json" ]; then
         "mode"        : "tcp_and_udp",
         "fast_open"   : true,
         "plugin"      : "obfs-server",
+        "nameserver"  : "${dns_servers}",
         "plugin_opts" : "obfs=http;obfs-host=${obfs_host}"
 }
 EOF
