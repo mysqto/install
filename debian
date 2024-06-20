@@ -236,6 +236,7 @@ authorized_keys_url=
 static_ip=false
 use_ethx=false
 network_type=
+disable_ipv6=false
 interface=auto
 hostname=
 domain=
@@ -570,6 +571,11 @@ while [ $# -gt 0 ]; do
         network_type=6
         shift
         ;;
+    -d6 | --disable-ipv6)
+        disable_ipv6=true
+        network_type=4
+        shift
+        ;;
     -ip | --ip-address)
         ip_address="$2"
         shift 2
@@ -778,6 +784,11 @@ sid | unstable)
     error "Unsupported version: $version"
     ;;
 esac
+
+[ "$disable_ipv6" == true ] && {
+    warn "force to disable ipv6, will use network_type=4"
+    network_type=4
+}
 
 [ -z "$force_lowmem" ] && {
     memory_size=$(awk '/MemTotal/ {print $2}' /proc/meminfo 2>/dev/null)
@@ -1064,7 +1075,7 @@ ssh_private_key=""
 [ -z "$dns" ] && dns="$(dns "$network_type")"
 [ -z "$ip_address" ] && error "failed to get ip address"
 [ -z "$gateway" ] && error "failed to get gateway"
-[ -z "$dns" ] && {
+[ -z "$dns" ] || [ "$dns" = "127.0.0.1" ] || [ "$dns" = "::1" ] && {
     warn "failed to get dns, will use 1.1.1.1 as default"
     [ "$network_type" = 4 ] && dns="1.1.1.1"
     [ "$network_type" = 6 ] && dns="2606:4700:4700::1111"
@@ -1098,7 +1109,7 @@ ssh_private_key=""
         nc_password="$(busybox mkpasswd -l 16 -C 8 -s 4 2>/dev/null)" ||
         nc_password="$(busybox pwgen -nsy 16 1 2>/dev/null)" ||
         nc_password="$(LC_ALL=C tr </dev/urandom -dc 'a-zA-Z0-9' | head -c 16 2>/dev/null)"
-    
+
     # check if nc_authorized_keys_url exists
     [ -n "$nc_authorized_keys_url" ] && {
         nc_authorized_keys="$(curl -sL --timeout 30 "$nc_authorized_keys_url" 2>/dev/null)" ||
@@ -1486,6 +1497,7 @@ EOF
 
     [ "$use_ethx" = true ] && late_command="$late_command --ethx"
     [ "$install_docker" = true ] && late_command="$late_command --docker"
+    [ "$disable_ipv6" = true ] && late_command="$late_command --disable-ipv6"
 
     [ -n "$late_command" ] && {
         if [ "$debug_provision" = true ]; then

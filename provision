@@ -315,6 +315,7 @@ username=""
 ssh_port=
 ssh_authorized_keys=""
 ipv6_dchp=false
+disable_ipv6=false
 shadowsocks_password=""
 shadowsocks_port=
 shadowsocks_obfs_host=
@@ -446,6 +447,10 @@ while [ $# -gt 0 ]; do
         install_docker=true
         shift
         ;;
+    -d6 | --disable-ipv6)
+        disable_ipv6=true
+        shift
+        ;;
     *)
         POSITIONAL+=("$1")
         shift
@@ -454,6 +459,11 @@ while [ $# -gt 0 ]; do
 done
 
 set -- "${POSITIONAL[@]}" # restore positional parameters
+
+[ "$disable_ipv6" == true ] && {
+    warn "force to disable ipv6, will use ipv6_dchp=false"
+    ipv6_dchp=false
+}
 
 apt update && DEBIAN_FRONTEND=noninteractive UCF_FORCE_CONFFOLD=1 apt upgrade -y
 apt -y --no-install-recommends install byobu wget curl net-tools build-essential git vim tig jq dnsutils tig pwgen
@@ -603,10 +613,17 @@ if [ -n "$username" ]; then
     _config_sudo "$username" "$sudo_without_password"
 fi
 
+grub_cmdline=""
+
+[ "$disable_ipv6" == true ] && {
+    info "disabling ipv6"
+    grub_cmdline="ipv6.disable=1"
+}
+
+
 [ "$ethx" = true ] && [ -f "$grub_default" ] && {
     info "configuring network interface to eth0"
-    sed -ri 's/^#?GRUB_CMDLINE_LINUX_DEFAULT.*/GRUB_CMDLINE_LINUX_DEFAULT="net.ifnames=0 biosdevname=0"/g' "$grub_default"
-    update-grub 2>/dev/null || update-grub2 2>/dev/null
+    grub_cmdline="$grub_cmdline net.ifnames=0 biosdevname=0"
     # get default network interface
     default_nic="$(default_interface)"
 
@@ -618,6 +635,17 @@ fi
         }
     }
     info "rebooting to apply changes"
+}
+
+# trim grub_cmdline
+grub_cmdline="$(sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' <<<"$grub_cmdline")"
+
+[ -n "$grub_cmdline" ] && {
+    info "updating grub cmdline to $grub_cmdline"
+    [ -f "$grub_default" ] && {
+        sed -ri "s/^#?GRUB_CMDLINE_LINUX_DEFAULT.*/GRUB_CMDLINE_LINUX_DEFAULT=\"$grub_cmdline\"/g" "$grub_default"
+        uupdate-grub 2>/dev/null || update-grub2 2>/dev/null
+    }
 }
 
 [ "$install_docker" = true ] && {
