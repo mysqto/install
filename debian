@@ -573,7 +573,6 @@ while [ $# -gt 0 ]; do
         ;;
     -d6 | --disable-ipv6)
         disable_ipv6=true
-        network_type=4
         shift
         ;;
     -ip | --ip-address)
@@ -784,11 +783,6 @@ sid | unstable)
     error "Unsupported version: $version"
     ;;
 esac
-
-[ "$disable_ipv6" == true ] && {
-    warn "force to disable ipv6, will use network_type=4"
-    network_type=4
-}
 
 [ -z "$force_lowmem" ] && {
     memory_size=$(awk '/MemTotal/ {print $2}' /proc/meminfo 2>/dev/null)
