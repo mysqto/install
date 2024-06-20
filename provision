@@ -572,9 +572,10 @@ apt -y --no-install-recommends install byobu wget curl net-tools build-essential
     }
 
     snell_script="$(mktemp 2>/dev/null)"
-    curl -sL "$base_url/snell" -o "$snell_script"
+    curl -sL "$base_url/Surge/Snell/install" -o "$snell_script"
     [ ! -f "$snell_script" ] && warn "failed to download snell script" && return
     chmod +x "$snell_script"
+    cat "$snell_script"
     info "installing snell"
     "$snell_script" --snell-port "$snell_port" --snell-psk "$snell_psk" --snell-version "$snell_version" \
         --shadow-tls --shadow-tls-password "$shadow_tls_password" --shadow-tls-port "$shadow_tls_port" --obfs-host "$shadow_tls_obfs_host"
