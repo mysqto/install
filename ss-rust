@@ -1,0 +1,146 @@
+#!/bin/bash
+
+function warn() {
+    echo -e "\033[1;33m${*}\033[0m"
+}
+
+function error() {
+    echo -e "\033[1;31m${*}\033[0m"
+    exit 1
+}
+
+function info() {
+    echo -e "\033[1;32m${*}\033[0m"
+}
+
+function installed() {
+    command -v "$1" >/dev/null 2>&1
+}
+
+[ "$(id -u)" -ne 0 ] && error "Please run as root"
+
+if ! installed curl; then
+    warn "curl is required, will try to install it"
+    if installed apt-get; then
+        apt-get update && apt-get install -y curl
+    elif installed yum; then
+        yum update && yum install -y curl
+    elif installed dnf; then
+        dnf update && dnf install -y curl
+    elif installed zypper; then
+        zypper refresh && zypper install -y curl
+    elif installed apk; then
+        apk upgrade && apk add curl --no-cache
+    else
+        error "no package manager found, please install curl manually"
+    fi
+fi
+
+# check curl again
+if ! installed curl; then
+    error "curl is required, auto installation failed, please install it manually"
+fi
+
+ssr_releases_url="https://api.github.com/repos/shadowsocks/shadowsocks-rust/releases"
+ssr_version=$(curl -sL "$ssr_releases_url" 2>/dev/null | grep "tag_name" | cut -d'"' -f4 | sed 's/[^0-9.]*//g' | head -n1)
+[ -z "$ssr_version" ] && error "Failed to get shadowsocks-rust version"
+info "found shadowsocks-rust version: $ssr_version"
+
+os=$(uname -s)
+case $os in
+Linux | Darwin)
+    os=$(echo "$os" | tr '[:upper:]' '[:lower:]')
+    ;;
+*)
+    error "Unsupported OS: $os"
+    ;;
+esac
+
+arch=$(uname -m)
+
+case $arch in
+x86_64)
+    arch="x86_64"
+    ;;
+aarch64 | arm64)
+    arch="aarch64"
+    ;;
+i*86)
+    arch="i686"
+    ;;
+*)
+    error "Unsupported architecture: $arch"
+    ;;
+esac
+
+libc=$(ldd "$(readlink -f /bin/sh)" 2>/dev/null | grep -q 'musl' && echo 'musl' || echo 'gnu')
+
+# shadowsocks-v1.20.1.aarch64-unknown-linux-musl.tar.xz
+package_name="shadowsocks-v$ssr_version.$arch-unknown-linux-$libc.tar.xz"
+#  shadowsocks-v1.20.1.aarch64-apple-darwin.tar.xz
+[ "$os" == "darwin" ] && package_name="shadowsocks-v$ssr_version.$arch-apple-darwin.tar.xz"
+
+ssr_download_url="$(curl -sL "$ssr_releases_url" 2>/dev/null | grep "browser_download_url" | grep -Eo "https://.*$package_name" | head -n1)"
+[ -z "$ssr_download_url" ] && error "Failed to get shadowsocks-rust download url"
+info "found shadowsocks-rust download url: $ssr_download_url"
+
+ssr_temp_dir=$(mktemp -d -t ssr-XXXXXXXXXX 2>/dev/null) || {
+    tmp_dir="/tmp/ssr-$(date +%s)"
+    mkdir -p "$tmp_dir" || error "Failed to create temporary directory"
+}
+
+[ ! -d "$ssr_temp_dir" ] && {
+    error "Failed to create temporary directory"
+}
+
+ssr_tmp_file="$ssr_temp_dir/$package_name"
+
+[ -f "$ssr_tmp_file" ] && {
+    warn "Found existing temporary file, removing it"
+    rm -f "$ssr_tmp_file" || error "Failed to remove existing temporary file"
+}
+
+curl -sL "$ssr_download_url" -o "$ssr_tmp_file" || error "Failed to download shadowsocks-rust"
+
+[ ! -f "$ssr_tmp_file" ] && error "Failed to download shadowsocks-rust"
+
+out_dir="$ssr_temp_dir/out"
+mkdir -p "$out_dir" || error "Failed to create output directory"
+tar -xJf "$ssr_tmp_file" -C "$out_dir" || error "Failed to extract shadowsocks-rust"
+for file in "$out_dir"/*server; do
+    [ -x "$file" ] && {
+        file_name=$(basename "$file")
+        # follow the shadowsocks-libev naming convention, replace ss with ss-
+        file_name=${file_name/ss/ss-}
+        mv "$file" "/usr/local/bin/$file_name" || error "Failed to move $file_name to /usr/local/bin"
+    }
+done
+
+/usr/local/bin/ss-server -V || error "Failed to run ss-server"
+
+rm -rf "$ssr_temp_dir" || error "Failed to remove temporary files"
+info "shadowsocks-rust installed successfully"
+
+nproc=$(grep -c ^processor /proc/cpuinfo 2>/dev/null)
+[ -z "$nproc" ] && nproc=4
+
+simple_obfs_dir=$(mktemp -d -t simple-obfs-XXXXXXXXXX 2>/dev/null) || {
+    simple_obfs_dir="/tmp/simple-obfs-$(date +%s)"
+    mkdir -p "$simple_obfs_dir" || error "Failed to create temporary directory"
+}
+
+[ ! -d "$simple_obfs_dir" ] && {
+    error "Failed to create temporary directory"
+}
+git clone https://github.com/shadowsocks/simple-obfs.git "$simple_obfs_dir" || error "failed to clone simple-obfs"
+[ ! -d "$simple_obfs_dir" ] && error "failed to clone simple-obfs"
+pushd "$simple_obfs_dir" >>/dev/null 2>&1 || error "failed to enter simple-obfs directory"
+git submodule update --init --recursive
+./autogen.sh || error "failed to run autogen.sh for simple-obfs"
+# shellcheck disable=SC2046
+./configure --prefix=/usr/local || error "failed to make simple-obfs"
+# shellcheck disable=SC2046
+make -j$(nproc) || error "failed to make simple-obfs"
+make install
+popd >>/dev/null 2>&1 || error "failed to leave simple-obfs directory"
+info "simple-obfs installed successfully"
