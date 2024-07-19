@@ -628,7 +628,7 @@ while [ $# -gt 0 ]; do
     -provision | --provision)
         provision=true
         version=stable
-        install_shadowsocks=true
+        install_shadow_tls=true
         install_go=true
         install_im=true
         install_fish=true
