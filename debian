@@ -944,6 +944,11 @@ fi
 [ -z "$ntp_server" ] && ntp_server="time.cloudflare.com"
 
 [ "$install_shadowsocks" = true ] && {
+    [ ! -f "$shadowsocks_config" ] && {
+        warn "Shadowsocks config file $shadowsocks_config is not found, try with /etc/shadowsocks/config.json"
+        shadowsocks_config="/etc/shadowsocks/config.json"
+    }
+
     [ -z "$shadowsocks_password" ] && {
         [ -f "$shadowsocks_config" ] && shadowsocks_password="$(grep 2>/dev/null <"$shadowsocks_config" -Eo "\"password\"\s*:\s*\"[^\"]+\"" | cut -d'"' -f4)"
         [ -z "$shadowsocks_password" ] && {

@@ -73,6 +73,104 @@ i*86)
     ;;
 esac
 
+obfs_hosts=(
+    "microsoft.com"
+    "apple.com"
+    "gateway.messenger.live.com"
+    "gateway.icloud.com"
+)
+
+setup=false
+port=
+password=""
+obfs_host=""
+dns_server=""
+
+POSITIONAL=()
+while [ $# -gt 0 ]; do
+    case "$1" in
+    -P | --port)
+        port="$2"
+        shift 2
+        ;;
+    -p | --password)
+        password="$2"
+        shift 2
+        ;;
+    -o | --obfs-host)
+        obfs_host="$2"
+        shift 2
+        ;;
+    -d | --dns-server)
+        dns_server="$2"
+        shift 2
+        ;;
+    -s | --setup)
+        setup=true
+        shift
+        ;;
+    *)
+        POSITIONAL+=("$1")
+        shift
+        ;;
+    esac
+done
+
+set -- "${POSITIONAL[@]}" # restore positional parameters
+
+[ "$setup" == "true" ] && {
+    shadowsocks_config_file="/etc/shadowsocks/config.json"
+    shadowsocks_libev_config_file="/etc/shadowsocks-libev/config.json"
+
+    [ -f "$shadowsocks_libev_config_file" ] && {
+        warn "shadowsocks-libev config file found, will use it"
+        shadowsocks_config_file="$shadowsocks_libev_config_file"
+    }
+
+    [ -f "$shadowsocks_config_file" ] && {
+        password="$(grep 2>/dev/null <"$shadowsocks_config_file" -Eo "\"password\"\s*:\s*\"[^\"]+\"" | cut -d'"' -f4)"
+        port="$(grep 2>/dev/null <"$shadowsocks_config_file" -Eo "\"server_port\"\s*:\s*[0-9]+[^,]" | cut -d: -f2 | tr -d ' ')"
+        obfs_host="$(grep 2>/dev/null <"$shadowsocks_config_file" -Eo "obfs-host=.*[^,\"]" | cut -d'=' -f2)"
+        dns_server="$(grep 2>/dev/null <"$shadowsocks_config_file" -Eo "\"dns_server\"\s*:\s*\"[^\"]+\"" | cut -d'"' -f4)"
+    }
+
+    [ -z "$password" ] && {
+        warn "password not found in config file, generating a random one"
+        password="$(pwgen -ns 32 1 2>/dev/null)" ||
+            password="$(busybox pwgen -ns 32 1 2>/dev/null)" ||
+            password="$(openssl rand -base64 32 2>/dev/null)" ||
+            password="$(busybox mkpasswd -l 32 -C 16 2>/dev/null)" ||
+            password="$(tr -dc 'a-zA-Z0-9' </dev/urandom | head -c 32 2>/dev/null)"
+    }
+
+    [ -z "$port" ] && {
+        warn "port not found in config file, generating a random one"
+        port=$(shuf -i 10000-65535 -n1 2>/dev/null)
+    }
+
+    [ -z "$obfs_host" ] && {
+        warn "obfs-host not found in config file, using a random one"
+        obfs_host=${obfs_hosts[$(shuf -i 0-3 -n1 2>/dev/null)]}
+    }
+
+    [ -z "$dns_server" ] && {
+        # check if it's IPV6 only
+        v4_route=$(ip -4 route)
+        v6_route=$(ip -6 route)
+        if [ -z "$v4_route" ] && [ -n "$v6_route" ]; then
+            warn "IPv6 only network detected, using Google's public DNS server"
+            dns_server="2001:4860:4860::8888"
+        else
+            warn "using cloudflare's public DNS server"
+            dns_server="1.1.1.1"
+        fi
+    }
+
+    [ -z "$password" ] && error "password required, please specify it with -p or --password"
+    [ -z "$port" ] && error "port required, please specify it with -P or --port"
+    [ -z "$obfs_host" ] && error "obfs-host required, please specify it with -o or --obfs-host"
+}
+
 libc=$(ldd "$(readlink -f /bin/sh)" 2>/dev/null | grep -q 'musl' && echo 'musl' || echo 'gnu')
 
 # shadowsocks-v1.20.1.aarch64-unknown-linux-musl.tar.xz
@@ -144,3 +242,99 @@ make -j$(nproc) || error "failed to make simple-obfs"
 make install
 popd >>/dev/null 2>&1 || error "failed to leave simple-obfs directory"
 info "simple-obfs installed successfully"
+
+[ "$setup" == "true" ] && {
+    info "setting up shadowsocks service, will use the following settings:"
+    info "port               : $port"
+    info "password           : $password"
+    info "obfs-host          : $obfs_host"
+    info "dns-server         : $dns_server"
+
+    cat <<EOF >config.json
+{
+        "server"      : "0.0.0.0",
+        "server_port" : ${port},
+        "password"    : "${password}",
+        "timeout"     : 300,
+        "method"      : "chacha20-ietf-poly1305",
+        "mode"        : "tcp_and_udp",
+        "fast_open"   : true,
+        "plugin"      : "obfs-server",
+        "plugin_opts" : "obfs=http;obfs-host=${obfs_host}"
+}
+EOF
+    # reset shadowsocks_config_file
+    shadowsocks_config_file="/etc/shadowsocks/config.json"
+    [ ! -d "/etc/shadowsocks/" ] && mkdir -p /etc/shadowsocks/
+    mv config.json "$shadowsocks_config_file" 2>/dev/null || sudo mv config.json "$shadowsocks_config_file" 2>/dev/null || error "Failed to move config.json to $shadowsocks_config_file"
+
+    info "shadowsocks config file created successfully"
+    shadowsocks_default_file="/etc/default/shadowsocks"
+    cat <<EOF >"$shadowsocks_default_file"
+# Defaults for shadowsocks initscript
+# sourced by /etc/init.d/shadowsocks
+# installed at $shadowsocks_default_file by the maintainer scripts
+
+#
+# This is a POSIX shell fragment
+#
+# Note: START, GROUP and MAXFD options are not recognized by systemd.
+# Please change those settings in the corresponding systemd unit file.
+
+# Enable during startup?
+START=yes
+
+# Configuration file
+CONFFILE=$shadowsocks_config_file
+
+# Extra command line arguments
+DAEMON_ARGS=-v
+
+# User and group to run the server as
+USER=nobody
+GROUP=nogroup
+
+# Number of maximum file descriptors
+MAXFD=32768
+EOF
+
+    shadowsocks_systemd_service_file="/lib/systemd/system/shadowsocks.service"
+
+    cat <<EOF >"$shadowsocks_systemd_service_file"
+#  This file is part of shadowsocks.
+#
+#  Shadowsocks is free software; you can redistribute it and/or modify
+#  it under the terms of the GNU General Public License as published by
+#  the Free Software Foundation; either version 3 of the License, or
+#  (at your option) any later version.
+#
+#  This file is default for Debian packaging. See also
+#  $shadowsocks_default_file for environment variables.
+
+[Unit]
+Description=Shadowsocks Default Server Service
+Documentation=man:shadowsocks(8)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Restart=on-failure
+RestartSec=5
+Type=simple
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+DynamicUser=true
+EnvironmentFile=$shadowsocks_default_file
+LimitNOFILE=32768
+ExecStart=/usr/local/bin/ss-server -c \$CONFFILE \$DAEMON_ARGS
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    systemctl enable shadowsocks.service
+    info "shadowsocks service enabled"
+
+    systemctl restart shadowsocks.service
+    info "shadowsocks service started"
+}
