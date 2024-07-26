@@ -2,6 +2,13 @@
 
 fisher_link="https://raw.githubusercontent.com/jorgebucaran/fisher/HEAD/functions/fisher.fish"
 
+obfs_hosts=(
+    "microsoft.com"
+    "apple.com"
+    "gateway.messenger.live.com"
+    "gateway.icloud.com"
+)
+
 installed=()
 
 nopassword=(
@@ -336,10 +343,11 @@ sudo_without_password=false
 install_shadow_tls=false
 snell_port=
 snell_psk=
+snell_obfs=
+snell_version=
 shadow_tls_port=
 shadow_tls_password=
 shadow_tls_obfs_host=
-snell_version=4
 snell_config_file="/etc/snell/snell-server.conf"
 shadow_tls_default_file="/etc/default/shadow-tls"
 ethx=false
@@ -435,7 +443,15 @@ while [ $# -gt 0 ]; do
         snell_psk="$2"
         shift 2
         ;;
-    --shadow-tls-obfs)
+    --snell-version)
+        snell_version="$2"
+        shift 2
+        ;;
+    --shadow-tls-obfs | --snell-obfs)
+        snell_obfs="$2"
+        shift 2
+        ;;
+    --shadow-tls-obfs-host)
         shadow_tls_obfs_host="$2"
         shift 2
         ;;
@@ -542,6 +558,14 @@ apt -y --no-install-recommends install byobu wget curl net-tools build-essential
         [ -z "$snell_psk" ] && error "Snell PSK is required with --shadow-tls, please re-run the script with --snell-psk option"
     }
 
+    [ -z "$snell_obfs" ] && {
+        [ -f "$snell_config_file" ] && snell_obfs="$(grep 2>/dev/null <"$snell_config_file" -oE "obfs = .*" | awk -F '=' '{print $NF}' | tr -d ' ')"
+        [ -z "$snell_obfs" ] && {
+            warn "Snell obfs is not set, will use tls as default"
+            snell_obfs="tls"
+        }
+    }
+
     [ -z "$shadow_tls_password" ] && {
         [ -f "$shadow_tls_default_file" ] && shadow_tls_password=$(grep 2>/dev/null <"$shadow_tls_default_file" -oE "shadow_tls_password=.*" | awk -F '=' '{print $NF}' | tr -d ' ')
         [ -z "$shadow_tls_password" ] && {
@@ -568,8 +592,8 @@ apt -y --no-install-recommends install byobu wget curl net-tools build-essential
             shadow_tls_obfs_host="$(grep 2>/dev/null <"$shadow_tls_default_file" -oE "obfs_host=.*" | awk -F '=' '{print $NF}' | tr -d ' ')"
         }
         [ -z "$shadow_tls_obfs_host" ] && {
-            warn "Shadow TLS obfs host is not set, will use gateway.icloud.com as default"
-            shadow_tls_obfs_host="gateway.icloud.com"
+            warn "Shadow TLS obfs host is not set, will randomly choose one"
+            shadow_tls_obfs_host=${obfs_hosts[$RANDOM % ${#obfs_hosts[@]}]}
         }
     }
 
@@ -585,10 +609,8 @@ apt -y --no-install-recommends install byobu wget curl net-tools build-essential
     curl -sL "$base_url/Surge/Snell/install" -o "$snell_script"
     [ ! -f "$snell_script" ] && warn "failed to download snell script" && return
     chmod +x "$snell_script"
-    cat "$snell_script"
     info "installing snell"
-    "$snell_script" --snell-port "$snell_port" --snell-psk "$snell_psk" --snell-version "$snell_version" \
-        --shadow-tls --shadow-tls-password "$shadow_tls_password" --shadow-tls-port "$shadow_tls_port" --obfs-host "$shadow_tls_obfs_host"
+    "$snell_script" --snell-port "$snell_port" --snell-psk "$snell_psk" --snell-version "$snell_version" --shadow-tls --shadow-tls-password "$shadow_tls_password" --shadow-tls-port "$shadow_tls_port" --obfs-host "$shadow_tls_obfs_host" --snell-obfs "$snell_obfs"
     [ -f "$snell_script" ] && rm -f "$snell_script"
     ! _installed snell-server && warn "snell installation failed, please check the script output" && return
     info "snell installed"
@@ -621,7 +643,6 @@ grub_cmdline=$(grep -oP '^GRUB_CMDLINE_LINUX_DEFAULT="\K[^"]+' "$grub_default" 2
     info "disabling ipv6"
     grub_cmdline="ipv6.disable=1"
 }
-
 
 [ "$ethx" = true ] && [ -f "$grub_default" ] && {
     info "configuring network interface to eth0"

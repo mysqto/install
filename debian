@@ -290,6 +290,8 @@ shadowsocks_config="/etc/shadowsocks-libev/config.json"
 install_shadow_tls=false
 snell_port=
 snell_psk=
+snell_obfs=
+snell_tfo=
 shadow_tls_port=
 shadow_tls_password=
 shadow_tls_obfs_host=
@@ -300,6 +302,13 @@ shadow_tls_default_file="/etc/default/shadow-tls"
 boot_dir="/boot"
 grub_d="/etc/grub.d"
 grub_custom_file="$grub_d/40_custom"
+
+obfs_hosts=(
+    "microsoft.com"
+    "apple.com"
+    "gateway.messenger.live.com"
+    "gateway.icloud.com"
+)
 
 # prepare for dpkg and install necessary packages
 if installed apt-get; then
@@ -685,7 +694,15 @@ while [ $# -gt 0 ]; do
         snell_psk="$2"
         shift 2
         ;;
-    --shadow-tls-obfs)
+    --snell-obfs | --shadow-tls-obfs)
+        snell_obfs="$2"
+        shift 2
+        ;;
+    --snell-tfo)
+        snell_tfo="$2"
+        shift 2
+        ;;
+    --shadow-tls-obfs-host)
         shadow_tls_obfs_host="$2"
         shift 2
         ;;
@@ -973,8 +990,8 @@ fi
     [ -z "$shadowsocks_obfs_host" ] && {
         [ -f "$shadowsocks_config" ] && shadowsocks_obfs_host="$(grep 2>/dev/null <"$shadowsocks_config" -Eo "obfs-host=.*[^,\"]" | cut -d'=' -f2)"
         [ -z "$shadowsocks_obfs_host" ] && {
-            warn "shadowsocks obfs host is not set, will use gateway.icloud.com as default"
-            shadowsocks_obfs_host="gateway.icloud.com"
+            warn "shadowsocks obfs host is not set, will randomly choose one"
+            shadowsocks_obfs_host=${obfs_hosts[$RANDOM % ${#obfs_hosts[@]}]}
         }
     }
 }
@@ -997,6 +1014,22 @@ fi
                 snell_psk="$(tr </dev/urandom -dc 'a-zA-Z0-9' | fold -w 32 | head -n 1 2>/dev/null)"
         }
         [ -z "$snell_psk" ] && error "Snell PSK is required with --shadow-tls, please re-run the script with --snell-psk option"
+    }
+
+    [ -z "$snell_obfs" ] && {
+        [ -f "$snell_config_file" ] && snell_obfs="$(grep 2>/dev/null <"$snell_config_file" -oE "obfs = .*" | awk -F '=' '{print $NF}' | tr -d ' ')"
+        [ -z "$snell_obfs" ] && {
+            warn "Snell obfs is not set, will use tls as default"
+            snell_obfs="tls"
+        }
+    }
+
+    [ -z "$snell_tfo" ] && {
+        [ -f "$snell_config_file" ] && snell_tfo="$(grep 2>/dev/null <"$snell_config_file" -oE "tfo = .*" | awk -F '=' '{print $NF}' | tr -d ' ')"
+        [ -z "$snell_tfo" ] && {
+            warn "Snell fast open is not set, will use true as default"
+            snell_tfo=true
+        }
     }
 
     [ -z "$shadow_tls_password" ] && {
@@ -1025,8 +1058,8 @@ fi
             shadow_tls_obfs_host="$(grep 2>/dev/null <"$shadow_tls_default_file" -oE "obfs_host=.*" | awk -F '=' '{print $NF}' | tr -d ' ')"
         }
         [ -z "$shadow_tls_obfs_host" ] && {
-            warn "Shadow TLS obfs host is not set, will use gateway.icloud.com as default"
-            shadow_tls_obfs_host="gateway.icloud.com"
+            warn "Shadow TLS obfs host is not set, will randomly select one"
+            shadow_tls_obfs_host=${obfs_hosts[$RANDOM % ${#obfs_hosts[@]}]}
         }
     }
 
@@ -1156,6 +1189,7 @@ warn "ssh port:                $ssh_port"
     warn "snell psk:               $snell_psk"
     warn "shadow-tls port:         $shadow_tls_port"
     warn "shadow-tls password:     $shadow_tls_password"
+    warn "shadow-tls obfs:         tls"
     warn "shadow-tls obfs host:    $shadow_tls_obfs_host"
 }
 warn "#######################################################################"
@@ -1489,9 +1523,11 @@ EOF
         late_command="$late_command --shadow-tls"
         [ -n "$shadow_tls_password" ] && late_command="$late_command --shadow-tls-password \"$shadow_tls_password\""
         [ -n "$shadow_tls_port" ] && late_command="$late_command --shadow-tls-port \"$shadow_tls_port\""
-        [ -n "$shadow_tls_obfs_host" ] && late_command="$late_command --shadow-tls-obfs \"$shadow_tls_obfs_host\""
+        [ -n "$shadow_tls_obfs_host" ] && late_command="$late_command --shadow-tls-obfs-host \"$shadow_tls_obfs_host\""
         [ -n "$snell_port" ] && late_command="$late_command --snell-port \"$snell_port\""
         [ -n "$snell_psk" ] && late_command="$late_command --snell-psk \"$snell_psk\""
+        [ -n "$snell_obfs" ] && late_command="$late_command --snell-obfs \"$snell_obfs\""
+        [ -n "$snell_version" ] && late_command="$late_command --snell-version \"$snell_version\""
     }
 
     [ "$use_ethx" = true ] && late_command="$late_command --ethx"

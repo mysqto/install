@@ -236,7 +236,7 @@ pushd "$simple_obfs_dir" >>/dev/null 2>&1 || error "failed to enter simple-obfs 
 git submodule update --init --recursive
 ./autogen.sh || error "failed to run autogen.sh for simple-obfs"
 # shellcheck disable=SC2046
-./configure --prefix=/usr/local || error "failed to make simple-obfs"
+./configure --disable-documentation --prefix=/usr/local || error "failed to make simple-obfs"
 # shellcheck disable=SC2046
 make -j$(nproc) || error "failed to make simple-obfs"
 make install
