@@ -279,12 +279,12 @@ use_backports=false
 byobu=false
 sudo_without_password=false
 
-# Shadowsocks related
-install_shadowsocks=false
+# shadowsocks related
+install_shadowsocks=
 shadowsocks_password=
 shadowsocks_port=
 shadowsocks_obfs_host=
-shadowsocks_config="/etc/shadowsocks-libev/config.json"
+shadowsocks_config="/etc/shadowsocks/config.json"
 
 # Shadow-TLS related
 install_shadow_tls=false
@@ -706,8 +706,12 @@ while [ $# -gt 0 ]; do
         shadow_tls_obfs_host="$2"
         shift 2
         ;;
-    -ss | --shadowsocks-libev)
+    -ss | --shadowsocks)
         install_shadowsocks=true
+        shift
+        ;;
+    --dss | --disable-shadowsocks)
+        install_shadowsocks=false
         shift
         ;;
     -ssp | --shadowsocks-password)
@@ -960,9 +964,29 @@ fi
 [ -z "$ntp_server" ] && ntp_server="$(timedatectl 2>/dev/null | awk '/NTP:/ {print $3}')"
 [ -z "$ntp_server" ] && ntp_server="time.cloudflare.com"
 
+[ -z "$install_shadowsocks" ] && {
+    # check if ss is running
+    if systemctl is-active --quiet shadowsocks; then
+        warn "shadowsocks is running, will enable it, if you don't want to enable it, restart the script with --disable-shadowsocks option"
+        install_shadowsocks=true
+    fi
+
+    # check if ss-libev is running
+    if systemctl is-active --quiet shadowsocks-libev; then
+        warn "shadowsocks-libev is running, will enable it, if you don't want to enable it, restart the script with --disable-shadowsocks option"
+        install_shadowsocks=true
+        shadowsocks_config="/etc/shadowsocks-libev/config.json"
+    fi
+
+    if pgrep -x "ss-server" >/dev/null; then
+        warn "shadowsocks is running, will enable it, if you don't want to enable it, restart the script with --disable-shadowsocks option"
+        install_shadowsocks=true
+    fi
+}
+
 [ "$install_shadowsocks" = true ] && {
     [ ! -f "$shadowsocks_config" ] && {
-        warn "Shadowsocks config file $shadowsocks_config is not found, try with /etc/shadowsocks/config.json"
+        warn "shadowsocks config file $shadowsocks_config is not found, try with /etc/shadowsocks/config.json"
         shadowsocks_config="/etc/shadowsocks/config.json"
     }
 
@@ -975,7 +999,7 @@ fi
                 shadowsocks_password="$(busybox mkpasswd -l 32 -C 16 2>/dev/null)" ||
                 shadowsocks_password="$(tr -dc 'a-zA-Z0-9' </dev/urandom | head -c 32 2>/dev/null)"
         }
-        [ -z "$shadowsocks_password" ] && error "Shadowsocks password is required with --shadowsocks, please re-run the script with --shadowsocks-password option"
+        [ -z "$shadowsocks_password" ] && error "shadowsocks password is required with --shadowsocks, please re-run the script with --shadowsocks-password option"
     }
 
     [ -z "$shadowsocks_port" ] && {
@@ -984,7 +1008,7 @@ fi
             shadowsocks_port=$(shuf -i 10000-65535 -n 1 2>/dev/null) ||
                 shadowsocks_port=$(awk -v min=10000 -v max=65535 'BEGIN{srand(); print int(min+rand()*(max-min+1))}')
         done
-        [ -z "$shadowsocks_port" ] && error "Shadowsocks port is required with --shadowsocks, please re-run the script with --shadowsocks-port option"
+        [ -z "$shadowsocks_port" ] && error "shadowsocks port is required with --shadowsocks, please re-run the script with --shadowsocks-port option"
     }
 
     [ -z "$shadowsocks_obfs_host" ] && {

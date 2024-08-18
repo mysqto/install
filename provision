@@ -318,6 +318,7 @@ if ! curl -sL --connect-timeout 5 "$base_url" >/dev/null 2>&1; then
     fi
 fi
 
+hostname=
 username=""
 ssh_port=
 ssh_authorized_keys=""
@@ -326,7 +327,7 @@ disable_ipv6=false
 shadowsocks_password=""
 shadowsocks_port=
 shadowsocks_obfs_host=
-shadowsocks_config="/etc/shadowsocks-libev/config.json"
+shadowsocks_config="/etc/shadowsocks/config.json"
 install_fish=false
 install_neofetch=false
 install_go=false
@@ -467,6 +468,10 @@ while [ $# -gt 0 ]; do
         disable_ipv6=true
         shift
         ;;
+    -h | --hostname)
+        hostname="$2"
+        shift 2
+        ;;
     *)
         POSITIONAL+=("$1")
         shift
@@ -484,6 +489,19 @@ set -- "${POSITIONAL[@]}" # restore positional parameters
 apt update && DEBIAN_FRONTEND=noninteractive UCF_FORCE_CONFFOLD=1 apt upgrade -y
 apt -y --no-install-recommends install byobu wget curl net-tools build-essential git vim tig jq dnsutils tig pwgen
 
+[ -n "$hostname" ] && {
+    current_hostname=$(hostname)
+    [ "$hostname" != "$current_hostname" ] && {
+        hostnamectl set-hostname "$hostname" || {
+            warn "failed to set hostname to $hostname using hostnamectl, trying to update /etc/hostname"
+            echo "$hostname" >/etc/hostname
+            sed -ri "s/^$current_hostname$/$hostname/g" /etc/hosts
+        } && info "hostname set to $hostname"
+    }
+}
+
+[ "$install_fish" = true ] && _install_fish "$distro" "$username"
+
 [ "$install_neofetch" = true ] && _install_neofetch
 [ "$install_go" = true ] && {
     go_script="$(mktemp 2>/dev/null)"
@@ -499,6 +517,13 @@ apt -y --no-install-recommends install byobu wget curl net-tools build-essential
 
 [ "$enable_socat" = true ] && _enable_socat
 [ "$enable_shadowsocks" = true ] && {
+    shadowsocks_libev_config_file="/etc/shadowsocks-libev/config.json"
+
+    [ -f "$shadowsocks_libev_config_file" ] && {
+        warn "shadowsocks-libev config file found, will use it"
+        shadowsocks_config="$shadowsocks_libev_config_file"
+    }
+
     [ -z "$shadowsocks_password" ] && {
         [ -f "$shadowsocks_config" ] && shadowsocks_password="$(grep 2>/dev/null <"$shadowsocks_config" -Eo "\"password\"\s*:\s*\"[^\"]+\"" | cut -d'"' -f4)"
         [ -z "$shadowsocks_password" ] && {
@@ -508,7 +533,7 @@ apt -y --no-install-recommends install byobu wget curl net-tools build-essential
                 shadowsocks_password="$(busybox mkpasswd -l 32 -C 16 2>/dev/null)" ||
                 shadowsocks_password="$(tr -dc 'a-zA-Z0-9' </dev/urandom | head -c 32 2>/dev/null)"
         }
-        [ -z "$shadowsocks_password" ] && error "Shadowsocks password is required with --shadowsocks, please re-run the script with --shadowsocks-password option"
+        [ -z "$shadowsocks_password" ] && error "shadowsocks password is required with --shadowsocks, please re-run the script with --shadowsocks-password option"
     }
 
     [ -z "$shadowsocks_port" ] && {
@@ -517,7 +542,7 @@ apt -y --no-install-recommends install byobu wget curl net-tools build-essential
             shadowsocks_port=$(shuf -i 10000-65535 -n 1 2>/dev/null) ||
                 shadowsocks_port=$(awk -v min=10000 -v max=65535 'BEGIN{srand(); print int(min+rand()*(max-min+1))}')
         done
-        [ -z "$shadowsocks_port" ] && error "Shadowsocks port is required with --shadowsocks, please re-run the script with --shadowsocks-port option"
+        [ -z "$shadowsocks_port" ] && error "shadowsocks port is required with --shadowsocks, please re-run the script with --shadowsocks-port option"
     }
 
     [ -z "$shadowsocks_obfs_host" ] && {
@@ -528,14 +553,14 @@ apt -y --no-install-recommends install byobu wget curl net-tools build-essential
         }
     }
     ss_script="$(mktemp 2>/dev/null)"
-    curl -sL "$base_url/ss-libev" -o "$ss_script"
-    [ ! -f "$ss_script" ] && warn "failed to download shadowsocks-libev script" && return
+    curl -sL "$base_url/ss-rust" -o "$ss_script"
+    [ ! -f "$ss_script" ] && warn "failed to download shadowsocks script" && return
     chmod +x "$ss_script"
-    info "installing shadowsocks-libev"
-    faketty "$ss_script" --password "$shadowsocks_password" --port "$shadowsocks_port" --obfs-host "$shadowsocks_obfs_host"
+    info "installing shadowsocks-rust"
+    faketty "$ss_script" --password "$shadowsocks_password" --port "$shadowsocks_port" --obfs-host "$shadowsocks_obfs_host" --setup
     [ -f "$ss_script" ] && rm -f "$ss_script"
-    ! _installed ss-server && warn "shadowsocks-libev installation failed, please check the script output"
-    info "shadowsocks-libev installed"
+    ! _installed ss-server && warn "shadowsocks-rust installation failed, please check the script output"
+    info "shadowsocks-rust installed"
 }
 
 [ "$install_shadow_tls" = true ] && {

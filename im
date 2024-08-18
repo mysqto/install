@@ -170,23 +170,35 @@ function upgrade() {
 }
 
 function update_ss() {
-    bash <(curl -sL "$base_url/ss-libev")
+    # check ss-libev or ss-rust
+    if systemctl is-active --quiet shadowsocks-libev; then
+        info "shadowsocks-libev is running"
+        info "updating shadowsocks-libev"
+        bash <(curl -sL "$base_url/ss-libev")
+    elif systemctl is-active --quiet shadowsocks; then
+        info "shadowsocks-rust is running"
+        info "updating shadowsocks-rust"
+        bash <(curl -sL "$base_url/ss-rust")
+    else
+        error "no shadowsocks service found"
+    fi
 }
 
 function update_ss_obfs_host() {
     obfs_host="$1"
     [ -z "$obfs_host" ] && error "obfs host is required"
-    ss_libev_config="/etc/shadowsocks-libev/config.json"
-    [ ! -f "$ss_libev_config" ] && error "shadowsocks-libev config file not found"
-    if grep -q "$obfs_host" "$ss_libev_config"; then
+    ss_config="/etc/shadowsocks-libev/config.json"
+    [ ! -f "$ss_config" ] && ss_config="/etc/shadowsocks/config.json"
+    [ ! -f "$ss_config" ] && error "shadowsock config file not found"
+    if grep -q "$obfs_host" "$ss_config"; then
         warn "obfs host already exists"
         return 0
     fi
-    sed -i -E 's/obfs-host=[^;"]+/obfs-host='"$obfs_host"'/g' "$ss_libev_config"
+    sed -i -E 's/obfs-host=[^;"]+/obfs-host='"$obfs_host"'/g' "$ss_config"
 
-    if grep -q "$obfs_host" "$ss_libev_config"; then
-        info "obfs host updated, restarting shadowsocks-libev..."
-        sudo systemctl restart shadowsocks-libev
+    if grep -q "$obfs_host" "$ss_config"; then
+        info "obfs host updated, restarting shadowsocks..."
+        sudo systemctl restart shadowsocks >/dev/null 2>&1 || sudo systemctl restart shadowsocks-libev >/dev/null 2>&1
         return 0
     else
         error "failed to update obfs host"
@@ -444,8 +456,8 @@ function usage() {
     info "  -uu, --update,                          update the server"
     info "  -uuu, --ugrade,                         upgrade the server if needed"
     info "  -ui, --self-update,                     update $(basename "$0")"
-    info "  -uss, --update-shadowsocks,             update shadowsocks-libev"
-    info "  -usoh, --update-shadowsocks-obfs-host   update shadowsocks-libev with obfs host"
+    info "  -uss, --update-shadowsocks,             update shadowsocks-libev or shadowsocks-rust"
+    info "  -usoh, --update-shadowsocks-obfs-host   update shadowsocks-libev or shadowsocks-rust obfs host"
     info "  -ro, --remove-old-kernels,              remove old kernels"
     info "  -a, --auto,                             auto update or upgrade the server"
     info "  -rr, --reset,                           reset the server, need -u to specify the username"

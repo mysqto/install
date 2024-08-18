@@ -33,7 +33,7 @@ manual_partition=false
 
 # extra packages config
 provision=false
-# Shadowsocks related
+# shadowsocks related
 install_shadowsocks=
 shadowsocks_password=
 shadowsocks_port=
@@ -529,7 +529,7 @@ fi
                 shadowsocks_password="$(busybox mkpasswd -l 32 -C 16 2>/dev/null)" ||
                 shadowsocks_password="$(tr -dc 'a-zA-Z0-9' </dev/urandom | head -c 32 2>/dev/null)"
         }
-        [ -z "$shadowsocks_password" ] && error "Shadowsocks password is required with --shadowsocks, please re-run the script with --shadowsocks-password option"
+        [ -z "$shadowsocks_password" ] && error "shadowsocks password is required with --shadowsocks, please re-run the script with --shadowsocks-password option"
     }
 
     [ -z "$shadowsocks_port" ] && {
@@ -538,7 +538,7 @@ fi
             shadowsocks_port=$(shuf -i 10000-65535 -n 1 2>/dev/null) ||
                 shadowsocks_port=$(awk -v min=10000 -v max=65535 'BEGIN{srand(); print int(min+rand()*(max-min+1))}')
         done
-        [ -z "$shadowsocks_port" ] && error "Shadowsocks port is required with --shadowsocks, please re-run the script with --shadowsocks-port option"
+        [ -z "$shadowsocks_port" ] && error "shadowsocks port is required with --shadowsocks, please re-run the script with --shadowsocks-port option"
     }
 
     [ -z "$shadowsocks_obfs_host" ] && {
@@ -666,7 +666,7 @@ warn "timezone:                $timezone"
 warn "ntp server:              $ntp_server"
 warn "network console:         $network_console"
 [ -n "$nc_password" ] && warn "netwrk console password: $nc_password"
-warn "install Shadowsocks:     $install_shadowsocks"
+warn "install shadowsocks:     $install_shadowsocks"
 [ "$install_shadowsocks" = true ] && {
     warn "shadowsocks port:        $shadowsocks_port"
     warn "shadowsocks password:    $shadowsocks_password"

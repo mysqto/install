@@ -303,7 +303,7 @@ EOF
     cat <<EOF >"$shadowsocks_systemd_service_file"
 #  This file is part of shadowsocks.
 #
-#  Shadowsocks is free software; you can redistribute it and/or modify
+#  shadowsocks is free software; you can redistribute it and/or modify
 #  it under the terms of the GNU General Public License as published by
 #  the Free Software Foundation; either version 3 of the License, or
 #  (at your option) any later version.
@@ -312,7 +312,7 @@ EOF
 #  $shadowsocks_default_file for environment variables.
 
 [Unit]
-Description=Shadowsocks Default Server Service
+Description=shadowsocks default server service
 Documentation=man:shadowsocks(8)
 After=network-online.target
 Wants=network-online.target

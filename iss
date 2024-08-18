@@ -35,7 +35,7 @@ if ! curl -sL --connect-timeout 5 "$base_url" >/dev/null 2>&1; then
 fi
 
 if [ -z "$password" ]; then
-    bash <(curl -sL "$base_url/ss-libev")
+    bash <(curl -sL "$base_url/ss-rust")
 else
-    bash <(curl -sL "$base_url/ss-libev") --password "$password"
+    bash <(curl -sL "$base_url/ss-rust") --password "$password"
 fi
