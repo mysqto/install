@@ -11,7 +11,6 @@ shadow_tls_repo="ihciah/shadow-tls"
 obfs_hosts=(
     "microsoft.com"
     "apple.com"
-    "gateway.messenger.live.com"
     "gateway.icloud.com"
 )
 

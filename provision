@@ -5,7 +5,6 @@ fisher_link="https://raw.githubusercontent.com/jorgebucaran/fisher/HEAD/function
 obfs_hosts=(
     "microsoft.com"
     "apple.com"
-    "gateway.messenger.live.com"
     "gateway.icloud.com"
 )
 
