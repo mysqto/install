@@ -160,12 +160,14 @@ function download_shadow_tls() {
         warn "Installed shadow-tls version is $installed_version, latest shadow-tls version is $latest_release, no need to update shadow-tls!"
         return 0
     fi
-    [ -z "$latest_release" ] && error "Failed to get latest release of shadow-tls"
-    download_url="$(curl -sL "https://api.github.com/repos/$shadow_tls_repo/releases/tags/$latest_release" | grep "browser_download_url" | grep "$arch-.*-linux" | cut -d '"' -f 4)"
-    [ -z "$download_url" ] && error "Failed to get download url of shadow-tls"
-    download "$download_url" "$prefix/bin/shadow-tls"
-    [ -f "$prefix/bin/shadow-tls" ] || error "Failed to download shadow-tls"
-    chmod +x "$prefix/bin/shadow-tls"
+    [ -z "$latest_release" ] && [ -z "$installed_version" ] && error "Failed to get latest release of shadow-tls"
+    [ -n "$latest_release" ] && {
+        download_url="$(curl -sL "https://api.github.com/repos/$shadow_tls_repo/releases/tags/$latest_release" | grep "browser_download_url" | grep "$arch-.*-linux" | cut -d '"' -f 4)"
+        [ -z "$download_url" ] && error "Failed to get download url of shadow-tls"
+        download "$download_url" "$prefix/bin/shadow-tls"
+        [ -f "$prefix/bin/shadow-tls" ] || error "Failed to download shadow-tls"
+        chmod +x "$prefix/bin/shadow-tls"
+    }
 }
 
 function enable_shadow_tls() {
