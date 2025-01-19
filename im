@@ -53,18 +53,18 @@ function distro() {
 function arch() {
     arch=$(dpkg --print-architecture 2>/dev/null) || {
         case $(uname -m) in
-        x86_64)
-            arch=amd64
-            ;;
-        aarch64)
-            arch=arm64
-            ;;
-        i386)
-            arch=i386
-            ;;
-        *)
-            error 'No "--architecture" specified'
-            ;;
+            x86_64)
+                arch=amd64
+                ;;
+            aarch64)
+                arch=arm64
+                ;;
+            i386)
+                arch=i386
+                ;;
+            *)
+                error 'No "--architecture" specified'
+                ;;
         esac
     }
     echo "$arch"
@@ -274,12 +274,12 @@ function reset() {
     local user="$2"
     [ -z "$user" ] && error "username is required when reseting the server"
     case "$system" in
-    ubuntu)
-        bash <(curl -sL "$base_url/ubuntu") -u "$user"
-        ;;
-    *)
-        bash <(curl -sL "$base_url/debian") -u "$user" --provision
-        ;;
+        ubuntu)
+            bash <(curl -sL "$base_url/ubuntu") -u "$user"
+            ;;
+        *)
+            bash <(curl -sL "$base_url/debian") -u "$user" --provision
+            ;;
     esac
 }
 
@@ -479,119 +479,120 @@ POSITIONAL=()
 
 while [ $# -gt 0 ]; do
     case "$1" in
-    -d | --distro)
-        _distro=true
-        shift 1
-        ;;
-    --docker)
-        _install_docker=true
-        shift 1
-        ;;
-    -f | --fix-grub)
-        _fix_grub=true
-        shift 1
-        ;;
-    -uu | --update)
-        _update=true
-        shift 1
-        ;;
-    -uuu | --ugrade)
-        _upgrade=true
-        shift 1
-        ;;
-    -ui | --self-update)
-        _self_update=true
-        shift 1
-        ;;
-    -ss | -uss | --shadowsocks | --update-shadowsocks)
-        _update_ss=true
-        shift 1
-        ;;
-    -usoh | --update-shadowsocks-obfs-host)
-        _update_ss_obfs_host=true
-        _ss_obfs_host="$2"
-        shift 2
-        ;;
-    -stls | --shadow-tls)
-        _shadow_tls=true
-        shift 1
-        ;;
-    -ro | --remove-old-kernels)
-        _remove_old_kernels=true
-        shift 1
-        ;;
-    -rr | --reset)
-        _reset=true
-        shift 1
-        ;;
-    -rrd | --reset-with-debian)
-        _reset_with_debian=true
-        shift 1
-        ;;
-    -rru | --reset-with-ubuntu)
-        _reset_with_ubuntu=true
-        shift 1
-        ;;
-    -r | --reboot)
-        _reboot=true
-        shift 1
-        ;;
-    -s | --midea-unlock-test)
-        _unlock_test=true
-        shift 1
-        ;;
-    -st | --speedtest)
-        _speedtest=true
-        shift 1
-        ;;
-    -a | --auto)
-        _auto=true
-        shift 1
-        ;;
-    -p | --provision)
-        _provision=true
-        shift 1
-        ;;
-    -u | --username)
-        username="$2"
-        shift 2
-        ;;
-    -c | --cleanup)
-        _cleanup=true
-        shift 1
-        ;;
-    -e | --edge-kernel)
-        _edge_kernel=true
-        shift 1
-        ;;
-    -l | --lookbusy)
-        _enable_lookbusy=true
-        shift 1
-        ;;
-    -ist | --install-speedtest)
-        _install_speedtest=true
-        shift 1
-        ;;
-    -ilb | --install-lookbusy)
-        _install_lookbusy=true
-        shift 1
-        ;;
-    -ipe | --install-pyenv)
-        _install_pyenv=true
-        shift 1
-        ;;
-    -nf | --netflix-test)
-        _netflix_test=true
-        shift 1
-        ;;
-    -so | --socat)
-        _install_socat=true
-        shift
-        ;;
-    *)
-        POSITIONAL+=("$1")
-        shift
-        ;;
+        -d | --distro)
+            _distro=true
+            shift 1
+            ;;
+        --docker)
+            _install_docker=true
+            shift 1
+            ;;
+        -f | --fix-grub)
+            _fix_grub=true
+            shift 1
+            ;;
+        -uu | --update)
+            _update=true
+            shift 1
+            ;;
+        -uuu | --ugrade)
+            _upgrade=true
+            shift 1
+            ;;
+        -ui | --self-update)
+            _self_update=true
+            shift 1
+            ;;
+        -ss | -uss | --shadowsocks | --update-shadowsocks)
+            _update_ss=true
+            shift 1
+            ;;
+        -usoh | --update-shadowsocks-obfs-host)
+            _update_ss_obfs_host=true
+            _ss_obfs_host="$2"
+            shift 2
+            ;;
+        -stls | --shadow-tls)
+            _shadow_tls=true
+            shift 1
+            ;;
+        -ro | --remove-old-kernels)
+            _remove_old_kernels=true
+            shift 1
+            ;;
+        -rr | --reset)
+            _reset=true
+            shift 1
+            ;;
+        -rrd | --reset-with-debian)
+            _reset_with_debian=true
+            shift 1
+            ;;
+        -rru | --reset-with-ubuntu)
+            _reset_with_ubuntu=true
+            shift 1
+            ;;
+        -r | --reboot)
+            _reboot=true
+            shift 1
+            ;;
+        -s | --midea-unlock-test)
+            _unlock_test=true
+            shift 1
+            ;;
+        -st | --speedtest)
+            _speedtest=true
+            shift 1
+            ;;
+        -a | --auto)
+            _auto=true
+            shift 1
+            ;;
+        -p | --provision)
+            _provision=true
+            shift 1
+            ;;
+        -u | --username)
+            username="$2"
+            shift 2
+            ;;
+        -c | --cleanup)
+            _cleanup=true
+            shift 1
+            ;;
+        -e | --edge-kernel)
+            _edge_kernel=true
+            shift 1
+            ;;
+        -l | --lookbusy)
+            _enable_lookbusy=true
+            shift 1
+            ;;
+        -ist | --install-speedtest)
+            _install_speedtest=true
+            shift 1
+            ;;
+        -ilb | --install-lookbusy)
+            _install_lookbusy=true
+            shift 1
+            ;;
+        -ipe | --install-pyenv)
+            _install_pyenv=true
+            shift 1
+            ;;
+        -nf | --netflix-test)
+            _netflix_test=true
+            shift 1
+            ;;
+        -so | --socat)
+            _install_socat=true
+            shift
+            ;;
+        *)
+            POSITIONAL+=("$1")
+            warn "unknown option $1"
+            shift
+            ;;
     esac
 done
 

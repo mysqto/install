@@ -11,7 +11,7 @@ obfs_hosts=(
 
 installed=()
 
-nopassword=(
+no_passwords=(
     apt
     apt-get
     aptitude
@@ -36,6 +36,12 @@ nopassword=(
     grep
     uname
     make
+    chsh
+    curl
+    wget
+    busybox
+    zsh
+    fish
 )
 
 function info() {
@@ -238,6 +244,18 @@ function _config_fish() {
     }
 }
 
+function add_to_sudoers() {
+    cmd="$1"
+    username="$2"
+    [ -z "$cmd" ] && warn "add_to_sudoers requires cmd" && return
+    [ -z "$username" ] && warn "add_to_sudoers requires username" && return
+
+    cmd_path="$(which "$cmd")"
+    if [ -n "$cmd_path" ]; then
+        echo "$username ALL=(ALL) NOPASSWD: $cmd_path" >>"/etc/sudoers.d/$username"
+    fi
+}
+
 function _config_sudo() {
     [ $# -ne 2 ] && warn "config_sudo requires username and sudo_without_password" && return
     username="$1"
@@ -247,18 +265,12 @@ function _config_sudo() {
     if [ "$sudo_without_password" = true ]; then
         echo "$username ALL=(ALL) NOPASSWD: ALL" >>"/etc/sudoers.d/$username"
     else
-        for cmd in "${nopassword[@]}"; do
-            cmd_path="$(which "$cmd")"
-            if [ -n "$cmd_path" ]; then
-                echo "$username ALL=(ALL) NOPASSWD: $cmd_path" >>"/etc/sudoers.d/$username"
-            fi
+        for cmd in "${no_passwords[@]}"; do
+            add_to_sudoers "$cmd" "$username"
         done
 
         for cmd in "${installed[@]}"; do
-            cmd_path="$(which "$cmd")"
-            if [ -n "$cmd_path" ]; then
-                echo "$username ALL=(ALL) NOPASSWD: $cmd_path" >>"/etc/sudoers.d/$username"
-            fi
+            add_to_sudoers "$cmd" "$username"
         done
     fi
 }
@@ -360,122 +372,123 @@ POSITIONAL=()
 
 while [ $# -gt 0 ]; do
     case "$1" in
-    --ssh | --ssh-port)
-        ssh_port="$2"
-        shift 2
-        ;;
-    -f | --fish)
-        install_fish=true
-        shift
-        ;;
-    -bbr | --bbr)
-        enable_bbr=true
-        shift
-        ;;
-    -so | --socat)
-        enable_socat=true
-        shift
-        ;;
-    -s | --shadowsocks)
-        enable_shadowsocks=true
-        shift
-        ;;
-    -ssp | --shadowsocks-password)
-        shadowsocks_password="$2"
-        shift 2
-        ;;
-    -ssP | --shadowsocks-port)
-        shadowsocks_port="$2"
-        shift 2
-        ;;
-    --shadowsocks-obfs-host)
-        shadowsocks_obfs_host="$2"
-        shift 2
-        ;;
-    -u | --user | --username)
-        username="$2"
-        shift 2
-        ;;
-    -ak | --authorized-keys)
-        ssh_authorized_keys="$2"
-        shift 2
-        ;;
-    -6 | --ipv6-dhcp)
-        ipv6_dchp=true
-        shift
-        ;;
-    -nf | --neofetch)
-        install_neofetch=true
-        shift
-        ;;
-    -g | --go)
-        install_go=true
-        shift
-        ;;
-    -im | --im)
-        install_im=true
-        shift
-        ;;
-    --sudo-without-password)
-        sudo_without_password=true
-        shift
-        ;;
-    --byobu | --enable-byobu)
-        enable_byobu=true
-        shift
-        ;;
-    -stls | --shadow-tls)
-        install_shadow_tls=true
-        shift
-        ;;
-    --shadow-tls-port)
-        shadow_tls_port="$2"
-        shift 2
-        ;;
-    --shadow-tls-password)
-        shadow_tls_password="$2"
-        shift 2
-        ;;
-    --snell-port)
-        snell_port="$2"
-        shift 2
-        ;;
-    --snell-psk)
-        snell_psk="$2"
-        shift 2
-        ;;
-    --snell-version)
-        snell_version="$2"
-        shift 2
-        ;;
-    --shadow-tls-obfs | --snell-obfs)
-        snell_obfs="$2"
-        shift 2
-        ;;
-    --shadow-tls-obfs-host)
-        shadow_tls_obfs_host="$2"
-        shift 2
-        ;;
-    --ethx)
-        ethx=true
-        shift
-        ;;
-    -d | --docker)
-        install_docker=true
-        shift
-        ;;
-    -d6 | --disable-ipv6)
-        disable_ipv6=true
-        shift
-        ;;
-    -h | --hostname)
-        hostname="$2"
-        shift 2
-        ;;
-    *)
-        POSITIONAL+=("$1")
-        shift
-        ;;
+        --ssh | --ssh-port)
+            ssh_port="$2"
+            shift 2
+            ;;
+        -f | --fish)
+            install_fish=true
+            shift
+            ;;
+        -bbr | --bbr)
+            enable_bbr=true
+            shift
+            ;;
+        -so | --socat)
+            enable_socat=true
+            shift
+            ;;
+        -s | --shadowsocks)
+            enable_shadowsocks=true
+            shift
+            ;;
+        -ssp | --shadowsocks-password)
+            shadowsocks_password="$2"
+            shift 2
+            ;;
+        -ssP | --shadowsocks-port)
+            shadowsocks_port="$2"
+            shift 2
+            ;;
+        --shadowsocks-obfs-host)
+            shadowsocks_obfs_host="$2"
+            shift 2
+            ;;
+        -u | --user | --username)
+            username="$2"
+            shift 2
+            ;;
+        -ak | --authorized-keys)
+            ssh_authorized_keys="$2"
+            shift 2
+            ;;
+        -6 | --ipv6-dhcp)
+            ipv6_dchp=true
+            shift
+            ;;
+        -nf | --neofetch)
+            install_neofetch=true
+            shift
+            ;;
+        -g | --go)
+            install_go=true
+            shift
+            ;;
+        -im | --im)
+            install_im=true
+            shift
+            ;;
+        --sudo-without-password)
+            sudo_without_password=true
+            shift
+            ;;
+        --byobu | --enable-byobu)
+            enable_byobu=true
+            shift
+            ;;
+        -stls | --shadow-tls)
+            install_shadow_tls=true
+            shift
+            ;;
+        --shadow-tls-port)
+            shadow_tls_port="$2"
+            shift 2
+            ;;
+        --shadow-tls-password)
+            shadow_tls_password="$2"
+            shift 2
+            ;;
+        --snell-port)
+            snell_port="$2"
+            shift 2
+            ;;
+        --snell-psk)
+            snell_psk="$2"
+            shift 2
+            ;;
+        --snell-version)
+            snell_version="$2"
+            shift 2
+            ;;
+        --shadow-tls-obfs | --snell-obfs)
+            snell_obfs="$2"
+            shift 2
+            ;;
+        --shadow-tls-obfs-host)
+            shadow_tls_obfs_host="$2"
+            shift 2
+            ;;
+        --ethx)
+            ethx=true
+            shift
+            ;;
+        -d | --docker)
+            install_docker=true
+            shift
+            ;;
+        -d6 | --disable-ipv6)
+            disable_ipv6=true
+            shift
+            ;;
+        -h | --hostname)
+            hostname="$2"
+            shift 2
+            ;;
+        *)
+            POSITIONAL+=("$1")
+            warn "unknown option $1"
+            shift
+            ;;
     esac
 done
 

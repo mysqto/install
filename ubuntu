@@ -209,218 +209,223 @@ POSITIONAL=()
 
 while [ $# -gt 0 ]; do
     case "$1" in
-    -d | --disk)
-        disk="$2"
-        shift 2
-        ;;
-    -e | --efi)
-        efi=true
-        shift
-        ;;
-    -esp | --esp-size)
-        esp="$2"
-        shift 2
-        ;;
-    -bs | --boot-size)
-        boot_size="$2"
-        shift 2
-        ;;
-    -f | --fullname)
-        full_name="$2"
-        shift 2
-        ;;
-    -fs | --filesystem)
-        filesystem="$2"
-        shift 2
-        ;;
-    -u | --user)
-        username="$2"
-        shift 2
-        ;;
-    -uid | --uid)
-        uid="$2"
-        shift 2
-        ;;
-    -p | --password)
-        password="$2"
-        shift 2
-        ;;
-    -g | --gpt)
-        gpt=true
-        shift
-        ;;
-    -i | --interface)
-        interface="$2"
-        shift 2
-        ;;
-    -h | --hostname)
-        hostname="$2"
-        shift 2
-        ;;
-    -s | --static-ip)
-        static_ip=true
-        shift
-        ;;
-    -ip | --ip-address)
-        ip_address="$2"
-        shift 2
-        ;;
-    -nm | --netmask)
-        netmask="$2"
-        shift 2
-        ;;
-    -gw | --gateway)
-        gateway="$2"
-        shift 2
-        ;;
-    -dns | --dns)
-        dns="$2"
-        shift 2
-        ;;
-    -t | --timezone)
-        timezone="$2"
-        shift 2
-        ;;
-    -n | --ntp-server)
-        ntp_server="$2"
-        shift 2
-        ;;
-    -k | --kernel)
-        kernel="$2"
-        shift 2
-        ;;
-    -c | --cloud)
-        cloud="$2"
-        shift 2
-        ;;
-    -m | --manual-partition)
-        manual_partition=true
-        shift
-        ;;
-    -ns | --network-console)
-        network_console=true
-        shift
-        ;;
-    --provision)
-        provision=true
-        install_shadowsocks=true
-        install_shadow_tls=true
-        install_go=true
-        install_im=true
-        install_fish=true
-        install_neofetch=true
-        use_backports=true
-        bbr=true
-        byobu=true
-        shift
-        ;;
-    -ak | --authorized-keys)
-        authorized_keys="$2"
-        shift 2
-        ;;
-    -aku | --authorized-keys-url)
-        authorized_keys_url="$2"
-        shift 2
-        ;;
-    -stls | --shadow-tls)
-        install_shadow_tls=true
-        shift
-        ;;
-    --shadow-tls-port)
-        shadow_tls_port="$2"
-        shift 2
-        ;;
-    --shadow-tls-password)
-        shadow_tls_password="$2"
-        shift 2
-        ;;
-    --snell-port)
-        snell_port="$2"
-        shift 2
-        ;;
-    --snell-psk)
-        snell_psk="$2"
-        shift 2
-        ;;
-    --shadow-tls-obfs)
-        shadow_tls_obfs_host="$2"
-        shift 2
-        ;;
-    -ss | --shadowsocks-libev)
-        install_shadowsocks=true
-        shift
-        ;;
-    -ssp | --shadowsocks-password)
-        shadowsocks_password="$2"
-        shift 2
-        ;;
-    -sspobfs | --shadowsocks-obfs-host)
-        shadowsocks_obfs_host="$2"
-        shift 2
-        ;;
-    -sspt | --shadowsocks-port)
-        shadowsocks_port="$2"
-        shift 2
-        ;;
-    --socat)
-        install_socat=true
-        shift
-        ;;
-    --ssh | --ssh-port)
-        ssh_port="$2"
-        shift 2
-        ;;
-    --go)
-        install_go=true
-        shift
-        ;;
-    --im)
-        install_im=true
-        shift
-        ;;
-    --fish)
-        install_fish=true
-        shift
-        ;;
-    --neofetch)
-        install_neofetch=true
-        shift
-        ;;
-    --backports)
-        use_backports=true
-        shift
-        ;;
-    --byobu)
-        byobu=true
-        shift
-        ;;
-    -bbr | --bbr)
-        bbr=true
-        shift
-        ;;
-    --sudo-without-password)
-        sudo_without_password=true
-        shift
-        ;;
-    --dry-run)
-        dry_run=true
-        shift
-        ;;
-    *)
-        POSITIONAL+=("$1")
-        shift
-        ;;
+        -d | --disk)
+            disk="$2"
+            shift 2
+            ;;
+        -e | --efi)
+            efi=true
+            shift
+            ;;
+        -esp | --esp-size)
+            esp="$2"
+            shift 2
+            ;;
+        -bs | --boot-size)
+            boot_size="$2"
+            shift 2
+            ;;
+        -f | --fullname)
+            full_name="$2"
+            shift 2
+            ;;
+        -fs | --filesystem)
+            filesystem="$2"
+            shift 2
+            ;;
+        -u | --user)
+            username="$2"
+            shift 2
+            ;;
+        -uid | --uid)
+            uid="$2"
+            shift 2
+            ;;
+        -p | --password)
+            password="$2"
+            shift 2
+            ;;
+        -g | --gpt)
+            gpt=true
+            shift
+            ;;
+        -i | --interface)
+            interface="$2"
+            shift 2
+            ;;
+        -h | --hostname)
+            hostname="$2"
+            shift 2
+            ;;
+        -s | --static-ip)
+            static_ip=true
+            shift
+            ;;
+        -ip | --ip-address)
+            ip_address="$2"
+            shift 2
+            ;;
+        -nm | --netmask)
+            netmask="$2"
+            shift 2
+            ;;
+        -gw | --gateway)
+            gateway="$2"
+            shift 2
+            ;;
+        -dns | --dns)
+            dns="$2"
+            shift 2
+            ;;
+        -t | --timezone)
+            timezone="$2"
+            shift 2
+            ;;
+        -n | --ntp-server)
+            ntp_server="$2"
+            shift 2
+            ;;
+        -k | --kernel)
+            kernel="$2"
+            shift 2
+            ;;
+        -c | --cloud)
+            cloud="$2"
+            shift 2
+            ;;
+        -m | --manual-partition)
+            manual_partition=true
+            shift
+            ;;
+        -ns | --network-console)
+            network_console=true
+            shift
+            ;;
+        --provision)
+            provision=true
+            install_shadowsocks=true
+            install_shadow_tls=true
+            install_go=true
+            install_im=true
+            install_fish=true
+            install_neofetch=true
+            use_backports=true
+            bbr=true
+            byobu=true
+            shift
+            ;;
+        -ak | --authorized-keys)
+            authorized_keys="$2"
+            shift 2
+            ;;
+        -aku | --authorized-keys-url)
+            authorized_keys_url="$2"
+            shift 2
+            ;;
+        -stls | --shadow-tls)
+            install_shadow_tls=true
+            shift
+            ;;
+        --shadow-tls-port)
+            shadow_tls_port="$2"
+            shift 2
+            ;;
+        --shadow-tls-password)
+            shadow_tls_password="$2"
+            shift 2
+            ;;
+        --snell-port)
+            snell_port="$2"
+            shift 2
+            ;;
+        --snell-psk)
+            snell_psk="$2"
+            shift 2
+            ;;
+        --shadow-tls-obfs)
+            shadow_tls_obfs_host="$2"
+            shift 2
+            ;;
+        -ss | --shadowsocks-libev)
+            install_shadowsocks=true
+            shift
+            ;;
+        -ssp | --shadowsocks-password)
+            shadowsocks_password="$2"
+            shift 2
+            ;;
+        -sspobfs | --shadowsocks-obfs-host)
+            shadowsocks_obfs_host="$2"
+            shift 2
+            ;;
+        -sspt | --shadowsocks-port)
+            shadowsocks_port="$2"
+            shift 2
+            ;;
+        --socat)
+            install_socat=true
+            shift
+            ;;
+        --ssh | --ssh-port)
+            ssh_port="$2"
+            shift 2
+            ;;
+        --go)
+            install_go=true
+            shift
+            ;;
+        --im)
+            install_im=true
+            shift
+            ;;
+        --fish)
+            install_fish=true
+            shift
+            ;;
+        --neofetch)
+            install_neofetch=true
+            shift
+            ;;
+        --backports)
+            use_backports=true
+            shift
+            ;;
+        --byobu)
+            byobu=true
+            shift
+            ;;
+        -bbr | --bbr)
+            bbr=true
+            shift
+            ;;
+        --sudo-without-password)
+            sudo_without_password=true
+            shift
+            ;;
+        --dry-run)
+            dry_run=true
+            shift
+            ;;
+        *)
+            POSITIONAL+=("$1")
+            warn "unknown option $1"
+            shift
+            ;;
     esac
 done
 
 set -- "${POSITIONAL[@]}" # restore positional parameters
 
 case $(uname -m) in
-amd64 | x86_64 | x64 | 64) arch=amd64 ;;
-aarch64 | arm64) arch=arm64 ;;
-*)
-    error "unsupported arch $(uname -m)"
-    ;;
+    amd64 | x86_64 | x64 | 64)
+        arch=amd64
+        ;;
+    aarch64 | arm64)
+        arch=arm64
+        ;;
+    *)
+        error "unsupported arch $(uname -m)"
+        ;;
 esac
 
 update_dpkg_config && {

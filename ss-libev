@@ -53,34 +53,35 @@ nproc=$(grep -c ^processor /proc/cpuinfo 2>/dev/null)
 
 while [ $# -gt 0 ]; do
     case "$1" in
-    -P | --port)
-        port="$2"
-        shift 2
-        ;;
-    -p | --password)
-        password="$2"
-        shift 2
-        ;;
-    -o | --obfs-host)
-        obfs_host="$2"
-        shift 2
-        ;;
-    -lsv | --libsodium-version)
-        libsodium_version="$2"
-        shift 2
-        ;;
-    -mv | --mbedtls-version)
-        mbedtls_version="$2"
-        shift 2
-        ;;
-    -d | --dns-server)
-        dns_server="$2"
-        shift 2
-        ;;
-    *)
-        POSITIONAL+=("$1")
-        shift
-        ;;
+        -P | --port)
+            port="$2"
+            shift 2
+            ;;
+        -p | --password)
+            password="$2"
+            shift 2
+            ;;
+        -o | --obfs-host)
+            obfs_host="$2"
+            shift 2
+            ;;
+        -lsv | --libsodium-version)
+            libsodium_version="$2"
+            shift 2
+            ;;
+        -mv | --mbedtls-version)
+            mbedtls_version="$2"
+            shift 2
+            ;;
+        -d | --dns-server)
+            dns_server="$2"
+            shift 2
+            ;;
+        *)
+            POSITIONAL+=("$1")
+            warn "unknown option $1"
+            shift
+            ;;
     esac
 done
 

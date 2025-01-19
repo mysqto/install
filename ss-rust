@@ -48,29 +48,29 @@ info "found shadowsocks-rust version: $ssr_version"
 
 os=$(uname -s)
 case $os in
-Linux | Darwin)
-    os=$(echo "$os" | tr '[:upper:]' '[:lower:]')
-    ;;
-*)
-    error "Unsupported OS: $os"
-    ;;
+    Linux | Darwin)
+        os=$(echo "$os" | tr '[:upper:]' '[:lower:]')
+        ;;
+    *)
+        error "Unsupported OS: $os"
+        ;;
 esac
 
 arch=$(uname -m)
 
 case $arch in
-x86_64)
-    arch="x86_64"
-    ;;
-aarch64 | arm64)
-    arch="aarch64"
-    ;;
-i*86)
-    arch="i686"
-    ;;
-*)
-    error "Unsupported architecture: $arch"
-    ;;
+    x86_64)
+        arch="x86_64"
+        ;;
+    aarch64 | arm64)
+        arch="aarch64"
+        ;;
+    i*86)
+        arch="i686"
+        ;;
+    *)
+        error "Unsupported architecture: $arch"
+        ;;
 esac
 
 obfs_hosts=(
@@ -89,30 +89,31 @@ dns_server=""
 POSITIONAL=()
 while [ $# -gt 0 ]; do
     case "$1" in
-    -P | --port)
-        port="$2"
-        shift 2
-        ;;
-    -p | --password)
-        password="$2"
-        shift 2
-        ;;
-    -o | --obfs-host)
-        obfs_host="$2"
-        shift 2
-        ;;
-    -d | --dns-server)
-        dns_server="$2"
-        shift 2
-        ;;
-    -s | --setup)
-        setup=true
-        shift
-        ;;
-    *)
-        POSITIONAL+=("$1")
-        shift
-        ;;
+        -P | --port)
+            port="$2"
+            shift 2
+            ;;
+        -p | --password)
+            password="$2"
+            shift 2
+            ;;
+        -o | --obfs-host)
+            obfs_host="$2"
+            shift 2
+            ;;
+        -d | --dns-server)
+            dns_server="$2"
+            shift 2
+            ;;
+        -s | --setup)
+            setup=true
+            shift
+            ;;
+        *)
+            POSITIONAL+=("$1")
+            warn "unknown option $1"
+            shift
+            ;;
     esac
 done
 

@@ -409,18 +409,18 @@ fi
 [ -z "$arch" ] && {
     arch=$(dpkg --print-architecture 2>/dev/null) || {
         case $(uname -m) in
-        x86_64)
-            arch=amd64
-            ;;
-        aarch64)
-            arch=arm64
-            ;;
-        i386)
-            arch=i386
-            ;;
-        *)
-            error 'No "--architecture" specified'
-            ;;
+            x86_64)
+                arch=amd64
+                ;;
+            aarch64)
+                arch=arm64
+                ;;
+            i386)
+                arch=i386
+                ;;
+            *)
+                error 'No "--architecture" specified'
+                ;;
         esac
     }
 }
@@ -433,350 +433,351 @@ POSITIONAL=()
 
 while [ $# -gt 0 ]; do
     case "$1" in
-    -v | --version)
-        version="$2"
-        shift 2
-        ;;
-    --sid | --unstable)
-        version=sid
-        shift
-        ;;
-    --cdn | --aws)
-        mirror_protocol=https
-        [ "$1" = '--aws' ] && {
-            mirror_host=cdn-aws.deb.debian.org
-            ntp_server=time.aws.com
-        }
-        security_repository=mirror
-        shift
-        ;;
-    --aliyun)
-        dns='223.5.5.5 223.6.6.6'
-        dns6='2400:3200::1 2400:3200:baba::1'
-        mirror_protocol=https
-        mirror_host=mirrors.aliyun.com
-        ntp_server=ntp.aliyun.com
-        security_repository=mirror
-        shift
-        ;;
-    --ustc | --china)
-        dns='119.29.29.29'
-        dns6='2402:4e00::'
-        mirror_host=mirrors.ustc.edu.cn
-        ntp_server=time.amazonaws.cn
-        security_repository=mirror
-        shift
-        ;;
-    --tuna)
-        dns='119.29.29.29'
-        dns6='2402:4e00::'
-        mirror_host=mirrors.tuna.tsinghua.edu.cn
-        ntp_server=time.amazonaws.cn
-        security_repository=mirror
-        shift
-        ;;
-    --cloudflare)
-        dns='1.1.1.1 1.0.0.1'
-        dns6='2606:4700:4700::1111 2606:4700:4700::1001'
-        ntp_server=time.cloudflare.com
-        security_repository=mirror
-        shift
-        ;;
-    -a | --architecture)
-        arch="$2"
-        shift 2
-        ;;
-    -bbr | --bbr)
-        bbr=true
-        shift
-        ;;
-    -boot | --boot-size)
-        boot_size="$2"
-        shift 2
-        ;;
-    -d | --disk)
-        disk="$2"
-        shift 2
-        ;;
-    --debug)
-        debug_provision=true
-        shift
-        ;;
-    -e | --efi)
-        efi=true
-        shift
-        ;;
-    -esp | --esp-size)
-        esp="$2"
-        shift 2
-        ;;
-    --ethx)
-        use_ethx=true
-        shift
-        ;;
-    -f | --filesystem)
-        filesystem="$2"
-        shift 2
-        ;;
-    -u | --user)
-        username="$2"
-        shift 2
-        ;;
-    -uid | --uid)
-        uid="$2"
-        shift 2
-        ;;
-    -p | --password)
-        password="$2"
-        shift 2
-        ;;
-    -g | --gpt)
-        gpt=true
-        shift
-        ;;
-    --grub-config)
-        grub_cfg="$2"
-        shift 2
-        ;;
-    -i | --interface)
-        interface="$2"
-        shift 2
-        ;;
-    -h | --hostname)
-        hostname="$2"
-        shift 2
-        ;;
-    -cloud | --cloud-kernel)
-        cloud_kernel=true
-        shift
-        ;;
-    -t | --timezone)
-        timezone="$2"
-        shift 2
-        ;;
-    -n | --ntp-server)
-        ntp_server="$2"
-        shift 2
-        ;;
-    -ns | --network-console)
-        network_console=true
-        shift
-        ;;
-    -mp | --mirror-protocol)
-        if [ "$2" != "http" ] && [ "$2" != "https" ] && [ "$2" != "ftp" ]; then
-            warn "invalid mirror protocol $2, only http, https and ftp are supported, use https as default"
-            mirror_protocol="https"
-        else
-            mirror_protocol="$2"
-        fi
-        shift 2
-        ;;
-    -mh | --mirror-host)
-        mirror_host="$2"
-        shift 2
-        ;;
-    -md | --mirror-directory)
-        mirror_directory=${2%/}
-        shift 2
-        ;;
-    -s | --static-ip)
-        static_ip=true
-        shift
-        ;;
-    -6 | --ipv6 | --ipv6-only)
-        network_type=6
-        shift
-        ;;
-    -d6 | --disable-ipv6)
-        disable_ipv6=true
-        shift
-        ;;
-    -ip | --ip-address)
-        ip_address="$2"
-        shift 2
-        ;;
-    -nm | --netmask)
-        netmask="$2"
-        shift 2
-        ;;
-    -gw | --gateway)
-        gateway="$2"
-        shift 2
-        ;;
-    -dns | --dns)
-        dns="$2"
-        shift 2
-        ;;
-    -sr | --security-repository)
-        security_repository="$2"
-        shift 2
-        ;;
-    --force-efi-extra-removable)
-        force_efi_extra_removable=true
-        shift
-        ;;
-    --upgrade)
-        if [ "$2" != "none" ] && [ "$2" != "safe-upgrade" ] && [ "$2" != "full-upgrade" ]; then
-            warn "invalid upgrade type $2, only none, safe-upgrade and full-upgrade are supported, use safe-upgrade as default"
-            upgrade="safe-upgrade"
-        else
-            upgrade="$2"
-        fi
-        shift 2
-        ;;
-    --force-lowmem)
-        [ "$2" != 0 ] && [ "$2" != 1 ] && [ "$2" != 2 ] && error 'Low memory level can only be 0, 1 or 2'
-        force_lowmem=$2
-        shift
-        ;;
-    --daily)
-        daily=true
-        shift
-        ;;
-    --dry-run)
-        dry_run=true
-        shift
-        ;;
-    --firmware)
-        firmware=true
-        shift
-        ;;
-    -provision | --provision)
-        provision=true
-        version=stable
-        install_shadow_tls=true
-        install_go=true
-        install_im=true
-        install_fish=true
-        install_neofetch=true
-        use_backports=true
-        bbr=true
-        byobu=true
-        cloud_kernel=true
-        network_console=true
-        shift
-        ;;
-    -m | -minimal | --minimal)
-        provision=true
-        version=stable
-        use_backports=true
-        bbr=true
-        cloud_kernel=true
-        network_console=true
-        shift
-        ;;
-    -ak | --authorized-keys)
-        authorized_keys="$2"
-        shift 2
-        ;;
-    -aku | --authorized-keys-url)
-        authorized_keys_url="$2"
-        shift 2
-        ;;
-    -ncp | --network-console-password)
-        nc_password="$2"
-        shift 2
-        ;;
-    -nck | --network-console-authorized-key-url)
-        nc_authorized_keys_url="$2"
-        shift 2
-        ;;
-    -stls | --shadow-tls)
-        install_shadow_tls=true
-        shift
-        ;;
-    --shadow-tls-port)
-        shadow_tls_port="$2"
-        shift 2
-        ;;
-    --shadow-tls-password)
-        shadow_tls_password="$2"
-        shift 2
-        ;;
-    --snell-port)
-        snell_port="$2"
-        shift 2
-        ;;
-    --snell-psk)
-        snell_psk="$2"
-        shift 2
-        ;;
-    --snell-obfs | --shadow-tls-obfs)
-        snell_obfs="$2"
-        shift 2
-        ;;
-    --snell-tfo)
-        snell_tfo="$2"
-        shift 2
-        ;;
-    --shadow-tls-obfs-host)
-        shadow_tls_obfs_host="$2"
-        shift 2
-        ;;
-    -ss | --shadowsocks)
-        install_shadowsocks=true
-        shift
-        ;;
-    --dss | --disable-shadowsocks)
-        install_shadowsocks=false
-        shift
-        ;;
-    -ssp | --shadowsocks-password)
-        shadowsocks_password="$2"
-        shift 2
-        ;;
-    -sspobfs | --shadowsocks-obfs-host)
-        shadowsocks_obfs_host="$2"
-        shift 2
-        ;;
-    -sspt | --shadowsocks-port)
-        shadowsocks_port="$2"
-        shift 2
-        ;;
-    --socat)
-        install_socat=true
-        shift
-        ;;
-    --ssh | --ssh-port)
-        ssh_port="$2"
-        shift 2
-        ;;
-    --go)
-        install_go=true
-        shift
-        ;;
-    --im)
-        install_im=true
-        shift
-        ;;
-    --fish)
-        install_fish=true
-        shift
-        ;;
-    --neofetch)
-        install_neofetch=true
-        shift
-        ;;
-    --backports)
-        use_backports=true
-        shift
-        ;;
-    --byobu)
-        byobu=true
-        shift
-        ;;
-    --sudo-without-password)
-        sudo_without_password=true
-        shift
-        ;;
-    --docker)
-        install_docker=true
-        shift
-        ;;
-    *)
-        POSITIONAL+=("$1")
-        shift
-        ;;
+        -v | --version)
+            version="$2"
+            shift 2
+            ;;
+        --sid | --unstable)
+            version=sid
+            shift
+            ;;
+        --cdn | --aws)
+            mirror_protocol=https
+            [ "$1" = '--aws' ] && {
+                mirror_host=cdn-aws.deb.debian.org
+                ntp_server=time.aws.com
+            }
+            security_repository=mirror
+            shift
+            ;;
+        --aliyun)
+            dns='223.5.5.5 223.6.6.6'
+            dns6='2400:3200::1 2400:3200:baba::1'
+            mirror_protocol=https
+            mirror_host=mirrors.aliyun.com
+            ntp_server=ntp.aliyun.com
+            security_repository=mirror
+            shift
+            ;;
+        --ustc | --china)
+            dns='119.29.29.29'
+            dns6='2402:4e00::'
+            mirror_host=mirrors.ustc.edu.cn
+            ntp_server=time.amazonaws.cn
+            security_repository=mirror
+            shift
+            ;;
+        --tuna)
+            dns='119.29.29.29'
+            dns6='2402:4e00::'
+            mirror_host=mirrors.tuna.tsinghua.edu.cn
+            ntp_server=time.amazonaws.cn
+            security_repository=mirror
+            shift
+            ;;
+        --cloudflare)
+            dns='1.1.1.1 1.0.0.1'
+            dns6='2606:4700:4700::1111 2606:4700:4700::1001'
+            ntp_server=time.cloudflare.com
+            security_repository=mirror
+            shift
+            ;;
+        -a | --architecture)
+            arch="$2"
+            shift 2
+            ;;
+        -bbr | --bbr)
+            bbr=true
+            shift
+            ;;
+        -boot | --boot-size)
+            boot_size="$2"
+            shift 2
+            ;;
+        -d | --disk)
+            disk="$2"
+            shift 2
+            ;;
+        --debug)
+            debug_provision=true
+            shift
+            ;;
+        -e | --efi)
+            efi=true
+            shift
+            ;;
+        -esp | --esp-size)
+            esp="$2"
+            shift 2
+            ;;
+        --ethx)
+            use_ethx=true
+            shift
+            ;;
+        -f | --filesystem)
+            filesystem="$2"
+            shift 2
+            ;;
+        -u | --user)
+            username="$2"
+            shift 2
+            ;;
+        -uid | --uid)
+            uid="$2"
+            shift 2
+            ;;
+        -p | --password)
+            password="$2"
+            shift 2
+            ;;
+        -g | --gpt)
+            gpt=true
+            shift
+            ;;
+        --grub-config)
+            grub_cfg="$2"
+            shift 2
+            ;;
+        -i | --interface)
+            interface="$2"
+            shift 2
+            ;;
+        -h | --hostname)
+            hostname="$2"
+            shift 2
+            ;;
+        -cloud | --cloud-kernel)
+            cloud_kernel=true
+            shift
+            ;;
+        -t | --timezone)
+            timezone="$2"
+            shift 2
+            ;;
+        -n | --ntp-server)
+            ntp_server="$2"
+            shift 2
+            ;;
+        -ns | --network-console)
+            network_console=true
+            shift
+            ;;
+        -mp | --mirror-protocol)
+            if [ "$2" != "http" ] && [ "$2" != "https" ] && [ "$2" != "ftp" ]; then
+                warn "invalid mirror protocol $2, only http, https and ftp are supported, use https as default"
+                mirror_protocol="https"
+            else
+                mirror_protocol="$2"
+            fi
+            shift 2
+            ;;
+        -mh | --mirror-host)
+            mirror_host="$2"
+            shift 2
+            ;;
+        -md | --mirror-directory)
+            mirror_directory=${2%/}
+            shift 2
+            ;;
+        -s | --static-ip)
+            static_ip=true
+            shift
+            ;;
+        -6 | --ipv6 | --ipv6-only)
+            network_type=6
+            shift
+            ;;
+        -d6 | --disable-ipv6)
+            disable_ipv6=true
+            shift
+            ;;
+        -ip | --ip-address)
+            ip_address="$2"
+            shift 2
+            ;;
+        -nm | --netmask)
+            netmask="$2"
+            shift 2
+            ;;
+        -gw | --gateway)
+            gateway="$2"
+            shift 2
+            ;;
+        -dns | --dns)
+            dns="$2"
+            shift 2
+            ;;
+        -sr | --security-repository)
+            security_repository="$2"
+            shift 2
+            ;;
+        --force-efi-extra-removable)
+            force_efi_extra_removable=true
+            shift
+            ;;
+        --upgrade)
+            if [ "$2" != "none" ] && [ "$2" != "safe-upgrade" ] && [ "$2" != "full-upgrade" ]; then
+                warn "invalid upgrade type $2, only none, safe-upgrade and full-upgrade are supported, use safe-upgrade as default"
+                upgrade="safe-upgrade"
+            else
+                upgrade="$2"
+            fi
+            shift 2
+            ;;
+        --force-lowmem)
+            [ "$2" != 0 ] && [ "$2" != 1 ] && [ "$2" != 2 ] && error 'Low memory level can only be 0, 1 or 2'
+            force_lowmem=$2
+            shift
+            ;;
+        --daily)
+            daily=true
+            shift
+            ;;
+        --dry-run)
+            dry_run=true
+            shift
+            ;;
+        --firmware)
+            firmware=true
+            shift
+            ;;
+        -provision | --provision)
+            provision=true
+            version=stable
+            install_shadow_tls=true
+            install_go=true
+            install_im=true
+            install_fish=true
+            install_neofetch=true
+            use_backports=true
+            bbr=true
+            byobu=true
+            cloud_kernel=true
+            network_console=true
+            shift
+            ;;
+        -m | -minimal | --minimal)
+            provision=true
+            version=stable
+            use_backports=true
+            bbr=true
+            cloud_kernel=true
+            network_console=true
+            shift
+            ;;
+        -ak | --authorized-keys)
+            authorized_keys="$2"
+            shift 2
+            ;;
+        -aku | --authorized-keys-url)
+            authorized_keys_url="$2"
+            shift 2
+            ;;
+        -ncp | --network-console-password)
+            nc_password="$2"
+            shift 2
+            ;;
+        -nck | --network-console-authorized-key-url)
+            nc_authorized_keys_url="$2"
+            shift 2
+            ;;
+        -stls | --shadow-tls)
+            install_shadow_tls=true
+            shift
+            ;;
+        --shadow-tls-port)
+            shadow_tls_port="$2"
+            shift 2
+            ;;
+        --shadow-tls-password)
+            shadow_tls_password="$2"
+            shift 2
+            ;;
+        --snell-port)
+            snell_port="$2"
+            shift 2
+            ;;
+        --snell-psk)
+            snell_psk="$2"
+            shift 2
+            ;;
+        --snell-obfs | --shadow-tls-obfs)
+            snell_obfs="$2"
+            shift 2
+            ;;
+        --snell-tfo)
+            snell_tfo="$2"
+            shift 2
+            ;;
+        --shadow-tls-obfs-host)
+            shadow_tls_obfs_host="$2"
+            shift 2
+            ;;
+        -ss | --shadowsocks)
+            install_shadowsocks=true
+            shift
+            ;;
+        --dss | --disable-shadowsocks)
+            install_shadowsocks=false
+            shift
+            ;;
+        -ssp | --shadowsocks-password)
+            shadowsocks_password="$2"
+            shift 2
+            ;;
+        -sspobfs | --shadowsocks-obfs-host)
+            shadowsocks_obfs_host="$2"
+            shift 2
+            ;;
+        -sspt | --shadowsocks-port)
+            shadowsocks_port="$2"
+            shift 2
+            ;;
+        --socat)
+            install_socat=true
+            shift
+            ;;
+        --ssh | --ssh-port)
+            ssh_port="$2"
+            shift 2
+            ;;
+        --go)
+            install_go=true
+            shift
+            ;;
+        --im)
+            install_im=true
+            shift
+            ;;
+        --fish)
+            install_fish=true
+            shift
+            ;;
+        --neofetch)
+            install_neofetch=true
+            shift
+            ;;
+        --backports)
+            use_backports=true
+            shift
+            ;;
+        --byobu)
+            byobu=true
+            shift
+            ;;
+        --sudo-without-password)
+            sudo_without_password=true
+            shift
+            ;;
+        --docker)
+            install_docker=true
+            shift
+            ;;
+        *)
+            POSITIONAL+=("$1")
+            warn "unknown option $1"
+            shift
+            ;;
     esac
 done
 
@@ -792,24 +793,24 @@ mirror_base="$mirror_protocol://$mirror_host$mirror_directory"
 mirror_base=${mirror_base%/}
 
 case $version in
-10 | buster | oldoldstable)
-    suite=buster
-    ;;
-11 | bullseye | oldstable)
-    suite=bullseye
-    ;;
-12 | bookworm | stable)
-    suite=bookworm
-    ;;
-13 | trixie | testing)
-    suite=bookworm
-    ;;
-sid | unstable)
-    suite=sid
-    ;;
-*)
-    error "Unsupported version: $version"
-    ;;
+    10 | buster | oldoldstable)
+        suite=buster
+        ;;
+    11 | bullseye | oldstable)
+        suite=bullseye
+        ;;
+    12 | bookworm | stable)
+        suite=bookworm
+        ;;
+    13 | trixie | testing)
+        suite=bookworm
+        ;;
+    sid | unstable)
+        suite=sid
+        ;;
+    *)
+        error "Unsupported version: $version"
+        ;;
 esac
 
 [ -z "$force_lowmem" ] && {
@@ -870,12 +871,12 @@ esac
 
 [ -z "$daily" ] && {
     case $suite in
-    buster | oldoldstable | bullseye | oldstable | bookworm | stable)
-        daily=false
-        ;;
-    trixie | testing | sid | unstable)
-        daily=true
-        ;;
+        buster | oldoldstable | bullseye | oldstable | bookworm | stable)
+            daily=false
+            ;;
+        trixie | testing | sid | unstable)
+            daily=true
+            ;;
     esac
 }
 
@@ -1440,18 +1441,18 @@ EOF
 
 [ -z "$security_archive" ] && {
     case $suite in
-    buster | oldoldstable | bullseye | oldstable)
-        security_archive="$suite/updates"
-        ;;
-    bookworm | stable | trixie | testing)
-        security_archive="$suite-security"
-        ;;
-    sid | unstable)
-        security_archive=''
-        ;;
-    *)
-        error "Unsupported suite: $suite"
-        ;;
+        buster | oldoldstable | bullseye | oldstable)
+            security_archive="$suite/updates"
+            ;;
+        bookworm | stable | trixie | testing)
+            security_archive="$suite-security"
+            ;;
+        sid | unstable)
+            security_archive=''
+            ;;
+        *)
+            error "Unsupported suite: $suite"
+            ;;
     esac
 }
 

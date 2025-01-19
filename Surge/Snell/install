@@ -140,18 +140,18 @@ function download_shadow_tls() {
     prefix="$1"
     [ -z "$prefix" ] && prefix="/usr/local"
     case "$(uname -m)" in
-    x86_64)
-        arch="x86_64"
-        ;;
-    aarch64)
-        arch="aarch64"
-        ;;
-    armv7l)
-        arch="armv7"
-        ;;
-    *)
-        error "Unsupported architecture: $(uname -m)"
-        ;;
+        x86_64)
+            arch="x86_64"
+            ;;
+        aarch64)
+            arch="aarch64"
+            ;;
+        armv7l)
+            arch="armv7"
+            ;;
+        *)
+            error "Unsupported architecture: $(uname -m)"
+            ;;
     esac
     installed_version="$(shadow-tls -V 2>/dev/null | grep "shadow-tls" | cut -d ' ' -f 2)"
     [ -n "$installed_version" ] && installed_version="v$installed_version"
@@ -228,50 +228,50 @@ POSITIONAL=()
 while [ $# -gt 0 ]; do
     key="$1"
     case $key in
-    -sp | --snell-port)
-        snell_port="$2"
-        shift 2
-        ;;
-    -sv | --snell-version)
-        snell_version="$2"
-        shift 2
-        ;;
-    -6 | --ipv6)
-        ipv6=true
-        shift
-        ;;
-    -spk | --snell-psk)
-        snell_psk="$2"
-        shift 2
-        ;;
-    -o | --obfs)
-        obfs="$2"
-        [ "$obfs" != "http" ] && [ "$obfs" != "tls" ] && error "Invalid obfs: $obfs" && exit 1
-        shift 2
-        ;;
-    -h | --obfs-host)
-        obfs_host="$2"
-        shift 2
-        ;;
-    -t | --tfo)
-        tfo=true
-        ;;
-    -s | --shadow-tls)
-        shadow_tls=true
-        shift
-        ;;
-    -stp | --shadow-tls-port)
-        shadow_tls_port="$2"
-        shift 2
-        ;;
-    -spw | --shadow-tls-password)
-        shadow_tls_password="$2"
-        shift 2
-        ;;
-    *)
-        POSITIONAL+=("$1")
-        shift
-        ;;
+        -sp | --snell-port)
+            snell_port="$2"
+            shift 2
+            ;;
+        -sv | --snell-version)
+            snell_version="$2"
+            shift 2
+            ;;
+        -6 | --ipv6)
+            ipv6=true
+            shift
+            ;;
+        -spk | --snell-psk)
+            snell_psk="$2"
+            shift 2
+            ;;
+        -o | --obfs)
+            obfs="$2"
+            [ "$obfs" != "http" ] && [ "$obfs" != "tls" ] && error "Invalid obfs: $obfs" && exit 1
+            shift 2
+            ;;
+        -h | --obfs-host)
+            obfs_host="$2"
+            shift 2
+            ;;
+        -t | --tfo)
+            tfo=true
+            ;;
+        -s | --shadow-tls)
+            shadow_tls=true
+            shift
+            ;;
+        -stp | --shadow-tls-port)
+            shadow_tls_port="$2"
+            shift 2
+            ;;
+        -spw | --shadow-tls-password)
+            shadow_tls_password="$2"
+            shift 2
+            ;;
+        *)
+            POSITIONAL+=("$1")
+            shift
+            ;;
     esac
 done
 
@@ -357,11 +357,11 @@ set -- "${POSITIONAL[@]}" # restore positional parameters
 
 arch=""
 case $(uname -m) in
-i386 | i686) arch="i386" ;;
-x86_64) arch="amd64" ;;
-aarch64 | arm64 | armv8) arch="aarch64" ;;
-armv7* | armv6*) arch="armv7l" ;;
-*) error "Unsupported architecture: $(uname -m)" ;;
+    i386 | i686) arch="i386" ;;
+    x86_64) arch="amd64" ;;
+    aarch64 | arm64 | armv8) arch="aarch64" ;;
+    armv7* | armv6*) arch="armv7l" ;;
+    *) error "Unsupported architecture: $(uname -m)" ;;
 esac
 
 wd=$(mktemp -t "snell.XXXXXXXXXXXXXXXX" -d 2>/dev/null)

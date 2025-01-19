@@ -6,14 +6,15 @@ POSITIONAL=()
 
 while [ $# -gt 0 ]; do
     case "$1" in
-    -p | --password)
-        password="$2"
-        shift 2
-        ;;
-    *)
-        POSITIONAL+=("$1")
-        shift
-        ;;
+        -p | --password)
+            password="$2"
+            shift 2
+            ;;
+        *)
+            POSITIONAL+=("$1")
+            warn "unknown option $1"
+            shift
+            ;;
     esac
 done
 
