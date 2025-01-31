@@ -545,7 +545,7 @@ while [ $# -gt 0 ]; do
             hostname="$2"
             shift 2
             ;;
-        -cloud | --cloud-kernel)
+        -c | --cloud | --cloud-kernel)
             cloud_kernel=true
             shift
             ;;
