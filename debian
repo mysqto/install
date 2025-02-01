@@ -793,19 +793,22 @@ mirror_base=${mirror_base%/}
 
 case $version in
     10 | buster | oldoldstable)
-        suite=buster
+        suite=oldoldstable
         ;;
     11 | bullseye | oldstable)
-        suite=bullseye
+        suite=oldstable
         ;;
     12 | bookworm | stable)
-        suite=bookworm
+        suite=stable
         ;;
     13 | trixie | testing)
-        suite=bookworm
+        suite=testing
         ;;
     sid | unstable)
         suite=sid
+        ;;
+    exp | experimental | rc-buggy)
+        suite=experimental
         ;;
     *)
         error "Unsupported version: $version"
