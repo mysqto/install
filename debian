@@ -272,6 +272,7 @@ kernel_params=
 packages="openssh-server build-essential curl wget net-tools git vim tig libpam-systemd"
 grub_cfg=
 install_docker=false
+install_quemu_guest_agent=false
 
 # extra packages config
 provision=false
@@ -770,6 +771,10 @@ while [ $# -gt 0 ]; do
             ;;
         --docker)
             install_docker=true
+            shift
+            ;;
+        -qa | --qemu-guest-agent)
+            install_quemu_guest_agent=true
             shift
             ;;
         *)
@@ -1567,6 +1572,7 @@ EOF
     [ "$use_ethx" = true ] && late_command="$late_command --ethx"
     [ "$install_docker" = true ] && late_command="$late_command --docker"
     [ "$disable_ipv6" = true ] && late_command="$late_command --disable-ipv6"
+    [ "$install_quemu_guest_agent" = true ] && late_command="$late_command --qemu-guest-agent"
 
     [ -n "$late_command" ] && {
         if [ "$debug_provision" = true ]; then

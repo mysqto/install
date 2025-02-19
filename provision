@@ -285,6 +285,12 @@ function _enable_byobu() {
     info "byobu enabled for $username"
 }
 
+function _install_quemu_guest_agent() {
+    if ! _installed qemu-guest-agent; then
+        DEBIAN_FRONTEND=noninteractive UCF_FORCE_CONFFOLD=1 apt -y --no-install-recommends install qemu-guest-agent
+    fi
+}
+
 distro="$(lsb_release -is 2>/dev/null)"
 
 [ -z "$distro" ] && distro="$(cat /etc/*-release 2>/dev/null | grep -Eo 'ID=\w+' | cut -d'=' -f2 | head -n1)"
@@ -344,6 +350,7 @@ install_neofetch=false
 install_go=false
 install_im=false
 install_docker=false
+install_quemu_guest_agent=false
 
 enable_bbr=false
 enable_shadowsocks=false
@@ -482,6 +489,10 @@ while [ $# -gt 0 ]; do
         -h | --hostname)
             hostname="$2"
             shift 2
+            ;;
+        -qa | --qemu-guest-agent)
+            install_quemu_guest_agent=true
+            shift
             ;;
         *)
             POSITIONAL+=("$1")
@@ -726,3 +737,5 @@ grub_cmdline="$(sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' <<<"$grub_cmdl
 
 # byobu-enable need to be run after fish installation
 [ "$enable_byobu" = true ] && [ -n "$username" ] && _enable_byobu "$username"
+
+[ "$install_quemu_guest_agent" = true ] && _install_quemu_guest_agent
