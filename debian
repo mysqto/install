@@ -30,7 +30,7 @@ function download() {
         mkdir -p "$target_dir"
     fi
     [ -f "$target" ] && rm -rf "$target"
-    echo "Downloading $url to $target"
+    info "Downloading $url to $target"
     if ! curl --progress-bar -sf -Lo "$target" "$url"; then
         error "Failed to download $url"
     fi
@@ -42,8 +42,7 @@ function ipv6_prefix_length_to_subnet_mask() {
 
     # Ensure that prefix length is valid
     if [ "$prefix_length" -lt 0 ] || [ "$prefix_length" -gt 128 ]; then
-        echo "Invalid IPv6 prefix length."
-        exit 1
+        error "Invalid IPv6 prefix length."
     fi
 
     # Calculate subnet mask in hexadecimal format
@@ -186,7 +185,7 @@ function has_backports() {
 [ ! -d "$wd" ] && error "failed to create working directory"
 
 if ((EUID != 0)); then
-    echo "Granting root privileges for ""$(basename "$0")"
+    info "Granting root privileges for ""$(basename "$0")"
     if [ -t 1 ]; then
         sudo "$0" "$@"
     else
@@ -788,7 +787,7 @@ done
 set -- "${POSITIONAL[@]}" # restore positional parameters
 
 [ -z "$version" ] && {
-    echo "version is not specified, use stable as default"
+    warn "version is not specified, use stable as default"
     version=stable
 }
 
@@ -1679,11 +1678,11 @@ grub-mkconfig -o "$grub_cfg" 2>/dev/null || grub2-mkconfig -o "$grub_cfg" 2>/dev
 }
 [ ! -f "$grub_cfg" ] && error "grub menu not generated"
 ! grep -q "$title" "$grub_cfg" && error "grub menu not updated"
-echo "$grub_cfg updated"
+info "$grub_cfg updated"
 popd >/dev/null 2>&1 || error "Failed to change directory from $wd"
 
 [ "$dry_run" = true ] && {
-    echo "Dry run complete"
+    info "Dry run complete"
     info "#######################################################################"
     info "preseed file: $preseed_file"
     info "grub menu   : $grub_cfg"
@@ -1694,6 +1693,6 @@ popd >/dev/null 2>&1 || error "Failed to change directory from $wd"
 grub-reboot "$title" 2>/dev/null || grub2-reboot "$title" 2>/dev/null || {
     error 'Could not find "grub-reboot" or "grub2-reboot" command'
 }
-echo "rebooting..."
+warn "rebooting..."
 sleep 3
 reboot

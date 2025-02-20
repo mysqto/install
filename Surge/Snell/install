@@ -47,7 +47,7 @@ function download() {
         mkdir -p "$target_dir"
     fi
     [ -f "$target" ] && rm -rf "$target"
-    echo "Downloading $url to $target"
+    info "Downloading $url to $target"
     curl --progress-bar -Lo "$target" "$url"
 }
 

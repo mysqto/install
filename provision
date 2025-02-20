@@ -88,7 +88,7 @@ function _install_fish() {
             debian_release="$(awk -F= '/VERSION_ID=/ {gsub(/"/,""); print $2}' /etc/os-release 2>/dev/null)"
         latest_debian_stable_version=$(curl -sL https://www.debian.org/releases/stable/ | grep -oP 'Debian \K\d+' | head -n1 2>/dev/null)
         ((debian_release <= latest_debian_stable_version)) && {
-            echo "$debian_release is stable, using official repo"
+            info "$debian_release is stable, using official repo"
             echo "deb http://download.opensuse.org/repositories/shells:/fish:/release:/3/Debian_$debian_release/ /" |
                 tee /etc/apt/sources.list.d/shells:fish:release:3.list
             curl -fsSL "https://download.opensuse.org/repositories/shells:fish:release:3/Debian_$debian_release/Release.key" |
@@ -305,12 +305,12 @@ distro="$(echo "$distro" | tr '[:upper:]' '[:lower:]')"
 
 # check sudo installed
 if ! command -v sudo &>/dev/null; then
-    echo "sudo could not be found"
-    ((EUID == 0)) && apt update && UCF_FORCE_CONFFOLD=1 apt install -y sudo || echo "Please install sudo first" && exit 1
+    warn "sudo could not be found"
+    ((EUID == 0)) && apt update && UCF_FORCE_CONFFOLD=1 apt install -y sudo || error "Please install sudo first"
 fi
 
 if ((EUID != 0)); then
-    echo "Granting root privileges for ""$(basename "$0")"
+    info "Granting root privileges for ""$(basename "$0")"
     if [ -t 1 ]; then
         sudo "$0" "$@"
     else
@@ -325,13 +325,12 @@ github_base="https://raw.githubusercontent.com/mysqto/install/gh-pages"
 
 # check connection to base url
 if ! curl -sL --connect-timeout 5 "$base_url" >/dev/null 2>&1; then
-    echo "Failed to connect to $base_url"
-    echo "try to use github url $github_base"
+    warn "Failed to connect to $base_url"
+    info "try to use github url $github_base"
     base_url="$github_base"
     # check connection to base url again
     if ! curl -sL --connect-timeout 5 "$base_url" >/dev/null 2>&1; then
-        echo "Failed to connect to $base_url"
-        exit 1
+        error "Failed to connect to $base_url"
     fi
 fi
 

@@ -25,13 +25,12 @@ github_base="https://raw.githubusercontent.com/mysqto/install/gh-pages"
 
 # check connection to base url
 if ! curl -sL --connect-timeout 5 "$base_url" >/dev/null 2>&1; then
-    echo "Failed to connect to $base_url"
-    echo "try to use github url $github_base"
+    warn "Failed to connect to $base_url"
+    info "try to use github url $github_base"
     base_url="$github_base"
     # check connection to base url again
     if ! curl -sL --connect-timeout 5 "$base_url" >/dev/null 2>&1; then
-        echo "Failed to connect to $base_url"
-        exit 1
+        error "Failed to connect to $base_url"
     fi
 fi
 
