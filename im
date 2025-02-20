@@ -243,7 +243,7 @@ function run_speedtest() {
     fi
 
     info "running speedtest"
-    speedtest --accept-license --accept-gdpr --format=json-pretty
+    speedtest --accept-license --accept-gdpr
 }
 
 function install_pyenv() {
