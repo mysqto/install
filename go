@@ -9,6 +9,19 @@ function installed() {
     command -v "$executable" >/dev/null 2>&1
 }
 
+function warn() {
+    echo -e "\033[1;33m${*}\033[0m"
+}
+
+function error() {
+    echo -e "\033[1;31m${*}\033[0m"
+    exit 1
+}
+
+function info() {
+    echo -e "\033[1;32m${*}\033[0m"
+}
+
 function getgo() {
     url=$1
     prefix=$2
@@ -95,3 +108,20 @@ go_url="$(curl -s "$go_dl_base" | grep -Eo "a class=\"download\" href=.*go.*$os-
 go_version="$(go version 2>/dev/null | awk '{print $3}')"
 remote_version="$(basename "$go_url" | sed -e 's/.'"$os"'-.*.tar.gz//')"
 [ -n "$go_url" ] && [ "$go_version" != "$remote_version" ] && getgo "$go_dl_root$go_url"
+
+# check go installed
+if ! command -v go; then
+    error "Fatal: go is not installed"
+fi
+
+# install essential tools
+# create a map of tools and their url@version
+declare -A tools=(
+    ["gocode"]="github.com/nsf/gocode@latest"
+    ["golangci-lint"]="github.com/golangci/golangci-lint/cmd/golangci-lint@latest"
+    ["goimports"]="golang.org/x/tools/cmd/goimports@latest"
+)
+
+for tool in "${!tools[@]}"; do
+    go install "${tools[$tool]}"
+done
