@@ -1310,13 +1310,8 @@ add_param() {
     [ -n "${!var}" ] && cmd+=("--$param \"${!var}\"")
 }
 
-function build_late_command() {
+function build_provision_params() {
     local cmd=()
-
-    # Base command
-    cmd+=("curl -sL --connect-timeout 30 $base/provision -o $provision_file")
-    cmd+=("chmod +x $provision_file")
-    cmd+=("$provision_file")
 
     # Network options
     ipv6_enabled && cmd+=("--ipv6-dhcp")
@@ -1375,10 +1370,9 @@ function build_provision_command() {
     local provision_file="/tmp/provision_${timestamp}.sh"
     local provision_log="/var/log/provision_${timestamp}.log"
     local late_command
-    late_command=$(build_late_command)
 
-    # Export for use in build_late_command
-    export provision_file provision_log
+    # Base command
+    late_command="curl -sL --connect-timeout 30 $base/provision -o $provision_file; chmod +x $provision_file; $provision_file $(build_provision_params)"
 
     # Add logging and optional cleanup
     if [ "$debug_provision" = true ]; then
