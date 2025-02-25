@@ -79,6 +79,24 @@ if ((EUID != 0)); then
     exit
 fi
 
+POSITIONAL=()
+setup=false
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -s | --setup)
+            setup=true
+            shift
+            ;;
+        *)
+            POSITIONAL+=("$1")
+            warn "unknown option $1"
+            shift
+            ;;
+    esac
+done
+
+set -- "${POSITIONAL[@]}" # restore positional parameters
+
 os="$(uname | tr '[:upper:]' '[:lower:]')"
 if [ "$os" != "linux" ] && [ "$os" != "darwin" ]; then
     echo "this script is linux/macOS only" && exit 255
@@ -114,14 +132,16 @@ if ! command -v go; then
     error "Fatal: go is not installed"
 fi
 
-# install essential tools
-# create a map of tools and their url@version
-declare -A tools=(
-    ["gocode"]="github.com/nsf/gocode@latest"
-    ["golangci-lint"]="github.com/golangci/golangci-lint/cmd/golangci-lint@latest"
-    ["goimports"]="golang.org/x/tools/cmd/goimports@latest"
-)
+[ "$setup" = true ] && {
+    # install essential tools
+    # create a map of tools and their url@version
+    declare -A tools=(
+        ["gocode"]="github.com/nsf/gocode@latest"
+        ["golangci-lint"]="github.com/golangci/golangci-lint/cmd/golangci-lint@latest"
+        ["goimports"]="golang.org/x/tools/cmd/goimports@latest"
+    )
 
-for tool in "${!tools[@]}"; do
-    go install "${tools[$tool]}"
-done
+    for tool in "${!tools[@]}"; do
+        go install "${tools[$tool]}"
+    done
+}

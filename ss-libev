@@ -174,15 +174,15 @@ sudo make install
 if [ ! -e "/etc/shadowsocks-libev/config.json" ]; then
     [ ! -d "/etc/shadowsocks-libev/" ] && sudo mkdir -p /etc/shadowsocks-libev/
     [ -z "$password" ] && {
-        password="$(pwgen -ns 32 1 2>/dev/null)" ||
-            password="$(busybox pwgen -ns 32 1 2>/dev/null)" ||
-            password="$(openssl rand -base64 32 2>/dev/null)" ||
-            password="$(busybox mkpasswd -l 32 -C 16 2>/dev/null)" ||
-            password="$(tr -dc 'a-zA-Z0-9' </dev/urandom | head -c 32 2>/dev/null)"
+        password="$(pwgen -ns 32 1 2>/dev/null)" \
+            || password="$(busybox pwgen -ns 32 1 2>/dev/null)" \
+            || password="$(openssl rand -base64 32 2>/dev/null)" \
+            || password="$(busybox mkpasswd -l 32 -C 16 2>/dev/null)" \
+            || password="$(tr -dc 'a-zA-Z0-9' </dev/urandom | head -c 32 2>/dev/null)"
     }
     [ -z "$port" ] && {
-        port="$(shuf -i 10000-65535 -n 1 2>/dev/null)" ||
-            port="$(awk -v min=10000 -v max=65535 'BEGIN{srand(); print int(min+rand()*(max-min+1))}' 2>/dev/null)"
+        port="$(shuf -i 10000-65535 -n 1 2>/dev/null)" \
+            || port="$(awk -v min=10000 -v max=65535 'BEGIN{srand(); print int(min+rand()*(max-min+1))}' 2>/dev/null)"
     }
 
     [ -z "$obfs_host" ] && {

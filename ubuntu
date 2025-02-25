@@ -199,8 +199,8 @@ function partition_type() {
 }
 
 function ipv6_enabled() {
-    public_ipv6="$(curl --connect-timeout 5 -m 10 -6 -sL https://ifconfig.co 2>/dev/null)" ||
-        public_ipv6="$(curl --connect-timeout 5 -m 10 -6 -sL https://ipconfig.io 2>/dev/null)"
+    public_ipv6="$(curl --connect-timeout 5 -m 10 -6 -sL https://ifconfig.co 2>/dev/null)" \
+        || public_ipv6="$(curl --connect-timeout 5 -m 10 -6 -sL https://ipconfig.io 2>/dev/null)"
     [ -z "$public_ipv6" ] && return 1
     return 0
 }
@@ -478,22 +478,22 @@ restore_dpkg_config
 
 if [ -z "$password_hash" ]; then
     [ -z "$password" ] && {
-        password="$(pwgen -nsy 32 1 2>/dev/null)" ||
-            password="$(mkpasswd -l 32 -C 16 -s 4 2>/dev/null)" ||
-            password="$(openssl rand -base64 32 2>/dev/null)" ||
-            password="$(busybox mkpasswd -l 32 -C 16 -s 4 2>/dev/null)" ||
-            password="$(tr -dc 'a-zA-Z0-9' </dev/urandom | head -c 32 2>/dev/null)"
+        password="$(pwgen -nsy 32 1 2>/dev/null)" \
+            || password="$(mkpasswd -l 32 -C 16 -s 4 2>/dev/null)" \
+            || password="$(openssl rand -base64 32 2>/dev/null)" \
+            || password="$(busybox mkpasswd -l 32 -C 16 -s 4 2>/dev/null)" \
+            || password="$(tr -dc 'a-zA-Z0-9' </dev/urandom | head -c 32 2>/dev/null)"
     }
 
-    salt="$(pwgen -nsy 16 1 2>/dev/null)" ||
-        salt="$(mkpasswd -l 16 -C 8 -s 4 2>/dev/null)" ||
-        salt="$(openssl rand -base64 16 2>/dev/null)" ||
-        salt="$(busybox mkpasswd -l 16 -C 8 -s 4 2>/dev/null)" ||
-        salt="$(tr -dc 'a-zA-Z0-9' </dev/urandom | head -c 16 2>/dev/null)"
+    salt="$(pwgen -nsy 16 1 2>/dev/null)" \
+        || salt="$(mkpasswd -l 16 -C 8 -s 4 2>/dev/null)" \
+        || salt="$(openssl rand -base64 16 2>/dev/null)" \
+        || salt="$(busybox mkpasswd -l 16 -C 8 -s 4 2>/dev/null)" \
+        || salt="$(tr -dc 'a-zA-Z0-9' </dev/urandom | head -c 16 2>/dev/null)"
 
-    password_hash="$(mkpasswd -m sha-512 -S "$salt" "$password" 2>/dev/null)" ||
-        password_hash="$(openssl passwd -6 "$password" 2>/dev/null)" ||
-        password_hash="$(busybox mkpasswd -m sha-512 -S "$salt" "$password" 2>/dev/null)" || {
+    password_hash="$(mkpasswd -m sha-512 -S "$salt" "$password" 2>/dev/null)" \
+        || password_hash="$(openssl passwd -6 "$password" 2>/dev/null)" \
+        || password_hash="$(busybox mkpasswd -m sha-512 -S "$salt" "$password" 2>/dev/null)" || {
         for python in python3 python python2; do
             installed "$python" || continue
             password_hash=$("$python" -c 'import crypt, sys; print(crypt.crypt(sys.argv[1], crypt.mksalt(crypt.METHOD_SHA256)))' "$password" 2>/dev/null) && break
@@ -528,11 +528,11 @@ fi
     [ -z "$shadowsocks_password" ] && {
         [ -f "$shadowsocks_config" ] && shadowsocks_password="$(grep 2>/dev/null <"$shadowsocks_config" -Eo "\"password\"\s*:\s*\"[^\"]+\"" | cut -d'"' -f4)"
         [ -z "$shadowsocks_password" ] && {
-            shadowsocks_password="$(pwgen -ns 32 1 2>/dev/null)" ||
-                shadowsocks_password="$(busybox pwgen -ns 32 1 2>/dev/null)" ||
-                shadowsocks_password="$(openssl rand -base64 32 2>/dev/null)" ||
-                shadowsocks_password="$(busybox mkpasswd -l 32 -C 16 2>/dev/null)" ||
-                shadowsocks_password="$(tr -dc 'a-zA-Z0-9' </dev/urandom | head -c 32 2>/dev/null)"
+            shadowsocks_password="$(pwgen -ns 32 1 2>/dev/null)" \
+                || shadowsocks_password="$(busybox pwgen -ns 32 1 2>/dev/null)" \
+                || shadowsocks_password="$(openssl rand -base64 32 2>/dev/null)" \
+                || shadowsocks_password="$(busybox mkpasswd -l 32 -C 16 2>/dev/null)" \
+                || shadowsocks_password="$(tr -dc 'a-zA-Z0-9' </dev/urandom | head -c 32 2>/dev/null)"
         }
         [ -z "$shadowsocks_password" ] && error "shadowsocks password is required with --shadowsocks, please re-run the script with --shadowsocks-password option"
     }
@@ -540,8 +540,8 @@ fi
     [ -z "$shadowsocks_port" ] && {
         [ -f "$shadowsocks_config" ] && shadowsocks_port="$(grep 2>/dev/null <"$shadowsocks_config" -Eo "\"server_port\"\s*:\s*[0-9]+[^,]" | cut -d: -f2 | tr -d ' ')"
         while [ -z "$shadowsocks_port" ] || [ "$shadowsocks_port" = "$ssh_port" ]; do
-            shadowsocks_port=$(shuf -i 10000-65535 -n 1 2>/dev/null) ||
-                shadowsocks_port=$(awk -v min=10000 -v max=65535 'BEGIN{srand(); print int(min+rand()*(max-min+1))}')
+            shadowsocks_port=$(shuf -i 10000-65535 -n 1 2>/dev/null) \
+                || shadowsocks_port=$(awk -v min=10000 -v max=65535 'BEGIN{srand(); print int(min+rand()*(max-min+1))}')
         done
         [ -z "$shadowsocks_port" ] && error "shadowsocks port is required with --shadowsocks, please re-run the script with --shadowsocks-port option"
     }
@@ -559,8 +559,8 @@ fi
     [ -z "$snell_port" ] && {
         [ -f "$snell_config_file" ] && snell_port="$(grep 2>/dev/null <"$snell_config_file" -oE "listen = .*" | awk -F ':' '{print $NF}' | tr -d ' ')"
         while [ -z "$snell_port" ] || [ "$snell_port" = "$shadowsocks_port" ] || [ "$snell_port" = "$ssh_port" ]; do
-            snell_port=$(shuf -i 10000-65535 -n 1 2>/dev/null) ||
-                snell_port=$(awk -v min=10000 -v max=65535 'BEGIN{srand(); print int(min+rand()*(max-min+1))}')
+            snell_port=$(shuf -i 10000-65535 -n 1 2>/dev/null) \
+                || snell_port=$(awk -v min=10000 -v max=65535 'BEGIN{srand(); print int(min+rand()*(max-min+1))}')
         done
         [ -z "$snell_port" ] && error "Snell port is required with --shadow-tls, please re-run the script with --snell-port option"
     }
@@ -568,9 +568,9 @@ fi
     [ -z "$snell_psk" ] && {
         [ -f "$snell_config_file" ] && snell_psk="$(grep 2>/dev/null <"$snell_config_file" -oE "psk = .*" | awk -F '=' '{print $NF}' | tr -d ' ')"
         [ -z "$snell_psk" ] && {
-            snell_psk="$(pwgen -ns 32 1 2>/dev/null)" ||
-                snell_psk="$(uuidgen -r 2>/dev/null)" ||
-                snell_psk="$(tr </dev/urandom -dc 'a-zA-Z0-9' | fold -w 32 | head -n 1 2>/dev/null)"
+            snell_psk="$(pwgen -ns 32 1 2>/dev/null)" \
+                || snell_psk="$(uuidgen -r 2>/dev/null)" \
+                || snell_psk="$(tr </dev/urandom -dc 'a-zA-Z0-9' | fold -w 32 | head -n 1 2>/dev/null)"
         }
         [ -z "$snell_psk" ] && error "Snell PSK is required with --shadow-tls, please re-run the script with --snell-psk option"
     }
@@ -578,9 +578,9 @@ fi
     [ -z "$shadow_tls_password" ] && {
         [ -f "$shadow_tls_default_file" ] && shadow_tls_password=$(grep 2>/dev/null <"$shadow_tls_default_file" -oE "shadow_tls_password=.*" | awk -F '=' '{print $NF}' | tr -d ' ')
         [ -z "$shadow_tls_password" ] && {
-            shadow_tls_password="$(pwgen -ns 32 1 2>/dev/null)" ||
-                shadow_tls_password="$(uuidgen -r 2>/dev/null)" ||
-                shadow_tls_password="$(tr </dev/urandom -dc 'a-zA-Z0-9' | fold -w 32 | head -n 1 2>/dev/null)"
+            shadow_tls_password="$(pwgen -ns 32 1 2>/dev/null)" \
+                || shadow_tls_password="$(uuidgen -r 2>/dev/null)" \
+                || shadow_tls_password="$(tr </dev/urandom -dc 'a-zA-Z0-9' | fold -w 32 | head -n 1 2>/dev/null)"
         }
         [ -z "$shadow_tls_password" ] && error "Shadow TLS password is required with --shadow-tls, please re-run the script with --shadow-tls-password option"
     }
@@ -589,8 +589,8 @@ fi
         [ -f "$shadow_tls_default_file" ] && shadow_tls_port=$(grep 2>/dev/null <"$shadow_tls_default_file" -oE "shadow_tls_port=.*" | awk -F '=' '{print $NF}' | tr -d ' ')
         # should not use snell port
         while [ -z "$shadow_tls_port" ] || [ "$shadow_tls_port" = "$shadowsocks_port" ] || [ "$shadow_tls_port" = "$snell_port" ] || [ "$shadow_tls_port" = "$ssh_port" ]; do
-            shadow_tls_port=$(shuf -i 10000-65535 -n 1 2>/dev/null) ||
-                shadow_tls_port=$(awk -v min=10000 -v max=65535 'BEGIN{srand(); print int(min+rand()*(max-min+1))}')
+            shadow_tls_port=$(shuf -i 10000-65535 -n 1 2>/dev/null) \
+                || shadow_tls_port=$(awk -v min=10000 -v max=65535 'BEGIN{srand(); print int(min+rand()*(max-min+1))}')
         done
         [ -z "$shadow_tls_port" ] && error "Shadow TLS port is required with --shadow-tls, please re-run the script with --shadow-tls-port option"
     }
@@ -616,9 +616,9 @@ fi
 }
 
 [ -n "$authorized_keys_url" ] && {
-    authorized_keys="$(curl -sL "$authorized_keys_url" 2>/dev/null)" ||
-        authorized_keys="$(wget -qO- "$authorized_keys_url" 2>/dev/null)" ||
-        authorized_keys="$(busybox wget -qO- "$authorized_keys_url" 2>/dev/null)"
+    authorized_keys="$(curl -sL "$authorized_keys_url" 2>/dev/null)" \
+        || authorized_keys="$(wget -qO- "$authorized_keys_url" 2>/dev/null)" \
+        || authorized_keys="$(busybox wget -qO- "$authorized_keys_url" 2>/dev/null)"
 }
 
 [ -z "$authorized_keys" ] && authorized_keys="$(cat /home/"$username"/.ssh/authorized_keys 2>/dev/null)"
@@ -652,11 +652,11 @@ ssh_private_key=""
 }
 
 [ "$network_console" = true ] && {
-    nc_password="$(pwgen -nsy 16 1 2>/dev/null)" ||
-        nc_password="$(openssl rand -base64 16 2>/dev/null)" ||
-        nc_password="$(busybox mkpasswd -l 16 -C 8 -s 4 2>/dev/null)" ||
-        nc_password="$(busybox pwgen -nsy 16 1 2>/dev/null)" ||
-        nc_password="$(LC_ALL=C tr </dev/urandom -dc 'a-zA-Z0-9' | head -c 16 2>/dev/null)"
+    nc_password="$(pwgen -nsy 16 1 2>/dev/null)" \
+        || nc_password="$(openssl rand -base64 16 2>/dev/null)" \
+        || nc_password="$(busybox mkpasswd -l 16 -C 8 -s 4 2>/dev/null)" \
+        || nc_password="$(busybox pwgen -nsy 16 1 2>/dev/null)" \
+        || nc_password="$(LC_ALL=C tr </dev/urandom -dc 'a-zA-Z0-9' | head -c 16 2>/dev/null)"
 }
 
 warn "#######################################################################"
