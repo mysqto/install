@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-snell_homepage="https://manual.nssurge.com/others/snell.html"
+snell_homepage="https://kb.nssurge.com/surge-knowledge-base/release-notes/snell"
 snell_bin="/usr/local/bin/snell-server"
 snell_config_file="/etc/snell/snell-server.conf"
 snell_config_dir="$(dirname "$snell_config_file")"
@@ -55,7 +55,7 @@ function download_snell() {
     # remove the trailing space
     installed_version="$(snell-server --version 2>&1 | grep -Eo "snell-server v[0-9\.]+" | cut -d ' ' -f 2 | sed 's/ *$//g')"
     # match last https://
-    snell_download_url="$(curl -sL "$snell_homepage" 2>/dev/null | grep -oE "https://[^\"]+" | grep -E "linux-$arch\.zip" | head -n 1)"
+    snell_download_url="$(curl -sL "$snell_homepage" 2>/dev/null | grep -oE "https://[^\"|^\|^<]+" | grep -E "v${snell_version}.*linux-aarch64\.zip" | head -n 1)"
     [ -z "$snell_download_url" ] && {
         error "Failed to get snell download url!"
     }
@@ -97,15 +97,17 @@ function enable_snell() {
 
     cat >"$snell_config_file" <<EOF
 # snell-server config
-# https://manual.nssurge.com/others/snell.html
+# ${snell_homepage}
 [snell-server]
-listen = ::0:${snell_port}
+listen = ::1:${snell_port}
 ipv6 = ${ipv6}
 psk = ${snell_psk}
 obfs = ${obfs}
 obfs-host = ${obfs_host}
 tfo = ${tfo}
 version = ${snell_version}
+[snell-server.metrics]
+  enable = true # enable metrics
 EOF
 
     # add to service
@@ -307,7 +309,7 @@ set -- "${POSITIONAL[@]}" # restore positional parameters
     snell_version=$(grep 2>/dev/null <"$snell_config_file" -oE "version = .*" | awk -F '=' '{print $NF}' | tr -d ' ')
     [ -z "$snell_version" ] && {
         warn "Failed to get version from $snell_config_file, use 4 as default"
-        snell_version="4"
+        snell_version="5"
     }
 }
 
