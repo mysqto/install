@@ -18,6 +18,10 @@ function installed() {
     command -v "$1" >/dev/null 2>&1
 }
 
+function info() {
+    echo -e "\033[1;32m${*}\033[0m"
+}
+
 function warn() {
     echo -e "\033[1;33m${*}\033[0m"
 }
@@ -55,7 +59,7 @@ function download_snell() {
     # remove the trailing space
     installed_version="$(snell-server --version 2>&1 | grep -Eo "snell-server v[0-9\.]+" | cut -d ' ' -f 2 | sed 's/ *$//g')"
     # match last https://
-    snell_download_url="$(curl -sL "$snell_homepage" 2>/dev/null | grep -oE "https://[^\"|^\|^<]+" | grep -E "v${snell_version}.*linux-aarch64\.zip" | head -n 1)"
+    snell_download_url="$(curl -sL "$snell_homepage" 2>/dev/null | grep -oE "https://[^\"|^\|^<]+" | grep -E "v.*linux-$arch\.zip" | head -n 1)"
     [ -z "$snell_download_url" ] && {
         error "Failed to get snell download url!"
     }
@@ -67,6 +71,15 @@ function download_snell() {
         warn "Installed snell version is $installed_version, latest snell version is $remove_version, no need to update snell!"
         return 0
     fi
+
+    # remove v and get major version
+    latest_snell_version=${remove_version#v}
+    latest_snell_version=${latest_snell_version%%.*}
+
+    [ "$snell_version" != "$latest_snell_version" ] && {
+        warn "Snell major version update detected: $snell_version -> $latest_snell_version, updating snell to $latest_snell_version"
+        snell_version="$latest_snell_version"
+    }
 
     download "$snell_download_url" "$snell_download_file"
 
@@ -85,6 +98,15 @@ function download_snell() {
     [ -f "$snell_bin" ] || {
         error "Failed to install snell!"
     }
+    chmod +x "$snell_bin"
+    # check snell version
+    installed_version="$(snell-server --version 2>&1 | grep -Eo "snell-server v[0-9\.]+" | cut -d ' ' -f 2 | sed 's/ *$//g')"
+    [ "$installed_version" != "$remove_version" ] && {
+        error "Snell update failed, expected version: $remove_version, got: $installed_version"
+    }
+    info "Snell installed successfully: $installed_version"
+    # clean up
+    rm -f "$snell_download_file"
 }
 
 function enable_snell() {
@@ -99,7 +121,7 @@ function enable_snell() {
 # snell-server config
 # ${snell_homepage}
 [snell-server]
-listen = ::1:${snell_port}
+listen = ::0:${snell_port}
 ipv6 = ${ipv6}
 psk = ${snell_psk}
 obfs = ${obfs}
@@ -107,7 +129,7 @@ obfs-host = ${obfs_host}
 tfo = ${tfo}
 version = ${snell_version}
 [snell-server.metrics]
-  enable = true # enable metrics
+enable = true # enable metrics
 EOF
 
     # add to service
@@ -169,6 +191,11 @@ function download_shadow_tls() {
         [ -f "$prefix/bin/shadow-tls" ] || error "Failed to download shadow-tls"
         chmod +x "$prefix/bin/shadow-tls"
     }
+    installed_version="$(shadow-tls -V 2>/dev/null | grep "shadow-tls" | cut -d ' ' -f 2)"
+    [ "$installed_version" != "$latest_release" ] && {
+        error "Shadow-TLS update failed, expected version: $latest_release, got: $installed_version"
+    }
+    info "Shadow-TLS installed successfully: $installed_version"
 }
 
 function enable_shadow_tls() {
