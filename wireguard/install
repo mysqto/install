@@ -1,0 +1,814 @@
+#!/usr/bin/env bash
+
+if ((EUID != 0)); then
+    echo "Granting root privileges for ""$(basename "$0")"
+    if [ -t 1 ]; then
+        sudo "$0" "$@"
+    else
+        exec 1>output_file
+        gksu "$0" "$@"
+    fi
+    exit
+fi
+
+function warn() {
+    echo -e "\033[33m$1\033[0m"
+}
+
+function error() {
+    echo -e "\033[31m$1\033[0m"
+    exit 1
+}
+
+function info() {
+    echo -e "\033[32m$1\033[0m"
+}
+
+function distro() {
+    cat /etc/*-release 2>/dev/null | grep -Eo 'ID=\w+' | cut -d'=' -f2 | head -n1 | tr '[:upper:]' '[:lower:]' 2>/dev/null ||
+        cat /etc/*-release 2>/dev/null | grep -Eo 'ID_LIKE=\w+' | cut -d'=' -f2 | head -n1 | tr '[:upper:]' '[:lower:]' 2>/dev/null ||
+        cat /etc/*-release 2>/dev/null | grep -Eo 'DISTRIB_ID=\w+' | cut -d'=' -f2 | head -n1 | tr '[:upper:]' '[:lower:]' 2>/dev/null
+}
+
+function arch() {
+    arch=$(dpkg --print-architecture 2>/dev/null) || {
+        case $(uname -m) in
+            x86_64)
+                arch=amd64
+                ;;
+            aarch64)
+                arch=arm64
+                ;;
+            i386)
+                arch=i386
+                ;;
+            *)
+                error 'No supported architecture found'
+                ;;
+        esac
+    }
+    echo "$arch"
+}
+
+function installed() {
+    command -v "$1" >/dev/null 2>&1
+}
+
+function get_default_interface() {
+    ip route show default | awk '/default/ { print $5 }' | head -n1
+}
+
+function get_public_ip() {
+    # Try multiple methods to get public IP
+    local public_ip=""
+    
+    # Method 1: ipinfo.io
+    public_ip=$(curl -s --connect-timeout 5 ipinfo.io/ip 2>/dev/null)
+    if [[ "$public_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        echo "$public_ip"
+        return 0
+    fi
+    
+    # Method 2: ifconfig.me
+    public_ip=$(curl -s --connect-timeout 5 ifconfig.me 2>/dev/null)
+    if [[ "$public_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        echo "$public_ip"
+        return 0
+    fi
+    
+    # Method 3: icanhazip.com
+    public_ip=$(curl -s --connect-timeout 5 icanhazip.com 2>/dev/null | tr -d '\n')
+    if [[ "$public_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        echo "$public_ip"
+        return 0
+    fi
+    
+    # Method 4: dig method
+    if command -v dig >/dev/null 2>&1; then
+        public_ip=$(dig +short myip.opendns.com @resolver1.opendns.com 2>/dev/null)
+        if [[ "$public_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "$public_ip"
+            return 0
+        fi
+    fi
+    
+    # If all methods fail, return empty
+    echo ""
+    return 1
+}
+
+function get_server_country() {
+    local ip="$1"
+    local country=""
+    
+    # If no IP provided, get public IP first
+    if [ -z "$ip" ]; then
+        ip=$(get_public_ip)
+    fi
+    
+    if [ -z "$ip" ]; then
+        echo ""
+        return 1
+    fi
+    
+    # Try to get country from ipinfo.io
+    country=$(curl -s --connect-timeout 5 "ipinfo.io/$ip/country" 2>/dev/null | tr -d '\n' | tr '[:upper:]' '[:lower:]')
+    
+    if [ -n "$country" ]; then
+        echo "$country"
+        return 0
+    fi
+    
+    # Try alternative method with ip-api.com
+    country=$(curl -s --connect-timeout 5 "ip-api.com/json/$ip?fields=countryCode" 2>/dev/null | grep -o '"countryCode":"[^"]*"' | cut -d'"' -f4 | tr '[:upper:]' '[:lower:]')
+    
+    if [ -n "$country" ]; then
+        echo "$country"
+        return 0
+    fi
+    
+    echo ""
+    return 1
+}
+
+function get_optimal_dns() {
+    local custom_dns="$1"
+    local server_ip="$2"
+    
+    # If custom DNS specified, use it
+    if [ -n "$custom_dns" ]; then
+        echo "$custom_dns"
+        return 0
+    fi
+    
+    # Auto-detect country and choose appropriate DNS
+    local country
+    country=$(get_server_country "$server_ip")
+    
+    case "$country" in
+        "cn"|"china")
+            # China - use local DNS providers
+            echo "223.5.5.5, 119.29.29.29"
+            ;;
+        "ru"|"russia")
+            # Russia - use Yandex DNS
+            echo "77.88.8.8, 77.88.8.1"
+            ;;
+        "de"|"germany")
+            # Germany - use Quad9
+            echo "9.9.9.9, 149.112.112.112"
+            ;;
+        *)
+            # Default - use Cloudflare and Google DNS
+            echo "1.1.1.1, 8.8.8.8"
+            ;;
+    esac
+}
+
+function install_wireguard() {
+    local dist
+    dist="$(distro)"
+    
+    info "Detected distribution: $dist"
+    info "Installing WireGuard..."
+    
+    case "$dist" in
+        ubuntu|debian)
+            apt-get update >/dev/null 2>&1
+            DEBIAN_FRONTEND=noninteractive apt-get install -y wireguard wireguard-tools iptables
+            ;;
+        centos|rhel|fedora|rocky|almalinux)
+            if installed dnf; then
+                dnf install -y epel-release 2>/dev/null || true
+                dnf install -y wireguard-tools iptables
+            elif installed yum; then
+                yum install -y epel-release 2>/dev/null || true
+                yum install -y wireguard-tools iptables
+            else
+                error "No package manager found for $dist"
+            fi
+            ;;
+        arch)
+            pacman -Sy --noconfirm wireguard-tools iptables
+            ;;
+        opensuse*|suse)
+            zypper install -y wireguard-tools iptables
+            ;;
+        alpine)
+            apk add --no-cache wireguard-tools iptables
+            ;;
+        *)
+            warn "Unknown distribution: $dist"
+            warn "Attempting to install via package manager..."
+            if installed apt-get; then
+                apt-get update >/dev/null 2>&1
+                DEBIAN_FRONTEND=noninteractive apt-get install -y wireguard wireguard-tools iptables
+            elif installed dnf; then
+                dnf install -y wireguard-tools iptables
+            elif installed yum; then
+                yum install -y wireguard-tools iptables
+            elif installed pacman; then
+                pacman -Sy --noconfirm wireguard-tools iptables
+            elif installed zypper; then
+                zypper install -y wireguard-tools iptables
+            elif installed apk; then
+                apk add --no-cache wireguard-tools iptables
+            else
+                error "No supported package manager found"
+            fi
+            ;;
+    esac
+    
+    if ! installed wg; then
+        error "WireGuard installation failed"
+    fi
+    
+    info "WireGuard installed successfully"
+}
+
+function setup_kernel_forwarding() {
+    info "Enabling IP forwarding..."
+    
+    # Enable IP forwarding temporarily
+    echo 1 > /proc/sys/net/ipv4/ip_forward
+    
+    # Make it permanent
+    if ! grep -q "net.ipv4.ip_forward=1" /etc/sysctl.conf; then
+        echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
+        info "IP forwarding enabled permanently"
+    else
+        info "IP forwarding already enabled"
+    fi
+    
+    # Apply sysctl settings
+    sysctl -p >/dev/null 2>&1
+}
+
+function create_post_scripts() {
+    local default_interface
+    default_interface="$(get_default_interface)"
+    
+    if [ -z "$default_interface" ]; then
+        error "Could not detect default network interface"
+    fi
+    
+    info "Default interface detected: $default_interface"
+    
+    # Create post-up script
+    cat > /etc/wireguard/post-up.sh << EOF
+#!/bin/bash
+# WireGuard post-up script
+# Auto-generated by wireguard installer
+
+# Get the default interface
+DEFAULT_INTERFACE=\$(ip route show default | awk '/default/ { print \$5 }' | head -n1)
+
+# Enable IP forwarding
+echo 1 > /proc/sys/net/ipv4/ip_forward
+
+# Add iptables rules for NAT
+iptables -A FORWARD -i %i -j ACCEPT
+iptables -A FORWARD -o %i -j ACCEPT
+iptables -t nat -A POSTROUTING -o \$DEFAULT_INTERFACE -j MASQUERADE
+
+# Save iptables rules (distribution specific)
+if command -v iptables-save >/dev/null 2>&1; then
+    if [ -f /etc/iptables/rules.v4 ]; then
+        iptables-save > /etc/iptables/rules.v4
+    elif [ -f /etc/sysconfig/iptables ]; then
+        iptables-save > /etc/sysconfig/iptables
+    fi
+fi
+EOF
+
+    # Create post-down script
+    cat > /etc/wireguard/post-down.sh << EOF
+#!/bin/bash
+# WireGuard post-down script
+# Auto-generated by wireguard installer
+
+# Get the default interface
+DEFAULT_INTERFACE=\$(ip route show default | awk '/default/ { print \$5 }' | head -n1)
+
+# Remove iptables rules
+iptables -D FORWARD -i %i -j ACCEPT 2>/dev/null || true
+iptables -D FORWARD -o %i -j ACCEPT 2>/dev/null || true
+iptables -t nat -D POSTROUTING -o \$DEFAULT_INTERFACE -j MASQUERADE 2>/dev/null || true
+
+# Save iptables rules (distribution specific)
+if command -v iptables-save >/dev/null 2>&1; then
+    if [ -f /etc/iptables/rules.v4 ]; then
+        iptables-save > /etc/iptables/rules.v4
+    elif [ -f /etc/sysconfig/iptables ]; then
+        iptables-save > /etc/sysconfig/iptables
+    fi
+fi
+EOF
+
+    chmod +x /etc/wireguard/post-up.sh
+    chmod +x /etc/wireguard/post-down.sh
+    
+    info "Post-up and post-down scripts created"
+}
+
+function generate_keys() {
+    local interface_name="${1:-wg0}"
+    local key_dir="/etc/wireguard/keys"
+    local private_key_file="$key_dir/${interface_name}-private.key"
+    local public_key_file="$key_dir/${interface_name}-public.key"
+    
+    # Create keys directory if it doesn't exist
+    mkdir -p "$key_dir"
+    chmod 700 "$key_dir"
+    
+    if [ -f "$private_key_file" ] && [ -f "$public_key_file" ]; then
+        info "Keys already exist for interface $interface_name"
+        return 0
+    fi
+    
+    info "Generating WireGuard keys for interface $interface_name..."
+    
+    # Generate private key
+    wg genkey > "$private_key_file"
+    chmod 600 "$private_key_file"
+    
+    # Generate public key from private key
+    wg pubkey < "$private_key_file" > "$public_key_file"
+    chmod 644 "$public_key_file"
+    
+    info "Keys generated:"
+    info "  Private key: $private_key_file"
+    info "  Public key: $public_key_file"
+    info "  Server public key: $(cat "$public_key_file")"
+}
+
+function generate_config_template() {
+    local interface_name="${1:-wg0}"
+    local force_create="${2:-false}"
+    local config_file="/etc/wireguard/${interface_name}.conf"
+    local private_key_file="/etc/wireguard/keys/${interface_name}-private.key"
+    
+    if [ -f "$config_file" ] && [ "$force_create" != "true" ]; then
+        warn "Configuration file $config_file already exists, skipping template generation"
+        return 0
+    fi
+    
+    # Generate keys first
+    generate_keys "$interface_name"
+    
+    if [ ! -f "$private_key_file" ]; then
+        error "Failed to generate private key"
+    fi
+    
+    local private_key
+    private_key=$(cat "$private_key_file")
+    
+    info "Generating configuration: $config_file"
+    
+    cat > "$config_file" << EOF
+[Interface]
+# Private key for this server
+PrivateKey = $private_key
+# Public IP address for the WireGuard interface
+Address = $server_ip/$(echo $subnet | cut -d'/' -f2)
+# Listen port
+ListenPort = $listen_port
+# Post-up and post-down scripts
+PostUp = /etc/wireguard/post-up.sh
+PostDown = /etc/wireguard/post-down.sh
+
+# Example client configuration
+#[Peer]
+#PublicKey = CLIENT_PUBLIC_KEY_HERE
+#AllowedIPs = $client_ip/32
+EOF
+
+    chmod 600 "$config_file"
+    info "Configuration created at $config_file"
+}
+
+function enable_service() {
+    local interface_name="${1:-wg0}"
+    
+    if systemctl is-enabled "wg-quick@${interface_name}" >/dev/null 2>&1; then
+        info "WireGuard service already enabled"
+    else
+        systemctl enable "wg-quick@${interface_name}"
+        info "WireGuard service enabled for interface $interface_name"
+    fi
+}
+
+function get_next_client_ip() {
+    local subnet="$1"
+    local base_ip
+    local network_base
+    local server_last_octet
+    local client_config_dir="/etc/wireguard/clients"
+    
+    base_ip=$(echo "$subnet" | cut -d'/' -f1)
+    network_base=$(echo "$base_ip" | cut -d'.' -f1-3)
+    server_last_octet=$(echo "$server_ip" | cut -d'.' -f4)
+    
+    # Find the next available IP
+    local next_ip=2
+    while [ -f "$client_config_dir/client-${network_base}.${next_ip}.conf" ] || [ "$next_ip" -eq "$server_last_octet" ]; do
+        next_ip=$((next_ip + 1))
+        if [ "$next_ip" -gt 254 ]; then
+            error "No more available IP addresses in subnet $subnet"
+        fi
+    done
+    
+    echo "${network_base}.${next_ip}"
+}
+
+function add_client_to_server_config() {
+    local interface_name="$1"
+    local client_public_key="$2"
+    local client_ip="$3"
+    local server_config="/etc/wireguard/${interface_name}.conf"
+    
+    if [ ! -f "$server_config" ]; then
+        error "Server configuration file not found: $server_config"
+    fi
+    
+    # Check if this client already exists in the config
+    if grep -q "$client_public_key" "$server_config"; then
+        warn "Client public key already exists in server configuration"
+        return 0
+    fi
+    
+    # Add the peer section
+    info "Adding client to server configuration..."
+    cat >> "$server_config" << EOF
+
+[Peer]
+PublicKey = $client_public_key
+AllowedIPs = $client_ip/32
+EOF
+    
+    info "Client added to server configuration: $server_config"
+}
+
+function generate_client_config() {
+    local interface_name="${1:-wg0}"
+    local client_name="${2:-client1}"
+    local server_public_key_file="/etc/wireguard/keys/${interface_name}-public.key"
+    local client_config_dir="/etc/wireguard/clients"
+    local client_config_file="$client_config_dir/${client_name}.conf"
+    local client_private_key_file="$client_config_dir/${client_name}-private.key"
+    local client_public_key_file="$client_config_dir/${client_name}-public.key"
+    
+    # Create client directory
+    mkdir -p "$client_config_dir"
+    chmod 700 "$client_config_dir"
+    
+    if [ -f "$client_config_file" ]; then
+        warn "Client configuration $client_config_file already exists"
+        return 0
+    fi
+    
+    if [ ! -f "$server_public_key_file" ]; then
+        error "Server public key not found at $server_public_key_file"
+        error "This usually means the server configuration was not created properly."
+        error "Please run the main installation first: $0"
+    fi
+    
+    # Auto-assign client IP if using default
+    local assigned_client_ip="$client_ip"
+    if [ "$client_ip" = "10.0.0.2" ] && [ "$subnet" != "10.0.0.0/24" ]; then
+        assigned_client_ip=$(get_next_client_ip "$subnet")
+        info "Auto-assigned client IP: $assigned_client_ip"
+    elif [ "$client_ip" = "10.0.0.2" ]; then
+        # Check if default IP is available
+        if [ -f "$client_config_dir/client1.conf" ]; then
+            assigned_client_ip=$(get_next_client_ip "$subnet")
+            info "Default client IP taken, assigned: $assigned_client_ip"
+        fi
+    fi
+    
+    info "Generating client configuration for $client_name..."
+    
+    # Generate client keys
+    wg genkey > "$client_private_key_file"
+    chmod 600 "$client_private_key_file"
+    wg pubkey < "$client_private_key_file" > "$client_public_key_file"
+    chmod 644 "$client_public_key_file"
+    
+    local server_public_key
+    local client_private_key
+    local client_public_key
+    
+    server_public_key=$(cat "$server_public_key_file")
+    client_private_key=$(cat "$client_private_key_file")
+    client_public_key=$(cat "$client_public_key_file")
+    
+    # Get server's public IP
+    local server_public_ip
+    if [ -n "$public_ip" ]; then
+        server_public_ip="$public_ip"
+        info "Using specified public IP: $server_public_ip"
+    else
+        server_public_ip=$(get_public_ip)
+        if [ -z "$server_public_ip" ]; then
+            warn "Could not detect server's public IP automatically"
+            server_public_ip="YOUR_SERVER_IP"
+        else
+            info "Detected server public IP: $server_public_ip"
+        fi
+    fi
+    
+    # Get optimal DNS servers
+    local client_dns
+    local country
+    country=$(get_server_country "$server_public_ip")
+    client_dns=$(get_optimal_dns "$dns_servers" "$server_public_ip")
+    
+    # Display location-specific DNS information
+    case "$country" in
+        "cn"|"china")
+            info "Detected China location, using China-optimized DNS servers: $client_dns"
+            ;;
+        "ru"|"russia")
+            info "Detected Russia location, using Russia-optimized DNS servers: $client_dns"
+            ;;
+        "de"|"germany")
+            info "Detected Germany location, using EU-optimized DNS servers: $client_dns"
+            ;;
+        *)
+            if [ -n "$country" ]; then
+                info "Detected country: $country, using global DNS servers: $client_dns"
+            else
+                info "Could not detect location, using global DNS servers: $client_dns"
+            fi
+            ;;
+    esac
+    
+    # Generate client config
+    cat > "$client_config_file" << EOF
+[Interface]
+PrivateKey = $client_private_key
+Address = $assigned_client_ip/32
+DNS = $client_dns
+
+[Peer]
+PublicKey = $server_public_key
+Endpoint = $server_public_ip:$listen_port
+AllowedIPs = 0.0.0.0/0
+PersistentKeepalive = 25
+EOF
+    
+    chmod 600 "$client_config_file"
+    
+    # Add client to server configuration
+    add_client_to_server_config "$interface_name" "$client_public_key" "$assigned_client_ip"
+    
+    info "Client configuration created:"
+    info "  Config file: $client_config_file"
+    info "  Client IP: $assigned_client_ip"
+    info "  Client public key: $client_public_key"
+    info "  Server endpoint: $server_public_ip:$listen_port"
+    info "  DNS servers: $client_dns"
+    info ""
+    info "✅ Client automatically added to server configuration!"
+    if [ "$server_public_ip" = "YOUR_SERVER_IP" ]; then
+        warn "⚠️  Could not auto-detect server IP - please update the client config manually"
+        info "Edit $client_config_file and replace YOUR_SERVER_IP with your actual server IP"
+    fi
+    info ""
+    
+    # Auto-restart WireGuard service
+    restart_wireguard_service "$interface_name"
+    
+    # Try to generate QR code if qrencode is available
+    if command -v qrencode >/dev/null 2>&1; then
+        info ""
+        info "QR Code for mobile client:"
+        qrencode -t ansiutf8 < "$client_config_file"
+    else
+        info ""
+        warn "Install qrencode to generate QR codes: apt install qrencode"
+        info "Then run: qrencode -t ansiutf8 < $client_config_file"
+    fi
+}
+
+function restart_wireguard_service() {
+    local interface_name="$1"
+    
+    if ! command -v systemctl >/dev/null 2>&1; then
+        info "systemctl not available. Please restart WireGuard manually if needed."
+        return 0
+    fi
+    
+    # Check if service is active
+    if systemctl is-active --quiet "wg-quick@${interface_name}"; then
+        info "Restarting WireGuard service to apply configuration changes..."
+        if systemctl restart "wg-quick@${interface_name}"; then
+            info "✅ WireGuard service restarted successfully"
+            info "Service status: $(systemctl is-active wg-quick@${interface_name})"
+        else
+            warn "❌ Failed to restart WireGuard service. You may need to restart it manually:"
+            warn "  sudo systemctl restart wg-quick@${interface_name}"
+            return 1
+        fi
+    elif systemctl is-enabled --quiet "wg-quick@${interface_name}" 2>/dev/null; then
+        info "WireGuard service is enabled but not running. Starting..."
+        if systemctl start "wg-quick@${interface_name}"; then
+            info "✅ WireGuard service started successfully"
+        else
+            warn "❌ Failed to start WireGuard service. Start it manually:"
+            warn "  sudo systemctl start wg-quick@${interface_name}"
+            return 1
+        fi
+    else
+        info "WireGuard service is not enabled. To start it manually:"
+        info "  sudo systemctl start wg-quick@${interface_name}"
+        info "  sudo systemctl enable wg-quick@${interface_name}  # for auto-start"
+    fi
+    
+    return 0
+}
+
+function usage() {
+    info "Usage: $(basename "$0") [options]"
+    info "Options:"
+    info "  -h, --help              Show this help message"
+    info "  -i, --interface NAME    Specify interface name (default: wg0)"
+    info "  -c, --client NAME       Generate client configuration (creates server config if needed)"
+    info "  --server-only           Create server configuration only (skip WireGuard installation)"
+    info "  --server-ip IP          Server VPN IP address (default: 10.0.0.1)"
+    info "  --client-ip IP          Client VPN IP address (default: 10.0.0.2)"
+    info "  --subnet CIDR           VPN subnet (default: 10.0.0.0/24)"
+    info "  --port PORT             Listen port (default: 51820)"
+    info "  --public-ip IP          Server's public IP (auto-detected if not specified)"
+    info "  --dns SERVERS           DNS servers for clients (auto-selected by location if not specified)"
+    info "  --no-template          Skip configuration template generation"
+    info "  --no-service           Skip service enablement"
+}
+
+# Default values
+interface_name="wg0"
+generate_template=true
+enable_svc=true
+client_name=""
+server_only=false
+server_ip="10.0.0.1"
+client_ip="10.0.0.2"
+subnet="10.0.0.0/24"
+listen_port="51820"
+public_ip=""
+dns_servers=""
+
+# Parse command line arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        -i|--interface)
+            interface_name="$2"
+            shift 2
+            ;;
+        -c|--client)
+            client_name="$2"
+            shift 2
+            ;;
+        --server-only)
+            server_only=true
+            shift
+            ;;
+        --server-ip)
+            server_ip="$2"
+            shift 2
+            ;;
+        --client-ip)
+            client_ip="$2"
+            shift 2
+            ;;
+        --subnet)
+            subnet="$2"
+            shift 2
+            ;;
+        --port)
+            listen_port="$2"
+            shift 2
+            ;;
+        --public-ip)
+            public_ip="$2"
+            shift 2
+            ;;
+        --dns)
+            dns_servers="$2"
+            shift 2
+            ;;
+        --no-template)
+            generate_template=false
+            shift
+            ;;
+        --no-service)
+            enable_svc=false
+            shift
+            ;;
+        *)
+            warn "Unknown option: $1"
+            usage
+            exit 1
+            ;;
+    esac
+done
+
+# Main installation process
+if [ -n "$client_name" ]; then
+    # Client generation mode
+    info "Generating client configuration for: $client_name"
+    
+    # Check if server configuration exists, if not create it
+    server_config="/etc/wireguard/${interface_name}.conf"
+    if [ ! -f "$server_config" ]; then
+        warn "Server configuration not found at $server_config"
+        info "Creating server configuration first..."
+        
+        # Generate server keys if they don't exist
+        generate_keys "$interface_name"
+        
+        # Create server configuration
+        generate_config_template "$interface_name"
+        
+        info "Server configuration created. You may want to start the service later:"
+        info "  sudo systemctl start wg-quick@$interface_name"
+        info ""
+    fi
+    
+    generate_client_config "$interface_name" "$client_name"
+    exit 0
+fi
+
+if [ "$server_only" = true ]; then
+    # Server configuration only mode
+    info "Creating server configuration only..."
+    
+    # Generate server keys if they don't exist
+    generate_keys "$interface_name"
+    
+    # Create server configuration
+    generate_config_template "$interface_name"
+    
+    info "Server configuration created successfully!"
+    info "Configuration file: /etc/wireguard/${interface_name}.conf"
+    info "Server public key: $(cat /etc/wireguard/keys/${interface_name}-public.key 2>/dev/null || echo 'Not found')"
+    info ""
+    
+    # Try to start the service if WireGuard is already installed
+    if command -v wg >/dev/null 2>&1; then
+        info "WireGuard is installed. Attempting to start service..."
+        restart_wireguard_service "$interface_name"
+    else
+        info "WireGuard not installed yet. Next steps:"
+        info "1. Install WireGuard: $0 (without --server-only)"
+        info "2. Generate client configs: $0 --client client1"
+        info "3. Start the service: systemctl start wg-quick@${interface_name}"
+    fi
+    exit 0
+fi
+
+info "Starting WireGuard installation..."
+
+# Install WireGuard
+install_wireguard
+
+# Setup kernel forwarding
+setup_kernel_forwarding
+
+# Create post scripts
+create_post_scripts
+
+# Generate configuration template
+if [ "$generate_template" = true ]; then
+    generate_config_template "$interface_name"
+fi
+
+# Enable service
+if [ "$enable_svc" = true ]; then
+    enable_service "$interface_name"
+    
+    # Start the service after enabling
+    info ""
+    restart_wireguard_service "$interface_name"
+fi
+
+info "WireGuard installation completed successfully!"
+info "Configuration details:"
+info "  Server IP: $server_ip"
+info "  Subnet: $subnet" 
+info "  Listen port: $listen_port"
+info "  Interface: $interface_name"
+info ""
+info "Next steps:"
+info "1. Check your server configuration: /etc/wireguard/${interface_name}.conf"
+info "2. Your server public key: $(cat /etc/wireguard/keys/${interface_name}-public.key 2>/dev/null || echo 'Not found')"
+info "3. Generate client configs: $0 --client client1"
+info "4. Start the service: systemctl start wg-quick@${interface_name}"
+info "5. Check status: systemctl status wg-quick@${interface_name}"
+info ""
+info "Server keys location: /etc/wireguard/keys/"
+info "Client configs location: /etc/wireguard/clients/"

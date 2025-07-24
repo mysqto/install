@@ -1,0 +1,30 @@
+#!/bin/bash
+# WireGuard post-up script
+# This script is called when a WireGuard interface comes up
+# %i will be replaced with the interface name by WireGuard
+
+# Get the default interface dynamically
+DEFAULT_INTERFACE=$(ip route show default | awk '/default/ { print $5 }' | head -n1)
+
+if [ -z "$DEFAULT_INTERFACE" ]; then
+    echo "Error: Could not detect default interface"
+    exit 1
+fi
+
+echo "Setting up forwarding for interface %i via $DEFAULT_INTERFACE"
+
+# Enable IP forwarding
+echo 1 > /proc/sys/net/ipv4/ip_forward
+
+# Add iptables rules for NAT and forwarding
+iptables -A FORWARD -i %i -j ACCEPT
+iptables -A FORWARD -o %i -j ACCEPT
+iptables -t nat -A POSTROUTING -o $DEFAULT_INTERFACE -j MASQUERADE
+
+# Optional: Save iptables rules (uncomment based on your distribution)
+# For Debian/Ubuntu with iptables-persistent:
+# iptables-save > /etc/iptables/rules.v4
+# For CentOS/RHEL/Fedora:
+# iptables-save > /etc/sysconfig/iptables
+
+echo "Post-up completed for %i"
