@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-set -x
 snell_homepage="https://kb.nssurge.com/surge-knowledge-base/release-notes/snell"
 snell_bin="/usr/local/bin/snell-server"
 snell_config_file="/etc/snell/snell-server.conf"
@@ -306,17 +305,21 @@ done
 set -- "${POSITIONAL[@]}" # restore positional parameters
 
 [ -z "$snell_port" ] && {
-    snell_port="$(grep 2>/dev/null <"$snell_config_file" -oE "listen = .*" | awk -F ':' '{print $NF}' | tr -d ' ')" ||
+    snell_port="$(grep 2>/dev/null <"$snell_config_file" -oE "listen = .*" | awk -F ':' '{print $NF}' | tr -d ' ')"
+    [ -z "$snell_port" ] && {
         snell_port=$(shuf -i 10000-65535 -n 1 2>/dev/null) ||
         snell_port=$(awk -v min=10000 -v max=65535 'BEGIN{srand(); print int(min+rand()*(max-min+1))}')
+    }
     [ -z "$snell_port" ] && error "Port is required, please specify it with --snell-port option"
 }
 
 [ -z "$snell_psk" ] && {
-    snell_psk="$(grep 2>/dev/null <"$snell_config_file" -oE "psk = .*" | awk -F '=' '{print $NF}' | tr -d ' ')" ||
+    snell_psk="$(grep 2>/dev/null <"$snell_config_file" -oE "psk = .*" | awk -F '=' '{print $NF}' | tr -d ' ')"
+    [ -z "$snell_psk" ] && {
         snell_psk="$(pwgen -ns 32 1 2>/dev/null)" ||
         snell_psk="$(uuidgen -r 2>/dev/null)" ||
         snell_psk="$(tr </dev/urandom -dc 'a-zA-Z0-9' | fold -w 32 | head -n 1 2>/dev/null)"
+    }
     [ -z "$snell_psk" ] && error "PSK is required, please specify it with --snell-psk option"
 }
 
@@ -352,10 +355,12 @@ set -- "${POSITIONAL[@]}" # restore positional parameters
 [ "$shadow_tls" = true ] && {
 
     [ -z "$shadow_tls_password" ] && {
-        shadow_tls_password=$(grep 2>/dev/null <"$shadow_tls_default_file" -oE "shadow_tls_password=.*" | awk -F '=' '{print $NF}' | tr -d ' ') ||
+        shadow_tls_password=$(grep 2>/dev/null <"$shadow_tls_default_file" -oE "shadow_tls_password=.*" | awk -F '=' '{print $NF}' | tr -d ' ') 
+        [ -z "$shadow_tls_password" ] && {
             shadow_tls_password="$(pwgen -ns 32 1 2>/dev/null)" ||
             shadow_tls_password="$(uuidgen -r 2>/dev/null)" ||
             shadow_tls_password="$(tr </dev/urandom -dc 'a-zA-Z0-9' | fold -w 32 | head -n 1 2>/dev/null)"
+        }
         [ -z "$shadow_tls_password" ] && error "Shadow-TLS password is required when shadow-tls is enabled"
     }
 
