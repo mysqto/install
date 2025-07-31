@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-
+set -x
 snell_homepage="https://kb.nssurge.com/surge-knowledge-base/release-notes/snell"
 snell_bin="/usr/local/bin/snell-server"
 snell_config_file="/etc/snell/snell-server.conf"
