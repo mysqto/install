@@ -191,7 +191,7 @@ function download_shadow_tls() {
         chmod +x "$prefix/bin/shadow-tls"
     }
     installed_version="$(shadow-tls -V 2>/dev/null | grep "shadow-tls" | cut -d ' ' -f 2)"
-    [ "$installed_version" != "$latest_release" ] && {
+    [ "v$installed_version" != "$latest_release" ] && {
         error "Shadow-TLS update failed, expected version: $latest_release, got: $installed_version"
     }
     info "Shadow-TLS installed successfully: $installed_version"
