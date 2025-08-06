@@ -30,6 +30,38 @@ function distro() {
         cat /etc/*-release 2>/dev/null | grep -Eo 'DISTRIB_ID=\w+' | cut -d'=' -f2 | head -n1 | tr '[:upper:]' '[:lower:]' 2>/dev/null
 }
 
+# Ensure required tools are installed
+function ensure_tools() {
+    local tools=(ipcalc awk grep sed tr cut head)
+    info "Ensuring required tools: ${tools[*]}"
+    # Map: pkgmgr -> install command and packages
+    declare -A pkgmap
+    pkgmap[apt-get]="apt-get update && apt-get install -y ipcalc gawk grep sed coreutils"
+    pkgmap[dnf]="dnf install -y ipcalc gawk grep sed coreutils"
+    pkgmap[yum]="yum install -y ipcalc gawk grep sed coreutils"
+    pkgmap[pacman]="pacman -Sy --noconfirm ipcalc gawk grep sed coreutils"
+    pkgmap[zypper]="zypper install -y ipcalc gawk grep sed coreutils"
+    pkgmap[apk]="apk add --no-cache ipcalc gawk grep sed coreutils"
+
+    local found_pm=""
+    for pm in apt-get dnf yum pacman zypper apk; do
+        if command -v "$pm" >/dev/null 2>&1; then
+            found_pm="$pm"
+            break
+        fi
+    done
+    if [ -z "$found_pm" ]; then
+        error "No supported package manager found to install required tools."
+    fi
+    eval "${pkgmap[$found_pm]}"
+    # Re-check after install
+    for t in "${tools[@]}"; do
+        if ! command -v "$t" >/dev/null 2>&1; then
+            error "Failed to install required tool: $t"
+        fi
+    done
+}
+
 function arch() {
     arch=$(dpkg --print-architecture 2>/dev/null) || {
         case $(uname -m) in
@@ -233,11 +265,12 @@ function setup_kernel_forwarding() {
     echo 1 > /proc/sys/net/ipv4/ip_forward
     
     # Make it permanent
-    if ! grep -q "net.ipv4.ip_forward=1" /etc/sysctl.conf; then
+    if ! grep -q "net.ipv4.ip_forward" /etc/sysctl.conf; then
         echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
         info "IP forwarding enabled permanently"
     else
-        info "IP forwarding already enabled"
+        info "IP forwarding already configured in /etc/sysctl.conf, try to update it"
+        sed -i 's/^net.ipv4.ip_forward=.*/net.ipv4.ip_forward=1/' /etc/sysctl.conf
     fi
     
     # Apply sysctl settings
@@ -316,6 +349,9 @@ function generate_keys() {
     local key_dir="/etc/wireguard/keys"
     local private_key_file="$key_dir/${interface_name}-private.key"
     local public_key_file="$key_dir/${interface_name}-public.key"
+    
+    # Ensure WireGuard is installed (needed for key generation)
+    ensure_wireguard
     
     # Create keys directory if it doesn't exist
     mkdir -p "$key_dir"
@@ -440,7 +476,7 @@ function add_client_to_server_config() {
     # Add the peer section
     info "Adding client to server configuration..."
     cat >> "$server_config" << EOF
-
+# Client: $client_name
 [Peer]
 PublicKey = $client_public_key
 AllowedIPs = $client_ip/32
@@ -458,6 +494,9 @@ function generate_client_config() {
     local client_private_key_file="$client_config_dir/${client_name}-private.key"
     local client_public_key_file="$client_config_dir/${client_name}-public.key"
     
+    # Ensure WireGuard is installed (needed for key generation)
+    ensure_wireguard
+    
     # Create client directory
     mkdir -p "$client_config_dir"
     chmod 700 "$client_config_dir"
@@ -468,9 +507,18 @@ function generate_client_config() {
     fi
     
     if [ ! -f "$server_public_key_file" ]; then
-        error "Server public key not found at $server_public_key_file"
-        error "This usually means the server configuration was not created properly."
-        error "Please run the main installation first: $0"
+        warn "Server public key not found at $server_public_key_file"
+        warn "This usually means the server configuration was not created properly."
+        warn "Please run: $0 --server-only"
+        warn "Or run the full installation: $0"
+        return 1
+    fi
+    
+    # Verify server public key file is not empty
+    if [ ! -s "$server_public_key_file" ]; then
+        warn "Server public key file is empty: $server_public_key_file"
+        warn "Please regenerate server keys: $0 --server-only"
+        return 1
     fi
     
     # Auto-assign client IP if using default
@@ -501,6 +549,13 @@ function generate_client_config() {
     server_public_key=$(cat "$server_public_key_file")
     client_private_key=$(cat "$client_private_key_file")
     client_public_key=$(cat "$client_public_key_file")
+    
+    # Verify we got the server public key
+    if [ -z "$server_public_key" ]; then
+        error "Failed to read server public key from $server_public_key_file"
+    fi
+    
+    info "Server public key loaded: $server_public_key"
     
     # Get server's public IP
     local server_public_ip
@@ -579,6 +634,9 @@ EOF
     # Auto-restart WireGuard service
     restart_wireguard_service "$interface_name"
     
+    # Auto-enable WireGuard service if not already enabled
+    enable_service "$interface_name"
+    
     # Try to generate QR code if qrencode is available
     if command -v qrencode >/dev/null 2>&1; then
         info ""
@@ -628,13 +686,32 @@ function restart_wireguard_service() {
     return 0
 }
 
+function ensure_wireguard() {
+    if ! command -v wg >/dev/null 2>&1; then
+        info "WireGuard not installed, installing first..."
+        install_wireguard
+        setup_kernel_forwarding
+        create_post_scripts
+    else
+        info "WireGuard is already installed"
+        info "ensuring kernel forwarding is enabled..."
+        setup_kernel_forwarding
+        info "ensuring post scripts exist..."
+        # WireGuard is installed, but ensure post scripts exist
+        if [ ! -f /etc/wireguard/post-up.sh ] || [ ! -f /etc/wireguard/post-down.sh ]; then
+            info "WireGuard installed, but post scripts missing. Creating them..."
+            create_post_scripts
+        fi
+    fi
+}
+
 function usage() {
     info "Usage: $(basename "$0") [options]"
     info "Options:"
     info "  -h, --help              Show this help message"
     info "  -i, --interface NAME    Specify interface name (default: wg0)"
     info "  -c, --client NAME       Generate client configuration (creates server config if needed)"
-    info "  --server-only           Create server configuration only (skip WireGuard installation)"
+    info "  --server-only           Create server configuration (installs WireGuard if needed)"
     info "  --server-ip IP          Server VPN IP address (default: 10.0.0.1)"
     info "  --client-ip IP          Client VPN IP address (default: 10.0.0.2)"
     info "  --subnet CIDR           VPN subnet (default: 10.0.0.0/24)"
@@ -657,6 +734,200 @@ subnet="10.0.0.0/24"
 listen_port="51820"
 public_ip=""
 dns_servers=""
+
+# Function to get all local interface subnets (IPv4)
+function get_local_interface_subnets() {
+    ip -4 addr show | awk '/inet / {print $2}'
+}
+
+# Function to check if two subnets overlap
+function subnets_overlap() {
+    local subnet1="$1"
+    local subnet2="$2"
+    # Convert to ipcalc output for easier comparison
+    local net1 net2
+    net1=$(ipcalc -n "$subnet1" | grep Network | awk '{print $2}')
+    net2=$(ipcalc -n "$subnet2" | grep Network | awk '{print $2}')
+    [ "$net1" = "$net2" ]
+}
+
+# Function to auto-select a non-overlapping subnet
+function pick_unused_subnet() {
+    local used_subnets
+    used_subnets=( $(get_local_interface_subnets) )
+    local candidate overlap s
+
+    # List of RFC1918 prefixes and their /24 search ranges (ordered by preference)
+    local prefixes=(
+        "172.16.0.0/12"
+        "192.168.0.0/16"
+        "10.0.0.0/8"
+    )
+    local prefix_names=("172" "192" "10")
+
+    # Helper: check if a subnet is in a prefix
+    function subnet_in_prefix() {
+        local subnet="$1"
+        local prefix="$2"
+        ipcalc -n "$subnet" "$prefix" 2>/dev/null | grep -q "NETWORK:"
+    }
+
+    # Detect which prefixes are in use
+    local in_use=(0 0 0)
+    for s in "${used_subnets[@]}"; do
+        for i in 0 1 2; do
+            if subnet_in_prefix "$s" "${prefixes[$i]}"; then
+                in_use[$i]=1
+            fi
+        done
+    done
+
+    # Build preference order: prefer unused prefixes first
+    local try_order=()
+    for i in 0 1 2; do
+        if [ ${in_use[$i]} -eq 0 ]; then
+            try_order+=("$i")
+        fi
+    done
+    # If all are in use, just try all in order
+    if [ ${#try_order[@]} -eq 0 ]; then
+        try_order=(0 1 2)
+    fi
+
+    for idx in "${try_order[@]}"; do
+        case "${prefix_names[$idx]}" in
+            "172")
+                for a in {16..31}; do
+                    for b in {0..255}; do
+                        candidate="172.$a.$b.0/24"
+                        overlap=false
+                        for s in "${used_subnets[@]}"; do
+                            if subnets_overlap "$candidate" "$s"; then
+                                overlap=true
+                                break
+                            fi
+                        done
+                        if [ "$overlap" = false ]; then
+                            echo "$candidate"
+                            return 0
+                        fi
+                    done
+                done
+                ;;
+            "192")
+                for b in {0..255}; do
+                    candidate="192.168.$b.0/24"
+                    overlap=false
+                    for s in "${used_subnets[@]}"; do
+                        if subnets_overlap "$candidate" "$s"; then
+                            overlap=true
+                            break
+                        fi
+                    done
+                    if [ "$overlap" = false ]; then
+                        echo "$candidate"
+                        return 0
+                    fi
+                done
+                ;;
+            "10")
+                for a in {0..255}; do
+                    for b in {0..255}; do
+                        candidate="10.$a.$b.0/24"
+                        overlap=false
+                        for s in "${used_subnets[@]}"; do
+                            if subnets_overlap "$candidate" "$s"; then
+                                overlap=true
+                                break
+                            fi
+                        done
+                        if [ "$overlap" = false ]; then
+                            echo "$candidate"
+                            return 0
+                        fi
+                    done
+                done
+                ;;
+        esac
+    done
+
+    # Fallback
+    echo "10.255.255.0/24"
+}
+
+
+# Check if a WireGuard interface is up
+function is_wg_interface_up() {
+    local iface="$1"
+    if command -v wg >/dev/null 2>&1; then
+        wg show "$iface" >/dev/null 2>&1
+        return $?
+    fi
+    return 1
+}
+
+# Get subnet from existing wg config
+function get_wg_config_subnet() {
+    local config_file="/etc/wireguard/$1.conf"
+    grep -m1 '^Address' "$config_file" | awk -F'=' '{print $2}' | tr -d ' ' | head -n1 | cut -d',' -f1
+}
+
+# Get all used client IPs from wg config
+function get_used_wg_ips() {
+    local config_file="/etc/wireguard/$1.conf"
+    grep '^AllowedIPs' "$config_file" | awk -F'=' '{print $2}' | tr -d ' ' | cut -d'/' -f1
+}
+
+# Find next available client IP in the subnet
+function pick_next_wg_client_ip() {
+    local subnet="$1"
+    local config_file="$2"
+    local base_ip=$(echo "$subnet" | cut -d'/' -f1 | awk -F. '{print $1"."$2"."$3}')
+    local used_ips=( $(get_used_wg_ips "$config_file") )
+    local next=2
+    while [ $next -lt 255 ]; do
+        local candidate="$base_ip.$next"
+        local found=false
+        for ip in "${used_ips[@]}"; do
+            if [ "$ip" = "$candidate" ]; then
+                found=true
+                break
+            fi
+        done
+        if [ "$found" = false ]; then
+            echo "$candidate"
+            return 0
+        fi
+        next=$((next+1))
+    done
+    echo "$base_ip.254"
+}
+
+# Check for subnet overlap and auto-select if needed, but if wg interface is up, use its config
+function ensure_unique_subnet() {
+    local wg_iface="$interface_name"
+    local config_file="/etc/wireguard/${wg_iface}.conf"
+    if is_wg_interface_up "$wg_iface" && [ -f "$config_file" ]; then
+        info "WireGuard interface $wg_iface is up. Using existing config."
+        subnet=$(get_wg_config_subnet "$wg_iface")
+        server_ip=$(echo "$subnet" | sed 's|/.*||' | awk -F. '{print $1"."$2"."$3".1"}')
+        client_ip=$(pick_next_wg_client_ip "$subnet" "$wg_iface")
+        info "Using subnet: $subnet (server: $server_ip, next client: $client_ip)"
+        return
+    fi
+    local used_subnets
+    used_subnets=( $(get_local_interface_subnets) )
+    for s in "${used_subnets[@]}"; do
+        if subnets_overlap "$subnet" "$s"; then
+            info "Subnet $subnet overlaps with local interface $s. Picking a new subnet..."
+            subnet=$(pick_unused_subnet)
+            server_ip=$(echo "$subnet" | sed 's|/.*||' | awk -F. '{print $1"."$2"."$3".1"}')
+            client_ip=$(echo "$subnet" | sed 's|/.*||' | awk -F. '{print $1"."$2"."$3".2"}')
+            info "Selected new subnet: $subnet (server: $server_ip, client: $client_ip)"
+            break
+        fi
+    done
+}
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
@@ -717,6 +988,14 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+
+
+# Ensure required tools are installed
+ensure_tools
+
+# Ensure subnet does not overlap with local interfaces
+ensure_unique_subnet
+
 # Main installation process
 if [ -n "$client_name" ]; then
     # Client generation mode
@@ -727,6 +1006,9 @@ if [ -n "$client_name" ]; then
     if [ ! -f "$server_config" ]; then
         warn "Server configuration not found at $server_config"
         info "Creating server configuration first..."
+        
+        # Install WireGuard first if not already installed
+        ensure_wireguard
         
         # Generate server keys if they don't exist
         generate_keys "$interface_name"
@@ -747,6 +1029,9 @@ if [ "$server_only" = true ]; then
     # Server configuration only mode
     info "Creating server configuration only..."
     
+    # Install WireGuard first if not already installed (needed for key generation)
+    ensure_wireguard
+    
     # Generate server keys if they don't exist
     generate_keys "$interface_name"
     
@@ -758,16 +1043,10 @@ if [ "$server_only" = true ]; then
     info "Server public key: $(cat /etc/wireguard/keys/${interface_name}-public.key 2>/dev/null || echo 'Not found')"
     info ""
     
-    # Try to start the service if WireGuard is already installed
-    if command -v wg >/dev/null 2>&1; then
-        info "WireGuard is installed. Attempting to start service..."
-        restart_wireguard_service "$interface_name"
-    else
-        info "WireGuard not installed yet. Next steps:"
-        info "1. Install WireGuard: $0 (without --server-only)"
-        info "2. Generate client configs: $0 --client client1"
-        info "3. Start the service: systemctl start wg-quick@${interface_name}"
-    fi
+    # Auto-enable and start the service since WireGuard is now installed
+    info "Auto-enabling and starting WireGuard service..."
+    enable_service "$interface_name"
+    restart_wireguard_service "$interface_name"
     exit 0
 fi
 

@@ -17,7 +17,7 @@ A simple script to install and configure WireGuard VPN on Linux servers with aut
 - `-h, --help`: Show help message
 - `-i, --interface NAME`: Specify interface name (default: wg0)
 - `-c, --client NAME`: Generate client configuration (creates server config if needed)
-- `--server-only`: Create server configuration only (skip WireGuard installation)
+- `--server-only`: Create server configuration (installs WireGuard if needed)
 - `--server-ip IP`: Server VPN IP address (default: 10.0.0.1)
 - `--client-ip IP`: Client VPN IP address (default: 10.0.0.2)
 - `--subnet CIDR`: VPN subnet (default: 10.0.0.0/24)
@@ -45,10 +45,10 @@ A simple script to install and configure WireGuard VPN on Linux servers with aut
 ### Server Configuration Only
 
 ```bash
-# Create server configuration without installing WireGuard
+# Create server configuration (installs WireGuard if needed)
 ./install --server-only
 
-# Create server configuration with custom settings
+# Create server configuration with custom settings (installs WireGuard if needed)
 ./install --server-only --interface wg1 --server-ip 192.168.100.1 --subnet 192.168.100.0/24 --port 51821
 ```
 
