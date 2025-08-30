@@ -932,16 +932,16 @@ mirror_base="$mirror_protocol://$mirror_host$mirror_directory"
 mirror_base=${mirror_base%/}
 
 case $version in
-    10 | buster | oldoldstable)
+    11 | bullseye| oldoldstable)
         suite=oldoldstable
         ;;
-    11 | bullseye | oldstable)
+    12 | bookworm | oldstable)
         suite=oldstable
         ;;
-    12 | bookworm | stable)
+    13 | trixie | stable)
         suite=stable
         ;;
-    13 | trixie | testing)
+    14 | forky | testing)
         suite=testing
         ;;
     sid | unstable)
