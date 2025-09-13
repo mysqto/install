@@ -209,6 +209,10 @@ function shadow_tls() {
     bash <(curl -sL "$base_url/Surge/Snell/install") --shadow-tls
 }
 
+function shadowsocks() {
+    bash <(curl -sL "$base_url/ss-rust") -s
+}
+
 function install_speedtest() {
     prefix=/usr/local
     manpath=$prefix/share/man/man5
@@ -428,6 +432,7 @@ _install_pyenv=false
 _install_speedtest=false
 _install_lookbusy=false
 _update=false
+_shadowsocks=false
 _update_ss=false
 _update_ss_obfs_host=false
 _ss_obfs_host=""
@@ -483,7 +488,7 @@ function usage() {
     info "  -e    | --edge-kernel                    install edge kernel"
     info ""
     info "Shadowsocks & Network Tools:"
-    info "  -ss   | --shadowsocks                    update shadowsocks-libev or shadowsocks-rust"
+    info "  -ss   | --shadowsocks                    install shadowsocks-rust"
     info "  -uss  | --update-shadowsocks             update shadowsocks-libev or shadowsocks-rust"
     info "  -usoh | --update-shadowsocks-obfs-host   update shadowsocks-libev or shadowsocks-rust obfs host"
     info "  -stls | --shadow-tls                     enable snell and shadow-tls"
@@ -537,7 +542,11 @@ while [ $# -gt 0 ]; do
             _self_update=true
             shift 1
             ;;
-        -ss | -uss | --shadowsocks | --update-shadowsocks)
+        -ss | --shadowsocks)
+            _shadowsocks=true
+            shift 1
+            ;;
+        -uss | --update-shadowsocks)
             _update_ss=true
             shift 1
             ;;
@@ -645,6 +654,8 @@ action() {
         update
     elif [ "$_upgrade" == true ]; then
         upgrade
+    elif [ "$_shadowsocks" == true ]; then
+        shadowsocks
     elif [ "$_update_ss" == true ]; then
         update_ss
     elif [ "$_update_ss_obfs_host" == true ]; then
