@@ -41,6 +41,21 @@ if ! installed curl; then
     error "curl is required, auto installation failed, please install it manually"
 fi
 
+# install dependencies
+if installed apt; then
+    apt-get update && sudo apt install --no-install-recommends build-essential autoconf libtool libssl-dev libpcre3-dev libev-dev automake asciidoc xmlto git pwgen -y
+elif installed yum; then
+    yum update && yum install -y git gcc make autoconf libtool openssl-devel pcre-devel libev-devel asciidoc xmlto automake pwgen
+elif installed dnf; then
+    dnf update && dnf install -y git gcc make autoconf libtool openssl-devel pcre-devel libev-devel asciidoc xmlto automake pwgen
+elif installed zypper; then
+    zypper refresh && zypper install -y git gcc make autoconf libtool openssl-devel pcre-devel libev-devel asciidoc xmlto automake pwgen
+elif installed apk; then
+    apk upgrade && apk add --no-cache git build-base autoconf libtool openssl-dev pcre-dev libev-dev asciidoc xmlto automake pwgen
+else
+    error "no package manager found, please install dependencies manually"
+fi
+
 ssr_releases_url="https://api.github.com/repos/shadowsocks/shadowsocks-rust/releases"
 ssr_version=$(curl -sL "$ssr_releases_url" 2>/dev/null | grep "tag_name" | cut -d'"' -f4 | sed 's/[^0-9.]*//g' | head -n1)
 [ -z "$ssr_version" ] && error "Failed to get shadowsocks-rust version"
