@@ -428,6 +428,14 @@ function install_wireguard() {
     curl -sL "$base_url/wireguard/install" | bash -s -- --interface "$interface_name" --client "$wg_client"
 }
 
+function install_v2ray() {
+    local mode="$1"
+    shift
+    [ -z "$mode" ] && error "v2ray mode is required (--server or --client)"
+    info "Installing V2Ray in $mode mode"
+    curl -sL "$base_url/v2ray/install" | bash -s -- "$mode" "$@"
+}
+
 _install_pyenv=false
 _install_speedtest=false
 _install_lookbusy=false
@@ -457,6 +465,9 @@ _shadow_tls=false
 _install_docker=false
 _install_socat=false
 _install_wireguard=false
+_install_v2ray=false
+v2ray_mode=""
+v2ray_args=()
 wg_client=()
 username=""
 _host=""
@@ -477,6 +488,8 @@ function usage() {
     info "  -so   | --socat                          install socat"
     info "  -wg   | --wireguard                      install wireguard"
     info "  -wgc  | --wireguard-client client_name   install wireguard client with client_name"
+    info "  -v2s  | --v2ray-server [options]         install v2ray server"
+    info "  -v2c  | --v2ray-client [options]         install v2ray client"
     info "System Updates & Maintenance:"
     info "  -uu   | --update                         update the server"
     info "  -uuu  | --upgrade                        upgrade the server if needed"
@@ -639,6 +652,26 @@ while [ $# -gt 0 ]; do
             wg_client=$2
             shift 2
             ;;
+        -v2s | --v2ray-server)
+            _install_v2ray=true
+            v2ray_mode="--server"
+            shift
+            # Collect any additional arguments for v2ray
+            while [[ $# -gt 0 && ! "$1" =~ ^- ]]; do
+                v2ray_args+=("$1")
+                shift
+            done
+            ;;
+        -v2c | --v2ray-client)
+            _install_v2ray=true
+            v2ray_mode="--client"
+            shift
+            # Collect any additional arguments for v2ray
+            while [[ $# -gt 0 && ! "$1" =~ ^- ]]; do
+                v2ray_args+=("$1")
+                shift
+            done
+            ;;
         *)
             POSITIONAL+=("$1")
             warn "unknown option $1"
@@ -706,6 +739,8 @@ action() {
         install_socat
     elif [ "$_install_wireguard" == true ]; then
         install_wireguard "wg0" $wg_client
+    elif [ "$_install_v2ray" == true ]; then
+        install_v2ray "$v2ray_mode" "${v2ray_args[@]}"
     elif [ "$_auto" == true ]; then
         do_all
     else

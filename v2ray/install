@@ -1,0 +1,639 @@
+#!/usr/bin/env bash
+
+# Check root privileges
+[ $EUID -ne 0 ] && echo "Error: This script must be run as root!" && exit 1
+
+# Default values
+prefix="/usr/local"
+port=
+uuid=
+is_server=false
+is_client=false
+server_addr=
+protocol="vmess"
+network="tcp"
+security="none"
+tls=false
+ws_path="/v2ray"
+tun_mode=false
+tun_address="10.0.85.1/24"
+tun_gateway="10.0.85.1"
+
+# Configuration (will be set after prefix is parsed)
+v2ray_bin=""
+v2ray_config_dir=""
+v2ray_config_file=""
+v2ray_service_file="/etc/systemd/system/v2ray.service"
+v2ray_download_base="https://github.com/v2fly/v2ray-core/releases/latest/download"
+
+function info() {
+    echo -e "\033[1;32m${*}\033[0m"
+}
+
+function warn() {
+    echo -e "\033[1;33m${*}\033[0m"
+}
+
+function error() {
+    echo -e "\033[1;31m${*}\033[0m"
+    exit 1
+}
+
+function installed() {
+    command -v "$1" >/dev/null 2>&1
+}
+
+function download() {
+    local url="$1"
+    local target="$2"
+    [ -z "$target" ] && target="$(basename "$url")"
+    local target_dir="$(dirname "$target")"
+    [ ! -d "$target_dir" ] && mkdir -p "$target_dir"
+    [ -f "$target" ] && rm -rf "$target"
+    info "Downloading $url to $target"
+    curl --progress-bar -Lo "$target" "$url"
+}
+
+function detect_arch() {
+    case $(uname -m) in
+        x86_64) echo "64" ;;
+        aarch64 | arm64) echo "arm64-v8a" ;;
+        armv7*) echo "arm32-v7a" ;;
+        *) error "Unsupported architecture: $(uname -m)" ;;
+    esac
+}
+
+function detect_os() {
+    case $(uname -s) in
+        Linux) echo "linux" ;;
+        Darwin) echo "macos" ;;
+        *) error "Unsupported OS: $(uname -s)" ;;
+    esac
+}
+
+function download_v2ray() {
+    local arch="$(detect_arch)"
+    local os="$(detect_os)"
+    local download_file="v2ray-${os}-${arch}.zip"
+    local download_url="${v2ray_download_base}/${download_file}"
+    
+    # Ensure directories exist
+    [ ! -d "$(dirname "$v2ray_bin")" ] && mkdir -p "$(dirname "$v2ray_bin")"
+    
+    # Check installed version
+    if [ -f "$v2ray_bin" ]; then
+        installed_version="$($v2ray_bin version 2>/dev/null | head -n 1 | grep -oE 'v[0-9\.]+' || echo '')"
+        latest_version="$(curl -sL https://api.github.com/repos/v2fly/v2ray-core/releases/latest | grep '"tag_name"' | cut -d'"' -f4)"
+        
+        if [ "$installed_version" = "$latest_version" ]; then
+            warn "V2Ray already at latest version: $installed_version"
+            return 0
+        fi
+        info "Updating V2Ray from $installed_version to $latest_version"
+    fi
+    
+    local wd=$(mktemp -d)
+    pushd "$wd" >/dev/null 2>&1 || exit
+    
+    download "$download_url" "$download_file" || error "Failed to download V2Ray"
+    
+    # Install unzip if not available
+    if ! installed unzip; then
+        if installed apt || installed apt-get; then
+            apt update && DEBIAN_FRONTEND=noninteractive apt install -y unzip
+        elif installed yum; then
+            yum install -y unzip
+        elif installed pacman; then
+            pacman -Sy --noconfirm unzip
+        fi
+    fi
+    
+    unzip -o "$download_file" || error "Failed to extract V2Ray"
+    
+    # Install binaries
+    [ -f "v2ray" ] && mv v2ray "$v2ray_bin" && chmod +x "$v2ray_bin"
+    [ ! -f "$v2ray_bin" ] && error "Failed to install V2Ray binary"
+    
+    # Install data files (geoip.dat, geosite.dat) - required for routing
+    local data_dir="$(dirname "$v2ray_bin")"
+    for dat_file in geoip.dat geosite.dat geoip-only-cn-private.dat; do
+        [ -f "$dat_file" ] && cp "$dat_file" "$data_dir/" 2>/dev/null
+    done
+    
+    info "V2Ray data files installed to: $data_dir"
+    
+    popd >/dev/null 2>&1 || exit
+    rm -rf "$wd"
+    
+    installed_version="$($v2ray_bin version 2>/dev/null | head -n 1 | grep -oE 'v[0-9\.]+' || echo '')"
+    info "V2Ray installed successfully: $installed_version"
+    info "Installation prefix: $prefix"
+}
+
+function generate_uuid() {
+    if installed uuidgen; then
+        uuidgen | tr '[:upper:]' '[:lower:]'
+    else
+        cat /proc/sys/kernel/random/uuid 2>/dev/null || \
+        printf '%08x-%04x-%04x-%04x-%012x' \
+            $RANDOM$RANDOM $RANDOM $RANDOM $RANDOM $RANDOM$RANDOM$RANDOM
+    fi
+}
+
+function create_server_config() {
+    [ ! -d "$v2ray_config_dir" ] && mkdir -p "$v2ray_config_dir"
+    
+    # Try to read existing UUID from config
+    if [ -z "$uuid" ] && [ -f "$v2ray_config_file" ]; then
+        uuid=$(grep -oE '"id": *"[^"]+"' "$v2ray_config_file" | head -1 | cut -d'"' -f4)
+    fi
+    [ -z "$uuid" ] && uuid="$(generate_uuid)"
+    
+    # Try to read existing port from config
+    if [ -z "$port" ] && [ -f "$v2ray_config_file" ]; then
+        port=$(grep -oE '"port": *[0-9]+' "$v2ray_config_file" | head -1 | awk '{print $2}' | tr -d ',')
+    fi
+    if [ -z "$port" ]; then
+        port=$(shuf -i 10000-65535 -n 1 2>/dev/null) || \
+        port=$(awk -v min=10000 -v max=65535 'BEGIN{srand(); print int(min+rand()*(max-min+1))}')
+    fi
+    
+    local inbound_config=""
+    if [ "$tls" = true ]; then
+        inbound_config='{
+      "port": '$port',
+      "protocol": "'$protocol'",
+      "settings": {
+        "clients": [
+          {
+            "id": "'$uuid'",
+            "alterId": 0
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "'$network'",
+        "security": "tls",
+        "tlsSettings": {
+          "certificates": [
+            {
+              "certificateFile": "/path/to/certificate.crt",
+              "keyFile": "/path/to/private.key"
+            }
+          ]
+        }
+      }
+    }'
+    else
+        inbound_config='{
+      "port": '$port',
+      "protocol": "'$protocol'",
+      "settings": {
+        "clients": [
+          {
+            "id": "'$uuid'",
+            "alterId": 0
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "'$network'"
+      }
+    }'
+    fi
+    
+    cat > "$v2ray_config_file" <<EOF
+{
+  "log": {
+    "loglevel": "warning"
+  },
+  "inbounds": [
+    $inbound_config
+  ],
+  "outbounds": [
+    {
+      "protocol": "freedom",
+      "settings": {}
+    }
+  ]
+}
+EOF
+    
+    chmod 644 "$v2ray_config_file"
+    info "Server configuration created: $v2ray_config_file"
+}
+
+function create_client_config() {
+    [ -z "$server_addr" ] && error "Server address is required for client config"
+    [ -z "$uuid" ] && error "UUID is required for client config"
+    [ -z "$port" ] && error "Port is required for client config"
+    
+    [ ! -d "$v2ray_config_dir" ] && mkdir -p "$v2ray_config_dir"
+    
+    local outbound_config=""
+    if [ "$tls" = true ]; then
+        outbound_config='{
+      "protocol": "'$protocol'",
+      "settings": {
+        "vnext": [
+          {
+            "address": "'$server_addr'",
+            "port": '$port',
+            "users": [
+              {
+                "id": "'$uuid'",
+                "alterId": 0
+              }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "'$network'",
+        "security": "tls"
+      }
+    }'
+    else
+        outbound_config='{
+      "protocol": "'$protocol'",
+      "settings": {
+        "vnext": [
+          {
+            "address": "'$server_addr'",
+            "port": '$port',
+            "users": [
+              {
+                "id": "'$uuid'",
+                "alterId": 0
+              }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "'$network'"
+      }
+    }'
+    fi
+    
+    # Configure inbound based on TUN mode or proxy mode
+    local inbound_config=""
+    if [ "$tun_mode" = true ]; then
+        info "Configuring TUN mode (transparent proxy)"
+        inbound_config='{
+      "tag": "tun-in",
+      "protocol": "dokodemo-door",
+      "settings": {
+        "network": "tcp,udp",
+        "followRedirect": true
+      }
+    },
+    {
+      "tag": "tun",
+      "protocol": "tun",
+      "settings": {
+        "address": "'$tun_address'",
+        "gateway": "'$tun_gateway'",
+        "mtu": 1500,
+        "name": "v2ray-tun"
+      }
+    }'
+    else
+        inbound_config='{
+      "port": 1080,
+      "protocol": "socks",
+      "settings": {
+        "auth": "noauth",
+        "udp": true
+      }
+    },
+    {
+      "port": 1081,
+      "protocol": "http",
+      "settings": {}
+    }'
+    fi
+    
+    # Check if geoip.dat exists for routing rules
+    local routing_config=""
+    local data_dir="$(dirname "$v2ray_bin")"
+    if [ -f "$data_dir/geoip.dat" ]; then
+        routing_config=',
+  "routing": {
+    "rules": [
+      {
+        "type": "field",
+        "ip": [
+          "geoip:private"
+        ],
+        "outboundTag": "direct"
+      }
+    ]
+  }'
+    else
+        # Fallback to simple IP-based routing without geoip
+        routing_config=',
+  "routing": {
+    "rules": [
+      {
+        "type": "field",
+        "ip": [
+          "10.0.0.0/8",
+          "172.16.0.0/12",
+          "192.168.0.0/16",
+          "127.0.0.1/8"
+        ],
+        "outboundTag": "direct"
+      }
+    ]
+  }'
+    fi
+    
+    cat > "$v2ray_config_file" <<EOF
+{
+  "log": {
+    "loglevel": "warning"
+  },
+  "inbounds": [
+    $inbound_config
+  ],
+  "outbounds": [
+    $outbound_config,
+    {
+      "protocol": "freedom",
+      "tag": "direct",
+      "settings": {}
+    }
+  ]$routing_config
+}
+EOF
+    
+    chmod 644 "$v2ray_config_file"
+    info "Client configuration created: $v2ray_config_file"
+}
+
+function create_systemd_service() {
+    # Check if systemctl is available
+    if ! installed systemctl; then
+        warn "systemctl not found, skipping systemd service creation"
+        info "To run V2Ray manually: $v2ray_bin run -config $v2ray_config_file"
+        return 0
+    fi
+    
+    cat > "$v2ray_service_file" <<EOF
+[Unit]
+Description=V2Ray Service
+Documentation=https://www.v2fly.org/
+After=network.target nss-lookup.target
+
+[Service]
+Type=simple
+User=root
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+ExecStart=$v2ray_bin run -config $v2ray_config_file
+Restart=on-failure
+RestartSec=3
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    
+    systemctl daemon-reload
+    systemctl enable v2ray
+    info "V2Ray service created and enabled"
+}
+
+function start_service() {
+    # Check if systemctl is available
+    if ! installed systemctl; then
+        warn "systemctl not found, skipping service start"
+        info "V2Ray installation completed. Start manually with:"
+        info "  $v2ray_bin run -config $v2ray_config_file"
+        return 0
+    fi
+    
+    if systemctl is-active --quiet v2ray; then
+        info "Restarting V2Ray service..."
+        systemctl restart v2ray
+    else
+        info "Starting V2Ray service..."
+        systemctl start v2ray
+    fi
+    
+    sleep 1
+    if systemctl is-active --quiet v2ray; then
+        info "V2Ray service is running"
+    else
+        warn "Failed to start V2Ray service. Check: journalctl -u v2ray -n 50"
+        info "You can start it manually with: systemctl start v2ray"
+    fi
+}
+
+function display_config() {
+    info "======================================================================"
+    if [ "$is_server" = true ]; then
+        info "V2Ray Server Configuration:"
+        info "  Protocol: $protocol"
+        info "  Port: $port"
+        info "  UUID: $uuid"
+        info "  Network: $network"
+        info "  Security: $([ "$tls" = true ] && echo "TLS" || echo "None")"
+        info ""
+        info "Client connection string (VMess):"
+        if installed base64; then
+            local vmess_json="{\"v\":\"2\",\"ps\":\"v2ray-server\",\"add\":\"YOUR_SERVER_IP\",\"port\":\"$port\",\"id\":\"$uuid\",\"aid\":\"0\",\"net\":\"$network\",\"type\":\"none\",\"host\":\"\",\"path\":\"\",\"tls\":\"$([ "$tls" = true ] && echo "tls" || echo "")\"}"
+            local vmess_link="vmess://$(echo -n "$vmess_json" | base64 -w 0 2>/dev/null || echo -n "$vmess_json" | base64)"
+            info "  $vmess_link"
+        else
+            info "  Install 'base64' to generate VMess link"
+        fi
+    else
+        info "V2Ray Client Configuration:"
+        info "  Server: $server_addr:$port"
+        info "  Protocol: $protocol"
+        info "  UUID: $uuid"
+        info "  Network: $network"
+        if [ "$tun_mode" = true ]; then
+            info "  Mode: TUN (Transparent Proxy)"
+            info "  TUN Interface: v2ray-tun"
+            info "  TUN Address: $tun_address"
+            info "  TUN Gateway: $tun_gateway"
+            info ""
+            warn "  Note: TUN mode requires CAP_NET_ADMIN capability"
+            warn "  Run with: sudo $v2ray_bin run -config $v2ray_config_file"
+        else
+            info "  Mode: Proxy"
+            info "  SOCKS5 Proxy: 127.0.0.1:1080"
+            info "  HTTP Proxy: 127.0.0.1:1081"
+        fi
+    fi
+    info "======================================================================"
+}
+
+function usage() {
+    cat <<EOF
+Usage: $(basename "$0") [OPTIONS]
+
+Install and configure V2Ray client or server
+
+OPTIONS:
+  -s, --server              Install as server
+  -c, --client              Install as client
+  -p, --port PORT           Listen port (server) or server port (client)
+  -u, --uuid UUID           UUID for authentication
+  -a, --address ADDR        Server address (required for client)
+  --prefix PATH             Installation prefix (default: /usr/local)
+  --protocol PROTO          Protocol: vmess, vless (default: vmess)
+  --network NET             Network type: tcp, ws, http, quic (default: tcp)
+  --tls                     Enable TLS
+  --ws-path PATH            WebSocket path (default: /v2ray)
+  --tun                     Enable TUN mode for client (transparent proxy)
+  --tun-address ADDR        TUN interface address (default: 10.0.85.1/24)
+  --tun-gateway GW          TUN gateway address (default: 10.0.85.1)
+  -h, --help                Show this help message
+
+EXAMPLES:
+  # Install server
+  $(basename "$0") --server --port 10086
+
+  # Install server with custom prefix
+  $(basename "$0") --server --prefix /opt/v2ray
+
+  # Install client (proxy mode)
+  $(basename "$0") --client --address 1.2.3.4 --port 10086 --uuid xxxx-xxxx
+
+  # Install client with TUN mode (transparent proxy)
+  $(basename "$0") --client --address 1.2.3.4 --port 10086 --uuid xxxx-xxxx --tun
+
+  # Install server with WebSocket + TLS
+  $(basename "$0") --server --network ws --tls
+
+EOF
+}
+
+# Parse arguments
+POSITIONAL=()
+while [ $# -gt 0 ]; do
+    case $1 in
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        -s|--server)
+            is_server=true
+            shift
+            ;;
+        -c|--client)
+            is_client=true
+            shift
+            ;;
+        -p|--port)
+            port="$2"
+            shift 2
+            ;;
+        -u|--uuid)
+            uuid="$2"
+            shift 2
+            ;;
+        -a|--address)
+            server_addr="$2"
+            shift 2
+            ;;
+        --prefix)
+            prefix="$2"
+            shift 2
+            ;;
+        --protocol)
+            protocol="$2"
+            shift 2
+            ;;
+        --network)
+            network="$2"
+            shift 2
+            ;;
+        --tls)
+            tls=true
+            shift
+            ;;
+        --ws-path)
+            ws_path="$2"
+            shift 2
+            ;;
+        --tun)
+            tun_mode=true
+            shift
+            ;;
+        --tun-address)
+            tun_address="$2"
+            shift 2
+            ;;
+        --tun-gateway)
+            tun_gateway="$2"
+            shift 2
+            ;;
+        *)
+            POSITIONAL+=("$1")
+            shift
+            ;;
+    esac
+done
+
+set -- "${POSITIONAL[@]}"
+
+# Set paths based on prefix
+v2ray_bin="$prefix/bin/v2ray"
+v2ray_config_dir="$prefix/etc/v2ray"
+v2ray_config_file="$v2ray_config_dir/config.json"
+
+# Validate
+if [ "$is_server" = false ] && [ "$is_client" = false ]; then
+    error "Please specify --server or --client"
+fi
+
+if [ "$is_server" = true ] && [ "$is_client" = true ]; then
+    error "Cannot be both server and client"
+fi
+
+# Install dependencies
+if installed apt || installed apt-get; then
+    apt update
+    DEBIAN_FRONTEND=noninteractive apt install -y curl unzip
+elif installed yum; then
+    yum install -y curl unzip
+elif installed pacman; then
+    pacman -Sy --noconfirm curl unzip
+fi
+
+# Main installation
+info "Installing V2Ray..."
+download_v2ray
+
+if [ "$is_server" = true ]; then
+    info "Configuring V2Ray server..."
+    create_server_config
+else
+    info "Configuring V2Ray client..."
+    create_client_config
+fi
+
+create_systemd_service
+start_service
+display_config
+
+info ""
+info "Installation completed successfully!"
+info "Installation prefix: $prefix"
+info "Binary location: $v2ray_bin"
+info "Config file: $v2ray_config_file"
+
+if installed systemctl; then
+    info "Service status: systemctl status v2ray"
+    info "View logs: journalctl -u v2ray -f"
+else
+    info "Start V2Ray: $v2ray_bin run -config $v2ray_config_file"
+    info "Test config: $v2ray_bin test -config $v2ray_config_file"
+fi
+
