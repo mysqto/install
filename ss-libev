@@ -29,6 +29,10 @@ service_exists() {
     fi
 }
 
+# Use CURL_OPTS and WGET_OPTS from environment if set, otherwise allow local override
+[ -z "$CURL_OPTS" ] && CURL_OPTS=""
+[ -z "$WGET_OPTS" ] && WGET_OPTS=""
+
 POSITIONAL=()
 port=
 password=""
@@ -77,6 +81,16 @@ while [ $# -gt 0 ]; do
             dns_server="$2"
             shift 2
             ;;
+        -4 | --ipv4)
+            CURL_OPTS="-4"
+            WGET_OPTS="-4"
+            shift
+            ;;
+        -6 | --ipv6)
+            CURL_OPTS="-6"
+            WGET_OPTS="-6"
+            shift
+            ;;
         *)
             POSITIONAL+=("$1")
             warn "unknown option $1"
@@ -90,10 +104,10 @@ set -- "${POSITIONAL[@]}" # restore positional parameters
 [ -z "$dns_server" ] && dns_server="8.8.8.8"
 
 [ -n "$libsodium_version" ] || {
-    libsodium_version=$(curl -sL "$libsodium_releases_url" 2>/dev/null | grep "tag_name" | head -n 1 | cut -d '"' -f4 | cut -d'-' -f1)
+    libsodium_version=$(curl ${CURL_OPTS} -sL "$libsodium_releases_url" 2>/dev/null | grep "tag_name" | head -n 1 | cut -d '"' -f4 | cut -d'-' -f1)
 }
 [ -n "$mbedtls_version" ] || {
-    mbedtls_version=$(curl -sL "$mbed_releases_url" 2>/dev/null | grep "tag_name" | grep 'v2.' | head -n 1 | cut -d '"' -f 4)
+    mbedtls_version=$(curl ${CURL_OPTS} -sL "$mbed_releases_url" 2>/dev/null | grep "tag_name" | grep 'v2.' | head -n 1 | cut -d '"' -f 4)
 }
 
 [ -z "$libsodium_version" ] && echo "use libsodium $libsodium_default_version" && libsodium_version="$libsodium_default_version"
@@ -113,7 +127,7 @@ sudo apt -y update && DEBIAN_FRONTEND=noninteractive UCF_FORCE_CONFFOLD=1 sudo -
 libsodium_directory="libsodium-$libsodium_version"
 [ -d "$libsodium_directory" ] && rm -rf "$libsodium_directory"
 # download libsodium
-libsodium_download_url=$(curl -sL "$libsodium_releases_url" 2>/dev/null | grep "browser_download_url" | grep "libsodium-$libsodium_version.tar.gz" | head -n 1 | cut -d '"' -f 4)
+libsodium_download_url=$(curl ${CURL_OPTS} -sL "$libsodium_releases_url" 2>/dev/null | grep "browser_download_url" | grep "libsodium-$libsodium_version.tar.gz" | head -n 1 | cut -d '"' -f 4)
 if [ -z "$libsodium_download_url" ]; then
     warn "failed to get libsodium download url, will use git clone"
     git clone https://github.com/jedisct1/libsodium.git "$libsodium_directory"
@@ -123,7 +137,7 @@ if [ -z "$libsodium_download_url" ]; then
     popd >>/dev/null 2>&1 || error "failed to leave libsodium directory"
 else
     libsodium_tarball="libsodium-$libsodium_version.tar.gz"
-    curl -sL "$libsodium_download_url" -o "$libsodium_tarball" || error "failed to download libsodium"
+    curl ${CURL_OPTS} -sL "$libsodium_download_url" -o "$libsodium_tarball" || error "failed to download libsodium"
     tar zxvf "$libsodium_tarball" || error "failed to extract libsodium"
     [ ! -d "$libsodium_directory" ] && error "failed to extract libsodium"
 fi

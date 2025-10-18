@@ -28,6 +28,29 @@ function installed() {
     command -v "$1" &>/dev/null
 }
 
+# Use CURL_OPTS and WGET_OPTS from environment if set, otherwise allow local override
+[ -z "$CURL_OPTS" ] && CURL_OPTS=""
+[ -z "$WGET_OPTS" ] && WGET_OPTS=""
+
+# Parse arguments for -4/-6 flags
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -4|--ipv4)
+            CURL_OPTS="-4"
+            WGET_OPTS="-4"
+            shift
+            ;;
+        -6|--ipv6)
+            CURL_OPTS="-6"
+            WGET_OPTS="-6"
+            shift
+            ;;
+        *)
+            shift
+            ;;
+    esac
+done
+
 distro="$(lsb_release -is 2>/dev/null)" || distro="$(grep -oP '^ID=\K.*' /etc/os-release)"
 distro="${distro,,}"
 [ -z "$distro" ] && error "Unable to determine the distribution"
@@ -41,7 +64,7 @@ docker_sign_key=/etc/apt/keyrings/docker.asc
 apt update
 DEBIAN_FRONTEND=noninteractive UCF_FORCE_CONFFOLD=1 apt install -y ca-certificates curl
 install -m 0755 -d /etc/apt/keyrings
-curl -fsSL "$docker_base/linux/debian/gpg" -o "$docker_sign_key"
+curl ${CURL_OPTS} -fsSL "$docker_base/linux/debian/gpg" -o "$docker_sign_key"
 chmod a+r "$docker_sign_key"
 
 echo "deb [arch=$(dpkg --print-architecture) signed-by=$docker_sign_key] https://download.docker.com/linux/$distro $code_name stable" | \

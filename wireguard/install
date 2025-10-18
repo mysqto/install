@@ -95,21 +95,21 @@ function get_public_ip() {
     local public_ip=""
     
     # Method 1: ipinfo.io
-    public_ip=$(curl -s --connect-timeout 5 ipinfo.io/ip 2>/dev/null)
+    public_ip=$(curl ${CURL_OPTS} -s --connect-timeout 5 ipinfo.io/ip 2>/dev/null)
     if [[ "$public_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
         echo "$public_ip"
         return 0
     fi
     
     # Method 2: ifconfig.me
-    public_ip=$(curl -s --connect-timeout 5 ifconfig.me 2>/dev/null)
+    public_ip=$(curl ${CURL_OPTS} -s --connect-timeout 5 ifconfig.me 2>/dev/null)
     if [[ "$public_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
         echo "$public_ip"
         return 0
     fi
     
     # Method 3: icanhazip.com
-    public_ip=$(curl -s --connect-timeout 5 icanhazip.com 2>/dev/null | tr -d '\n')
+    public_ip=$(curl ${CURL_OPTS} -s --connect-timeout 5 icanhazip.com 2>/dev/null | tr -d '\n')
     if [[ "$public_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
         echo "$public_ip"
         return 0
@@ -144,7 +144,7 @@ function get_server_country() {
     fi
     
     # Try to get country from ipinfo.io
-    country=$(curl -s --connect-timeout 5 "ipinfo.io/$ip/country" 2>/dev/null | tr -d '\n' | tr '[:upper:]' '[:lower:]')
+    country=$(curl ${CURL_OPTS} -s --connect-timeout 5 "ipinfo.io/$ip/country" 2>/dev/null | tr -d '\n' | tr '[:upper:]' '[:lower:]')
     
     if [ -n "$country" ]; then
         echo "$country"
@@ -152,7 +152,7 @@ function get_server_country() {
     fi
     
     # Try alternative method with ip-api.com
-    country=$(curl -s --connect-timeout 5 "ip-api.com/json/$ip?fields=countryCode" 2>/dev/null | grep -o '"countryCode":"[^"]*"' | cut -d'"' -f4 | tr '[:upper:]' '[:lower:]')
+    country=$(curl ${CURL_OPTS} -s --connect-timeout 5 "ip-api.com/json/$ip?fields=countryCode" 2>/dev/null | grep -o '"countryCode":"[^"]*"' | cut -d'"' -f4 | tr '[:upper:]' '[:lower:]')
     
     if [ -n "$country" ]; then
         echo "$country"

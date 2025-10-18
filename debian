@@ -112,7 +112,7 @@ function download() {
     trap 'rm -f "$temp_file"' EXIT
 
     info "Downloading $url to $target"
-    if curl --fail \
+    if curl ${CURL_OPTS} --fail \
         --silent \
         --show-error \
         --location \
@@ -189,7 +189,7 @@ function netmask() {
             # Handle Google Cloud Platform special case
             if [ "$mask" == "255.255.255.255" ]; then
                 local asn
-                asn=$(curl --connect-timeout 30 -s -"$type" "https://ipconfig.io/json" | jq -r '.asn_org' 2>/dev/null)
+                asn=$(curl ${CURL_OPTS} --connect-timeout 30 -s -"$type" "https://ipconfig.io/json" | jq -r '.asn_org' 2>/dev/null)
                 if [ "$asn" == "GOOGLE-CLOUD-PLATFORM" ]; then
                     mask="255.255.255.0"
                     mirror_protocol="http"
@@ -253,8 +253,8 @@ function dns() {
 }
 
 function ipv6_enabled() {
-    public_ipv6="$(curl --connect-timeout 5 -m 10 -6 -sL https://ifconfig.co 2>/dev/null)" \
-        || public_ipv6="$(curl --connect-timeout 5 -m 10 -6 -sL https://ipconfig.io 2>/dev/null)"
+    public_ipv6="$(curl ${CURL_OPTS} --connect-timeout 5 -m 10 -6 -sL https://ifconfig.co 2>/dev/null)" \
+        || public_ipv6="$(curl ${CURL_OPTS} --connect-timeout 5 -m 10 -6 -sL https://ipconfig.io 2>/dev/null)"
     [ -z "$public_ipv6" ] && return 1
     return 0
 }
@@ -269,7 +269,7 @@ function has_kernel() {
     local arch="$2"
     local mirror="$3"
     packages_url="$mirror/dists/$suite/main/binary-$arch/Packages.xz"
-    kernels="$(curl -sL --connect-timeout 30 "$packages_url" | xzgrep -c 'Package: linux-image-'"$arch"'$' 2>/dev/null)"
+    kernels="$(curl ${CURL_OPTS} -sL --connect-timeout 30 "$packages_url" | xzgrep -c 'Package: linux-image-'"$arch"'$' 2>/dev/null)"
     if [ "$kernels" -gt 0 ]; then
         return 0
     fi
@@ -283,7 +283,7 @@ function has_cloud_kernel() {
     local arch="$2"
     local mirror="$3"
     packages_url="$mirror/dists/$suite/main/binary-$arch/Packages.xz"
-    kernels="$(curl -sL --connect-timeout 30 "$packages_url" | xzgrep -c 'Package: linux-image-cloud-'"$arch"'$' 2>/dev/null)"
+    kernels="$(curl ${CURL_OPTS} -sL --connect-timeout 30 "$packages_url" | xzgrep -c 'Package: linux-image-cloud-'"$arch"'$' 2>/dev/null)"
     if [ "$kernels" -gt 0 ]; then
         return 0
     fi
@@ -298,7 +298,7 @@ function has_backports() {
     local mirror="$3"
     local debian_packages=""
     packages_url="$mirror/dists/$suite/main/binary-$arch/Packages.xz"
-    debian_packages="$(curl -sL --connect-timeout 30 "$packages_url" | xzgrep -c "Package: .*" 2>/dev/null)"
+    debian_packages="$(curl ${CURL_OPTS} -sL --connect-timeout 30 "$packages_url" | xzgrep -c "Package: .*" 2>/dev/null)"
     if [ "$debian_packages" -gt 0 ]; then
         return 0
     fi
@@ -324,20 +324,24 @@ base="https://debian.lol"
 github_base="https://raw.githubusercontent.com/mysqto/install/gh-pages"
 gh_proxy_base="https://ghp.ci/https://raw.githubusercontent.com/mysqto/install/gh-pages"
 
+# Use CURL_OPTS and WGET_OPTS from environment if set, otherwise allow local override
+[ -z "$CURL_OPTS" ] && CURL_OPTS=""
+[ -z "$WGET_OPTS" ] && WGET_OPTS=""
+
 # check connection to base url
-if ! curl -sL --connect-timeout 5 "$base" >/dev/null 2>&1; then
+if ! curl ${CURL_OPTS} -sL --connect-timeout 5 "$base" >/dev/null 2>&1; then
     warn "Failed to connect to $base"
     info "try to use github url $github_base"
     base="$github_base"
     # check connection to base url again
-    if ! curl -sL --connect-timeout 5 "$base" >/dev/null 2>&1; then
+    if ! curl ${CURL_OPTS} -sL --connect-timeout 5 "$base" >/dev/null 2>&1; then
         warn "Failed to connect to $base"
         info "try to use ghproxy url"
     fi
 
     base="$gh_proxy_base"
     # check connection to base url again
-    if ! curl -sL --connect-timeout 5 "$base" >/dev/null 2>&1; then
+    if ! curl ${CURL_OPTS} -sL --connect-timeout 5 "$base" >/dev/null 2>&1; then
         error "Failed to connect to $base"
     fi
 fi
@@ -912,6 +916,16 @@ while [ $# -gt 0 ]; do
             install_quemu_guest_agent=true
             shift
             ;;
+        -4 | --ipv4)
+            CURL_OPTS="-4"
+            WGET_OPTS="-4"
+            shift
+            ;;
+        -6 | --ipv6)
+            CURL_OPTS="-6"
+            WGET_OPTS="-6"
+            shift
+            ;;
         *)
             POSITIONAL+=("$1")
             warn "unknown option $1"
@@ -1245,9 +1259,9 @@ fi
 }
 
 [ -n "$authorized_keys_url" ] && {
-    authorized_keys="$(curl -sL --connect-timeout 30 "$authorized_keys_url" 2>/dev/null)" \
-        || authorized_keys="$(wget -t 1 -T 30 -qO- "$authorized_keys_url" 2>/dev/null)" \
-        || authorized_keys="$(busybox wget -T 30 -qO- "$authorized_keys_url" 2>/dev/null)"
+    authorized_keys="$(curl ${CURL_OPTS} -sL --connect-timeout 30 "$authorized_keys_url" 2>/dev/null)" \
+        || authorized_keys="$(wget ${WGET_OPTS} -t 1 -T 30 -qO- "$authorized_keys_url" 2>/dev/null)" \
+        || authorized_keys="$(busybox wget ${WGET_OPTS} -T 30 -qO- "$authorized_keys_url" 2>/dev/null)"
 }
 
 [ -z "$authorized_keys" ] && authorized_keys="$(cat /home/"$username"/.ssh/authorized_keys 2>/dev/null)"
@@ -1312,9 +1326,9 @@ ssh_private_key=""
 
     # check if nc_authorized_keys_url exists
     [ -n "$nc_authorized_keys_url" ] && {
-        nc_authorized_keys="$(curl -sL --timeout 30 "$nc_authorized_keys_url" 2>/dev/null)" \
-            || nc_authorized_keys="$(wget -t 1 -T 30 -qO- "$nc_authorized_keys_url" 2>/dev/null)" \
-            || nc_authorized_keys="$(busybox wget -T 30 -qO- "$nc_authorized_keys_url" 2>/dev/null)"
+        nc_authorized_keys="$(curl ${CURL_OPTS} -sL --timeout 30 "$nc_authorized_keys_url" 2>/dev/null)" \
+            || nc_authorized_keys="$(wget ${WGET_OPTS} -t 1 -T 30 -qO- "$nc_authorized_keys_url" 2>/dev/null)" \
+            || nc_authorized_keys="$(busybox wget ${WGET_OPTS} -T 30 -qO- "$nc_authorized_keys_url" 2>/dev/null)"
         [ -z "$nc_authorized_keys" ] && {
             warn "failed to get network console authorized keys, will use password instead"
             nc_authorized_keys_url=""

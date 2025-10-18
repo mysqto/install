@@ -19,6 +19,10 @@ function installed() {
 
 [ "$(id -u)" -ne 0 ] && error "Please run as root"
 
+# Use CURL_OPTS and WGET_OPTS from environment if set, otherwise allow local override
+[ -z "$CURL_OPTS" ] && CURL_OPTS=""
+[ -z "$WGET_OPTS" ] && WGET_OPTS=""
+
 if ! installed curl; then
     warn "curl is required, will try to install it"
     if installed apt-get; then
@@ -57,7 +61,7 @@ else
 fi
 
 ssr_releases_url="https://api.github.com/repos/shadowsocks/shadowsocks-rust/releases"
-ssr_version=$(curl -sL "$ssr_releases_url" 2>/dev/null | grep "tag_name" | cut -d'"' -f4 | sed 's/[^0-9.]*//g' | head -n1)
+ssr_version=$(curl ${CURL_OPTS} -sL "$ssr_releases_url" 2>/dev/null | grep "tag_name" | cut -d'"' -f4 | sed 's/[^0-9.]*//g' | head -n1)
 [ -z "$ssr_version" ] && error "Failed to get shadowsocks-rust version"
 info "found shadowsocks-rust version: $ssr_version"
 
@@ -121,6 +125,16 @@ while [ $# -gt 0 ]; do
             ;;
         -s | --setup)
             setup=true
+            shift
+            ;;
+        -4 | --ipv4)
+            CURL_OPTS="-4"
+            WGET_OPTS="-4"
+            shift
+            ;;
+        -6 | --ipv6)
+            CURL_OPTS="-6"
+            WGET_OPTS="-6"
             shift
             ;;
         *)
@@ -193,7 +207,7 @@ package_name="shadowsocks-v$ssr_version.$arch-unknown-linux-$libc.tar.xz"
 #  shadowsocks-v1.20.1.aarch64-apple-darwin.tar.xz
 [ "$os" == "darwin" ] && package_name="shadowsocks-v$ssr_version.$arch-apple-darwin.tar.xz"
 
-ssr_download_url="$(curl -sL "$ssr_releases_url" 2>/dev/null | grep "browser_download_url" | grep -Eo "https://.*$package_name" | head -n1)"
+ssr_download_url="$(curl ${CURL_OPTS} -sL "$ssr_releases_url" 2>/dev/null | grep "browser_download_url" | grep -Eo "https://.*$package_name" | head -n1)"
 [ -z "$ssr_download_url" ] && error "Failed to get shadowsocks-rust download url"
 info "found shadowsocks-rust download url: $ssr_download_url"
 
@@ -213,7 +227,7 @@ ssr_tmp_file="$ssr_temp_dir/$package_name"
     rm -f "$ssr_tmp_file" || error "Failed to remove existing temporary file"
 }
 
-curl -sL "$ssr_download_url" -o "$ssr_tmp_file" || error "Failed to download shadowsocks-rust"
+curl ${CURL_OPTS} -sL "$ssr_download_url" -o "$ssr_tmp_file" || error "Failed to download shadowsocks-rust"
 
 [ ! -f "$ssr_tmp_file" ] && error "Failed to download shadowsocks-rust"
 

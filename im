@@ -27,13 +27,13 @@ function info() {
 base_url="https://debian.lol"
 github_base="https://raw.githubusercontent.com/mysqto/install/gh-pages"
 
-# check connection to base url
-if ! curl -sL --connect-timeout 5 "$base_url" >/dev/null 2>&1; then
+# check connection to base url (will use CURL_OPTS if set)
+if ! curl ${CURL_OPTS} -sL --connect-timeout 5 "$base_url" >/dev/null 2>&1; then
     warn "Failed to connect to $base_url"
     warn "try to use github url $github_base"
     base_url="$github_base"
     # check connection to base url again
-    if ! curl -sL --connect-timeout 5 "$base_url" >/dev/null 2>&1; then
+    if ! curl ${CURL_OPTS} -sL --connect-timeout 5 "$base_url" >/dev/null 2>&1; then
         error "Failed to connect to $base_url"
     fi
 fi
@@ -174,11 +174,11 @@ function update_ss() {
     if systemctl is-active --quiet shadowsocks-libev; then
         info "shadowsocks-libev is running"
         info "updating shadowsocks-libev"
-        bash <(curl -sL "$base_url/ss-libev")
+        bash <(curl ${CURL_OPTS} -sL "$base_url/ss-libev")
     elif systemctl is-active --quiet shadowsocks; then
         info "shadowsocks-rust is running"
         info "updating shadowsocks-rust"
-        bash <(curl -sL "$base_url/ss-rust")
+        bash <(curl ${CURL_OPTS} -sL "$base_url/ss-rust")
     else
         error "no shadowsocks service found"
     fi
@@ -206,18 +206,18 @@ function update_ss_obfs_host() {
 }
 
 function shadow_tls() {
-    bash <(curl -sL "$base_url/Surge/Snell/install") --shadow-tls
+    bash <(curl ${CURL_OPTS} -sL "$base_url/Surge/Snell/install") --shadow-tls
 }
 
 function shadowsocks() {
-    bash <(curl -sL "$base_url/ss-rust") -s
+    bash <(curl ${CURL_OPTS} -sL "$base_url/ss-rust") -s
 }
 
 function install_speedtest() {
     prefix=/usr/local
     manpath=$prefix/share/man/man5
     pkg_info_url='https://raw.githubusercontent.com/teamookla/homebrew-speedtest/master/speedtest.rb'
-    pkg_version="$(curl -sL "$pkg_info_url" | grep 'version \".*\"' | cut -d'"' -f2)"
+    pkg_version="$(curl ${CURL_OPTS} -sL "$pkg_info_url" | grep 'version \".*\"' | cut -d'"' -f2)"
     [ -z "$pkg_version" ] && error "failed to get the latest speedtest-cli versuib"
     pkg_url="https://install.speedtest.net/app/cli/ookla-speedtest-$pkg_version-linux-$(uname -m).tgz"
     pkg_url=${pkg_url//\\/}
@@ -225,7 +225,7 @@ function install_speedtest() {
     tmp_dir=$(mktemp -d -t speedtest-cli-XXXXXXXXXX 2>/dev/null)
     [ -z "$tmp_dir" ] && error "failed to create a temp dir"
     target_pkg="$tmp_dir/$pkg_name"
-    curl -sL "$pkg_url" -o "$target_pkg"
+    curl ${CURL_OPTS} -sL "$pkg_url" -o "$target_pkg"
     [ ! -f "$target_pkg" ] && error "failed to download the package"
     tar -xzf "$target_pkg" -C "$tmp_dir"
     [ ! -f "$tmp_dir/speedtest" ] && error "failed to extract the package"
@@ -258,7 +258,7 @@ function install_pyenv() {
 }
 
 function self_update() {
-    new_script=$(curl -sL "$base_url/im")
+    new_script=$(curl ${CURL_OPTS} -sL "$base_url/im")
     [ -z "$new_script" ] && error "failed to get the latest script"
     script_path=$(readlink -f "$0")
     [ ! -f "$script_path" ] && error "failed to get the script path"
@@ -269,7 +269,7 @@ function self_update() {
 function provision() {
     local user="$1"
     [ -z "$user" ] && error "username is required when provisioning the server"
-    bash <(curl -sL "$base_url/provision") -u "$user" -s
+    bash <(curl ${CURL_OPTS} -sL "$base_url/provision") -u "$user" -s
 }
 
 function reset() {
@@ -279,10 +279,10 @@ function reset() {
     [ -z "$user" ] && error "username is required when reseting the server"
     case "$system" in
         ubuntu)
-            bash <(curl -sL "$base_url/ubuntu") -u "$user"
+            bash <(curl ${CURL_OPTS} -sL "$base_url/ubuntu") -u "$user"
             ;;
         *)
-            bash <(curl -sL "$base_url/debian") -u "$user" --provision
+            bash <(curl ${CURL_OPTS} -sL "$base_url/debian") -u "$user" --provision
             ;;
     esac
 }
@@ -341,7 +341,7 @@ function install_edge_kernel() {
 }
 
 function install_lookbusy() {
-    remote_url=$(curl -sL $lookbusy_base | grep -oP 'href="\K[^"]+.tar.gz' | head -n 1 | sed 's/ //g')
+    remote_url=$(curl ${CURL_OPTS} -sL $lookbusy_base | grep -oP 'href="\K[^"]+.tar.gz' | head -n 1 | sed 's/ //g')
     [ -z "$remote_url" ] && error "failed to get the remote url"
     remote_version=$(echo "$remote_url" | grep -oP 'lookbusy-\K[^"]+.tar.gz' | sed 's/\.tar\.gz//g')
     [ -z "$remote_version" ] && error "failed to get the remote version"
@@ -350,7 +350,7 @@ function install_lookbusy() {
         tmp_dir=$(mktemp -d -t lookbusy-XXXXXXXXXXXXXXXX 2>/dev/null)
         [ -z "$tmp_dir" ] && error "failed to create a temp dir"
         pushd "$tmp_dir" >/dev/null 2>&1 || return 1
-        curl -sL "$lookbusy_base$remote_url" -o lookbusy.tar.gz || error "failed to download the lookbusy package"
+        curl ${CURL_OPTS} -sL "$lookbusy_base$remote_url" -o lookbusy.tar.gz || error "failed to download the lookbusy package"
         tar -xvf lookbusy.tar.gz --strip-components=1 --exclude=.svn || error "failed to extract the lookbusy package"
         ./configure && make && make install
         popd >/dev/null 2>&1 || return 1
@@ -393,7 +393,7 @@ function install_docker() {
     [ -z "$username" ] && {
         warn "no user specified, please add your user to docker group manually"
     }
-    curl -sL "$base_url/docker" | bash
+    curl ${CURL_OPTS} -sL "$base_url/docker" | bash
 
     [ -n "$username" ] && usermod -aG docker "$username"
 }
@@ -404,9 +404,9 @@ function install_socat() {
         error "socat installation failed"
     fi
 
-    curl -sL "$base_url/socat/socat.service" -o /lib/systemd/system/socat.service
-    curl -sL "$base_url/socat/socat" -o /etc/socat && chmod +x /etc/socat
-    curl -sL "$base_url/socat/socatrc" -o /etc/socatrc
+    curl ${CURL_OPTS} -sL "$base_url/socat/socat.service" -o /lib/systemd/system/socat.service
+    curl ${CURL_OPTS} -sL "$base_url/socat/socat" -o /etc/socat && chmod +x /etc/socat
+    curl ${CURL_OPTS} -sL "$base_url/socat/socatrc" -o /etc/socatrc
 
     [ ! -f /etc/socatrc ] && error "socatrc installation failed"
     [ ! -f /etc/socat ] && error "socat installation failed"
@@ -421,11 +421,11 @@ function install_wireguard() {
     info "Installing WireGuard with interface: $interface_name"
     [ -z "$wg_client" ] && {
         info "No WireGuard client specified, installing without client configuration"
-        curl -sL "$base_url/wireguard/install" | bash -s -- --interface "$interface_name"
+        curl ${CURL_OPTS} -sL "$base_url/wireguard/install" | bash -s -- --interface "$interface_name"
         return 0
     }
     info "Installing WireGuard with interface: $interface_name and client: $wg_client"
-    curl -sL "$base_url/wireguard/install" | bash -s -- --interface "$interface_name" --client "$wg_client"
+    curl ${CURL_OPTS} -sL "$base_url/wireguard/install" | bash -s -- --interface "$interface_name" --client "$wg_client"
 }
 
 function install_v2ray() {
@@ -433,7 +433,7 @@ function install_v2ray() {
     shift
     [ -z "$mode" ] && error "v2ray mode is required (--server or --client)"
     info "Installing V2Ray in $mode mode"
-    curl -sL "$base_url/v2ray/install" | bash -s -- "$mode" "$@"
+    curl ${CURL_OPTS} -sL "$base_url/v2ray/install" | bash -s -- "$mode" "$@"
 }
 
 _install_pyenv=false
@@ -471,11 +471,15 @@ v2ray_args=()
 wg_client=()
 username=""
 _host=""
+CURL_OPTS=""
+WGET_OPTS=""
 
 function usage() {
     info "Usage: $(basename "$0") [options]"
     info "Options:"
     info "  -h    | --help                           show this help message and exit"
+    info "  -4    | --ipv4                           force IPv4 for curl/wget"
+    info "  -6    | --ipv6                           force IPv6 for curl/wget"
     info ""
     info "System Information & Status:"
     info "  -d    | --distro                         show the distro"
@@ -488,8 +492,13 @@ function usage() {
     info "  -so   | --socat                          install socat"
     info "  -wg   | --wireguard                      install wireguard"
     info "  -wgc  | --wireguard-client client_name   install wireguard client with client_name"
-    info "  -v2s  | --v2ray-server [options]         install v2ray server"
-    info "  -v2c  | --v2ray-client [options]         install v2ray client"
+    info "  -v2s  | --v2ray-server [options]         install v2ray server (all args after -v2s go to v2ray)"
+    info "  -v2c  | --v2ray-client [options]         install v2ray client (all args after -v2c go to v2ray)"
+    info ""
+    info "  V2Ray Examples:"
+    info "    im -4 -v2s --port 10086                 # server with IPv4 and custom port"
+    info "    im -v2c --address 1.2.3.4 --port 443 --uuid xxx --tun   # client with TUN mode"
+    info "    im -v2c -a server.com -p 443 -u xxx --prefix /opt/v2ray # client with custom prefix"
     info "System Updates & Maintenance:"
     info "  -uu   | --update                         update the server"
     info "  -uuu  | --upgrade                        upgrade the server if needed"
@@ -530,6 +539,16 @@ while [ $# -gt 0 ]; do
         -h | --help)
             usage
             exit 0
+            ;;
+        -4 | --ipv4)
+            CURL_OPTS="-4"
+            WGET_OPTS="-4"
+            shift 1
+            ;;
+        -6 | --ipv6)
+            CURL_OPTS="-6"
+            WGET_OPTS="-6"
+            shift 1
             ;;
         -d | --distro)
             _distro=true
@@ -656,8 +675,8 @@ while [ $# -gt 0 ]; do
             _install_v2ray=true
             v2ray_mode="--server"
             shift
-            # Collect any additional arguments for v2ray
-            while [[ $# -gt 0 && ! "$1" =~ ^- ]]; do
+            # Collect all remaining arguments for v2ray
+            while [[ $# -gt 0 ]]; do
                 v2ray_args+=("$1")
                 shift
             done
@@ -666,8 +685,8 @@ while [ $# -gt 0 ]; do
             _install_v2ray=true
             v2ray_mode="--client"
             shift
-            # Collect any additional arguments for v2ray
-            while [[ $# -gt 0 && ! "$1" =~ ^- ]]; do
+            # Collect all remaining arguments for v2ray
+            while [[ $# -gt 0 ]]; do
                 v2ray_args+=("$1")
                 shift
             done
@@ -681,6 +700,13 @@ while [ $# -gt 0 ]; do
 done
 
 set -- "${POSITIONAL[@]}" # restore positional parameters
+
+# Show IP version if forced
+[ -n "$CURL_OPTS" ] && info "Forcing IP version: $CURL_OPTS for network connections"
+
+# Export for use in child scripts
+export CURL_OPTS
+export WGET_OPTS
 
 action() {
     if [ "$_update" == true ]; then

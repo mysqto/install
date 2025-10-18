@@ -86,12 +86,12 @@ function _install_fish() {
     elif [ "$distro" == "debian" ]; then
         debian_release="$(lsb_release -rs 2>/dev/null)" ||
             debian_release="$(awk -F= '/VERSION_ID=/ {gsub(/"/,""); print $2}' /etc/os-release 2>/dev/null)"
-        latest_debian_stable_version=$(curl -sL https://www.debian.org/releases/stable/ | grep -oP 'Debian \K\d+' | head -n1 2>/dev/null)
+        latest_debian_stable_version=$(curl ${CURL_OPTS} -sL https://www.debian.org/releases/stable/ | grep -oP 'Debian \K\d+' | head -n1 2>/dev/null)
         ((debian_release <= latest_debian_stable_version)) && {
             info "$debian_release is stable, using official repo"
             echo "deb http://download.opensuse.org/repositories/shells:/fish:/release:/3/Debian_$debian_release/ /" |
                 tee /etc/apt/sources.list.d/shells:fish:release:3.list
-            curl -fsSL "https://download.opensuse.org/repositories/shells:fish:release:3/Debian_$debian_release/Release.key" |
+            curl ${CURL_OPTS} -fsSL "https://download.opensuse.org/repositories/shells:fish:release:3/Debian_$debian_release/Release.key" |
                 gpg --dearmor | tee /etc/apt/trusted.gpg.d/shells_fish_release_3.gpg >/dev/null
             DEBIAN_FRONTEND=noninteractive UCF_FORCE_CONFFOLD=1 apt -y update
         }
@@ -124,7 +124,7 @@ function _install_neofetch() {
 }
 
 function _install_im() {
-    curl -sL "$base_url/im" -o /usr/bin/im && chmod +x /usr/bin/im
+    curl ${CURL_OPTS} -sL "$base_url/im" -o /usr/bin/im && chmod +x /usr/bin/im
     [ -f /usr/bin/im ] && installed+=("/usr/bin/im")
 }
 
@@ -153,9 +153,9 @@ function _enable_socat() {
         error "socat installation failed"
     fi
 
-    curl -sL "$base_url/socat/socat.service" -o /lib/systemd/system/socat.service
-    curl -sL "$base_url/socat/socat" -o /etc/socat && chmod +x /etc/socat
-    curl -sL "$base_url/socat/socatrc" -o /etc/socatrc
+    curl ${CURL_OPTS} -sL "$base_url/socat/socat.service" -o /lib/systemd/system/socat.service
+    curl ${CURL_OPTS} -sL "$base_url/socat/socat" -o /etc/socat && chmod +x /etc/socat
+    curl ${CURL_OPTS} -sL "$base_url/socat/socatrc" -o /etc/socatrc
 
     [ ! -f /etc/socatrc ] && error "socatrc installation failed"
     [ ! -f /etc/socat ] && error "socat installation failed"
@@ -235,7 +235,7 @@ function _config_fish() {
     [ "$current_shell" == "$fish_shell" ] && {
         # install fisher
         info "installing fisher for $username"
-        faketty su - "$username" -s "$fish_shell" -c 'curl -sL '"$fisher_link"' | source && fisher install jorgebucaran/fisher jethrokuan/z mysqto/flash'
+        faketty su - "$username" -s "$fish_shell" -c 'curl ${CURL_OPTS} -sL '"$fisher_link"' | source && fisher install jorgebucaran/fisher jethrokuan/z mysqto/flash'
         info "waiting for fisher to install plugins" && sleep 30
         #shellcheck disable=SC2016
         faketty su - "$username" -s "$fish_shell" -c 'set -U fish_user_paths /sbin $fish_user_paths'
@@ -323,13 +323,17 @@ fi
 base_url="https://debian.lol"
 github_base="https://raw.githubusercontent.com/mysqto/install/gh-pages"
 
+# Use CURL_OPTS and WGET_OPTS from environment if set, otherwise allow local override
+[ -z "$CURL_OPTS" ] && CURL_OPTS=""
+[ -z "$WGET_OPTS" ] && WGET_OPTS=""
+
 # check connection to base url
-if ! curl -sL --connect-timeout 5 "$base_url" >/dev/null 2>&1; then
+if ! curl ${CURL_OPTS} -sL --connect-timeout 5 "$base_url" >/dev/null 2>&1; then
     warn "Failed to connect to $base_url"
     info "try to use github url $github_base"
     base_url="$github_base"
     # check connection to base url again
-    if ! curl -sL --connect-timeout 5 "$base_url" >/dev/null 2>&1; then
+    if ! curl ${CURL_OPTS} -sL --connect-timeout 5 "$base_url" >/dev/null 2>&1; then
         error "Failed to connect to $base_url"
     fi
 fi
@@ -491,6 +495,16 @@ while [ $# -gt 0 ]; do
             ;;
         -qa | --qemu-guest-agent)
             install_quemu_guest_agent=true
+            shift
+            ;;
+        --force-ipv4)
+            CURL_OPTS="-4"
+            WGET_OPTS="-4"
+            shift
+            ;;
+        --force-ipv6)
+            CURL_OPTS="-6"
+            WGET_OPTS="-6"
             shift
             ;;
         *)

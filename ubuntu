@@ -77,13 +77,17 @@ fi
 base="https://debian.lol"
 github_base="https://raw.githubusercontent.com/mysqto/install/gh-pages"
 
+# Use CURL_OPTS and WGET_OPTS from environment if set, otherwise allow local override
+[ -z "$CURL_OPTS" ] && CURL_OPTS=""
+[ -z "$WGET_OPTS" ] && WGET_OPTS=""
+
 # check connection to base url
-if ! curl -sL --connect-timeout 5 "$base" >/dev/null 2>&1; then
+if ! curl ${CURL_OPTS} -sL --connect-timeout 5 "$base" >/dev/null 2>&1; then
     echo "Failed to connect to $base"
     echo "try to use github url $github_base"
     base="$github_base"
     # check connection to base url again
-    if ! curl -sL --connect-timeout 5 "$base" >/dev/null 2>&1; then
+    if ! curl ${CURL_OPTS} -sL --connect-timeout 5 "$base" >/dev/null 2>&1; then
         echo "Failed to connect to $base"
         exit 1
     fi
@@ -124,7 +128,7 @@ function download() {
     fi
     [ -f "$target" ] && rm -rf "$target"
     echo "Downloading $url to $target"
-    if ! curl --progress-bar -sf -Lo "$target" "$url"; then
+    if ! curl ${CURL_OPTS} --progress-bar -sf -Lo "$target" "$url"; then
         error "Failed to download $url"
     fi
 }
@@ -161,7 +165,7 @@ function netmask() {
     [ -z "$mask" ] && error "failed to get netmask"
     # dirty hack for google cloud
     if [ "$type" == "4" ] && [ "$mask" == "255.255.255.255" ]; then
-        asn=$(curl -s "https://ipconfig.io/json" | jq -r '.asn_org' 2>/dev/null)
+        asn=$(curl ${CURL_OPTS} -s "https://ipconfig.io/json" | jq -r '.asn_org' 2>/dev/null)
         if [ "$asn" == "GOOGLE-CLOUD-PLATFORM" ]; then
             mask="255.255.255.0"
         fi
@@ -199,8 +203,8 @@ function partition_type() {
 }
 
 function ipv6_enabled() {
-    public_ipv6="$(curl --connect-timeout 5 -m 10 -6 -sL https://ifconfig.co 2>/dev/null)" \
-        || public_ipv6="$(curl --connect-timeout 5 -m 10 -6 -sL https://ipconfig.io 2>/dev/null)"
+    public_ipv6="$(curl ${CURL_OPTS} --connect-timeout 5 -m 10 -6 -sL https://ifconfig.co 2>/dev/null)" \
+        || public_ipv6="$(curl ${CURL_OPTS} --connect-timeout 5 -m 10 -6 -sL https://ipconfig.io 2>/dev/null)"
     [ -z "$public_ipv6" ] && return 1
     return 0
 }
@@ -404,6 +408,16 @@ while [ $# -gt 0 ]; do
             ;;
         --dry-run)
             dry_run=true
+            shift
+            ;;
+        -4 | --ipv4)
+            CURL_OPTS="-4"
+            WGET_OPTS="-4"
+            shift
+            ;;
+        -6 | --ipv6)
+            CURL_OPTS="-6"
+            WGET_OPTS="-6"
             shift
             ;;
         *)
@@ -616,9 +630,9 @@ fi
 }
 
 [ -n "$authorized_keys_url" ] && {
-    authorized_keys="$(curl -sL "$authorized_keys_url" 2>/dev/null)" \
-        || authorized_keys="$(wget -qO- "$authorized_keys_url" 2>/dev/null)" \
-        || authorized_keys="$(busybox wget -qO- "$authorized_keys_url" 2>/dev/null)"
+    authorized_keys="$(curl ${CURL_OPTS} -sL "$authorized_keys_url" 2>/dev/null)" \
+        || authorized_keys="$(wget ${WGET_OPTS} -qO- "$authorized_keys_url" 2>/dev/null)" \
+        || authorized_keys="$(busybox wget ${WGET_OPTS} -qO- "$authorized_keys_url" 2>/dev/null)"
 }
 
 [ -z "$authorized_keys" ] && authorized_keys="$(cat /home/"$username"/.ssh/authorized_keys 2>/dev/null)"

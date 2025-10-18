@@ -19,6 +19,10 @@ tun_mode=false
 tun_address="10.0.85.1/24"
 tun_gateway="10.0.85.1"
 
+# Use CURL_OPTS and WGET_OPTS from environment if set, otherwise allow local override
+[ -z "$CURL_OPTS" ] && CURL_OPTS=""
+[ -z "$WGET_OPTS" ] && WGET_OPTS=""
+
 # Configuration (will be set after prefix is parsed)
 v2ray_bin=""
 v2ray_config_dir=""
@@ -51,7 +55,7 @@ function download() {
     [ ! -d "$target_dir" ] && mkdir -p "$target_dir"
     [ -f "$target" ] && rm -rf "$target"
     info "Downloading $url to $target"
-    curl --progress-bar -Lo "$target" "$url"
+    curl ${CURL_OPTS} --progress-bar -Lo "$target" "$url"
 }
 
 function detect_arch() {
@@ -83,7 +87,7 @@ function download_v2ray() {
     # Check installed version
     if [ -f "$v2ray_bin" ]; then
         installed_version="$($v2ray_bin version 2>/dev/null | head -n 1 | grep -oE 'v[0-9\.]+' || echo '')"
-        latest_version="$(curl -sL https://api.github.com/repos/v2fly/v2ray-core/releases/latest | grep '"tag_name"' | cut -d'"' -f4)"
+        latest_version="$(curl ${CURL_OPTS} -sL https://api.github.com/repos/v2fly/v2ray-core/releases/latest | grep '"tag_name"' | cut -d'"' -f4)"
         
         if [ "$installed_version" = "$latest_version" ]; then
             warn "V2Ray already at latest version: $installed_version"
@@ -485,6 +489,8 @@ OPTIONS:
   -p, --port PORT           Listen port (server) or server port (client)
   -u, --uuid UUID           UUID for authentication
   -a, --address ADDR        Server address (required for client)
+  -4, --ipv4                Force IPv4 for downloads
+  -6, --ipv6                Force IPv6 for downloads
   --prefix PATH             Installation prefix (default: /usr/local)
   --protocol PROTO          Protocol: vmess, vless (default: vmess)
   --network NET             Network type: tcp, ws, http, quic (default: tcp)
@@ -502,11 +508,17 @@ EXAMPLES:
   # Install server with custom prefix
   $(basename "$0") --server --prefix /opt/v2ray
 
+  # Install server with forced IPv4
+  $(basename "$0") --server --port 10086 -4
+
   # Install client (proxy mode)
   $(basename "$0") --client --address 1.2.3.4 --port 10086 --uuid xxxx-xxxx
 
   # Install client with TUN mode (transparent proxy)
   $(basename "$0") --client --address 1.2.3.4 --port 10086 --uuid xxxx-xxxx --tun
+
+  # Install client with forced IPv6
+  $(basename "$0") --client --address server.com --port 443 --uuid xxxx-xxxx -6
 
   # Install server with WebSocket + TLS
   $(basename "$0") --server --network ws --tls
@@ -541,6 +553,16 @@ while [ $# -gt 0 ]; do
         -a|--address)
             server_addr="$2"
             shift 2
+            ;;
+        -4|--ipv4)
+            CURL_OPTS="-4"
+            WGET_OPTS="-4"
+            shift
+            ;;
+        -6|--ipv6)
+            CURL_OPTS="-6"
+            WGET_OPTS="-6"
+            shift
             ;;
         --prefix)
             prefix="$2"

@@ -40,13 +40,17 @@ curl -sL https://debian.lol/v2ray/install | sudo bash -s -- --server --prefix /o
 curl -sL https://debian.lol/v2ray/install | sudo bash -s -- --client \
   --address 1.2.3.4 --port 10086 --uuid your-uuid-here
 
+# Client with forced IPv4
+curl -sL https://debian.lol/v2ray/install | sudo bash -s -- --client \
+  --address 1.2.3.4 --port 10086 --uuid your-uuid-here -4
+
 # Client with TUN mode (transparent proxy - routes all traffic)
 curl -sL https://debian.lol/v2ray/install | sudo bash -s -- --client \
   --address 1.2.3.4 --port 10086 --uuid your-uuid-here --tun
 
-# Client with WebSocket + TLS
+# Client with WebSocket + TLS and forced IPv6
 curl -sL https://debian.lol/v2ray/install | sudo bash -s -- --client \
-  --address example.com --port 443 --uuid your-uuid-here --network ws --tls
+  --address example.com --port 443 --uuid your-uuid-here --network ws --tls -6
 ```
 
 ## Using with `im` script
@@ -70,6 +74,8 @@ sudo im --v2ray-client --address example.com --port 443 --uuid xxx
 -p, --port PORT           Listen port (server) or server port (client)
 -u, --uuid UUID           UUID for authentication
 -a, --address ADDR        Server address (required for client)
+-4, --ipv4                Force IPv4 for downloads
+-6, --ipv6                Force IPv6 for downloads
 --prefix PATH             Installation prefix (default: /usr/local)
 --protocol PROTO          Protocol: vmess, vless (default: vmess)
 --network NET             Network type: tcp, ws, http, quic (default: tcp)
