@@ -1,0 +1,13 @@
+# Test logs
+*.log
+/tmp/
+
+# Editor
+*.swp
+*.swo
+*~
+.DS_Store
+
+# IDE
+.vscode/
+.idea/

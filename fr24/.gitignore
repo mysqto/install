@@ -1,0 +1,18 @@
+# Test logs
+*.log
+/tmp/
+
+# Downloaded files
+*.tgz
+*.tar.gz
+
+# Editor
+*.swp
+*.swo
+*~
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+
