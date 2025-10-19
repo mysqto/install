@@ -16,14 +16,17 @@ Clean installation script for FlightRadar24 ADS-B feeder.
 ### Install via im Script
 
 ```bash
-# Basic installation
+# Basic installation (key optional, can signup later)
+sudo im -fr24
+
+# With sharing key
 sudo im -fr24 --key YOUR_SHARING_KEY
 
-# With location
-sudo im -fr24 --key YOUR_KEY --lat 51.5074 --lon -0.1278 --alt 50
+# With email, key and location
+sudo im -fr24 --key YOUR_KEY --email you@example.com --lat 51.5074 --lon -0.1278 --alt 50
 
 # With IPv4
-sudo im -4 -fr24 --key YOUR_KEY --lat 51.5 --lon -0.1
+sudo im -4 -fr24 --key YOUR_KEY --email you@example.com --lat 51.5 --lon -0.1
 ```
 
 ### Install Directly
@@ -44,8 +47,9 @@ curl -sL https://debian.lol/fr24/install | sudo bash -s -- \
 ## Options
 
 ```
--k, --key KEY             Sharing/FR24 key (required for feeding)
---lat LATITUDE            Receiver latitude
+-k, --key KEY             Sharing/FR24 key (optional, can run signup later)
+-e, --email EMAIL         Email address for FR24 account (optional)
+--lat LATITUDE            Receiver latitude (optional)
 --lon LONGITUDE           Receiver longitude
 --alt ALTITUDE            Receiver altitude in meters
 -r, --receiver TYPE       Receiver type (default: dvbt)

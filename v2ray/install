@@ -16,8 +16,7 @@ security="none"
 tls=false
 ws_path="/v2ray"
 tun_mode=false
-tun_address="10.0.85.1/24"
-tun_gateway="10.0.85.1"
+connection_link=""
 
 # Use CURL_OPTS and WGET_OPTS from environment if set, otherwise allow local override
 [ -z "$CURL_OPTS" ] && CURL_OPTS=""
@@ -28,7 +27,8 @@ v2ray_bin=""
 v2ray_config_dir=""
 v2ray_config_file=""
 v2ray_service_file="/etc/systemd/system/v2ray.service"
-v2ray_download_base="https://github.com/v2fly/v2ray-core/releases/latest/download"
+v2ray_download_base="https://github.com/XTLS/Xray-core/releases/latest/download"
+use_xray=true  # Using Xray-core (V2Ray fork with TUN support)
 
 function info() {
     echo -e "\033[1;32m${*}\033[0m"
@@ -47,6 +47,46 @@ function installed() {
     command -v "$1" >/dev/null 2>&1
 }
 
+function is_port_in_use() {
+    local port="$1"
+    # Check if port is in use by any process
+    if installed ss; then
+        ss -tuln | grep -q ":${port} "
+    elif installed netstat; then
+        netstat -tuln 2>/dev/null | grep -q ":${port} "
+    elif installed lsof; then
+        lsof -i ":${port}" >/dev/null 2>&1
+    else
+        # Can't check, assume not in use
+        return 1
+    fi
+}
+
+function generate_random_port() {
+    local max_attempts=10
+    local attempt=0
+    local port
+    
+    while [ $attempt -lt $max_attempts ]; do
+        # Generate random port between 10000-65535
+        port=$(shuf -i 10000-65535 -n 1 2>/dev/null) || \
+        port=$(awk -v min=10000 -v max=65535 'BEGIN{srand(); print int(min+rand()*(max-min+1))}')
+        
+        # Check if port is in use
+        if ! is_port_in_use "$port"; then
+            echo "$port"
+            return 0
+        fi
+        
+        attempt=$((attempt + 1))
+    done
+    
+    # Fallback to random port if all attempts failed
+    port=$(shuf -i 10000-65535 -n 1 2>/dev/null) || \
+    port=$(awk -v min=10000 -v max=65535 'BEGIN{srand(); print int(min+rand()*(max-min+1))}')
+    echo "$port"
+}
+
 function download() {
     local url="$1"
     local target="$2"
@@ -59,10 +99,12 @@ function download() {
 }
 
 function detect_arch() {
+    # Xray uses different naming
     case $(uname -m) in
         x86_64) echo "64" ;;
         aarch64 | arm64) echo "arm64-v8a" ;;
         armv7*) echo "arm32-v7a" ;;
+        armv6*) echo "arm32-v6" ;;
         *) error "Unsupported architecture: $(uname -m)" ;;
     esac
 }
@@ -78,28 +120,41 @@ function detect_os() {
 function download_v2ray() {
     local arch="$(detect_arch)"
     local os="$(detect_os)"
-    local download_file="v2ray-${os}-${arch}.zip"
+    # Xray naming: Xray-linux-64.zip
+    local download_file="Xray-${os}-${arch}.zip"
     local download_url="${v2ray_download_base}/${download_file}"
+    local binary_name="xray"
     
     # Ensure directories exist
     [ ! -d "$(dirname "$v2ray_bin")" ] && mkdir -p "$(dirname "$v2ray_bin")"
     
     # Check installed version
-    if [ -f "$v2ray_bin" ]; then
-        installed_version="$($v2ray_bin version 2>/dev/null | head -n 1 | grep -oE 'v[0-9\.]+' || echo '')"
-        latest_version="$(curl ${CURL_OPTS} -sL https://api.github.com/repos/v2fly/v2ray-core/releases/latest | grep '"tag_name"' | cut -d'"' -f4)"
+    if [ -f "$v2ray_bin" ] && [ -x "$v2ray_bin" ]; then
+        # Extract version from "Xray 25.10.15" format (year.month.day)
+        installed_version="$($v2ray_bin version 2>/dev/null | head -n 1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
         
-        if [ "$installed_version" = "$latest_version" ]; then
-            warn "V2Ray already at latest version: $installed_version"
-            return 0
+        if [ -n "$installed_version" ]; then
+            # Xray uses v25.10.15 format in tags
+            installed_version="v${installed_version}"
+            latest_version="$(curl ${CURL_OPTS} -sL https://api.github.com/repos/XTLS/Xray-core/releases/latest 2>/dev/null | grep '"tag_name"' | head -1 | cut -d'"' -f4)"
+            
+            if [ -z "$latest_version" ]; then
+                warn "Failed to get latest version, will reinstall"
+            elif [ "$installed_version" = "$latest_version" ]; then
+                warn "Xray already at latest version: $installed_version"
+                return 0
+            else
+                info "Updating Xray from $installed_version to $latest_version"
+            fi
+        else
+            info "Xray binary found but version unknown, will reinstall"
         fi
-        info "Updating V2Ray from $installed_version to $latest_version"
     fi
     
     local wd=$(mktemp -d)
     pushd "$wd" >/dev/null 2>&1 || exit
     
-    download "$download_url" "$download_file" || error "Failed to download V2Ray"
+    download "$download_url" "$download_file" || error "Failed to download Xray"
     
     # Install unzip if not available
     if ! installed unzip; then
@@ -112,11 +167,12 @@ function download_v2ray() {
         fi
     fi
     
-    unzip -o "$download_file" || error "Failed to extract V2Ray"
+    unzip -o "$download_file" || error "Failed to extract Xray"
     
-    # Install binaries
-    [ -f "v2ray" ] && mv v2ray "$v2ray_bin" && chmod +x "$v2ray_bin"
-    [ ! -f "$v2ray_bin" ] && error "Failed to install V2Ray binary"
+    # Install binaries (Xray uses lowercase 'xray')
+    [ -f "xray" ] && mv xray "$v2ray_bin" && chmod +x "$v2ray_bin"
+    [ -f "Xray" ] && mv Xray "$v2ray_bin" && chmod +x "$v2ray_bin"
+    [ ! -f "$v2ray_bin" ] && error "Failed to install Xray binary"
     
     # Install data files (geoip.dat, geosite.dat) - required for routing
     local data_dir="$(dirname "$v2ray_bin")"
@@ -124,13 +180,14 @@ function download_v2ray() {
         [ -f "$dat_file" ] && cp "$dat_file" "$data_dir/" 2>/dev/null
     done
     
-    info "V2Ray data files installed to: $data_dir"
+    info "Xray data files installed to: $data_dir"
     
     popd >/dev/null 2>&1 || exit
     rm -rf "$wd"
     
-    installed_version="$($v2ray_bin version 2>/dev/null | head -n 1 | grep -oE 'v[0-9\.]+' || echo '')"
-    info "V2Ray installed successfully: $installed_version"
+    installed_version="$($v2ray_bin version 2>/dev/null | head -n 1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
+    [ -n "$installed_version" ] && installed_version="v${installed_version}"
+    info "Xray installed successfully: ${installed_version:-unknown}"
     info "Installation prefix: $prefix"
 }
 
@@ -142,6 +199,78 @@ function generate_uuid() {
         printf '%08x-%04x-%04x-%04x-%012x' \
             $RANDOM$RANDOM $RANDOM $RANDOM $RANDOM $RANDOM$RANDOM$RANDOM
     fi
+}
+
+function download_goxray_tun() {
+    local goxray_bin="$prefix/bin/goxray-tun"
+    
+    # Check installed version
+    if [ -f "$goxray_bin" ] && [ -x "$goxray_bin" ]; then
+        # goxray-tun has -v flag for version
+        installed_goxray_version="$($goxray_bin -v 2>/dev/null | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
+        if [ -n "$installed_goxray_version" ]; then
+            latest_goxray_version="$(curl ${CURL_OPTS} -sL https://api.github.com/repos/goxray/tun/releases/latest 2>/dev/null | grep '"tag_name"' | head -1 | cut -d'"' -f4)"
+            
+            if [ "$installed_goxray_version" = "$latest_goxray_version" ]; then
+                info "goxray-tun already at latest version: $installed_goxray_version"
+                return 0
+            else
+                info "Updating goxray-tun from $installed_goxray_version to $latest_goxray_version"
+            fi
+        else
+            info "goxray-tun already installed at $goxray_bin (version unknown)"
+            info "To update, delete and re-run: rm $goxray_bin"
+            return 0
+        fi
+    fi
+    
+    info "Downloading goxray/tun client for TUN mode..."
+    
+    # Detect architecture - goxray uses simple naming
+    local arch_suffix=""
+    case $(uname -m) in
+        x86_64) arch_suffix="amd64" ;;
+        aarch64 | arm64) arch_suffix="arm64" ;;
+        armv7*) arch_suffix="armv7" ;;
+        *) error "Unsupported architecture for goxray/tun: $(uname -m)" ;;
+    esac
+    
+    local os_name=$(uname -s | tr '[:upper:]' '[:lower:]')
+    
+    # goxray/tun naming: goxray_cli_linux_arm64
+    local binary_name="goxray_cli_${os_name}_${arch_suffix}"
+    local download_url="https://github.com/goxray/tun/releases/latest/download/${binary_name}"
+    
+    local wd=$(mktemp -d)
+    pushd "$wd" >/dev/null 2>&1 || exit
+    
+    info "Trying to download: $binary_name"
+    
+    # Try to download
+    if ! curl ${CURL_OPTS} -sL -f "$download_url" -o "$binary_name" 2>/dev/null; then
+        warn "Failed to download from $download_url"
+        warn "goxray/tun may not have pre-built binaries for your architecture"
+        warn "Available at: https://github.com/goxray/tun/releases"
+        popd >/dev/null 2>&1
+        rm -rf "$wd"
+        return 1
+    fi
+    
+    # Install binary
+    mv "$binary_name" "$goxray_bin" && chmod +x "$goxray_bin"
+    [ ! -f "$goxray_bin" ] && error "Failed to install goxray/tun binary"
+    
+    # Set capabilities for non-root usage
+    if installed setcap; then
+        setcap cap_net_raw,cap_net_admin,cap_net_bind_service+eip "$goxray_bin" 2>/dev/null || \
+            warn "Failed to set capabilities, will need sudo to run"
+    fi
+    
+    popd >/dev/null 2>&1 || exit
+    rm -rf "$wd"
+    
+    goxray_version="$($goxray_bin -v 2>/dev/null | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
+    info "goxray/tun installed: $goxray_bin ${goxray_version:+(version $goxray_version)}"
 }
 
 function create_server_config() {
@@ -225,6 +354,17 @@ EOF
     
     chmod 644 "$v2ray_config_file"
     info "Server configuration created: $v2ray_config_file"
+    
+    # Validate config
+    if [ -f "$v2ray_bin" ] && [ -x "$v2ray_bin" ]; then
+        info "Validating configuration..."
+        if $v2ray_bin -test -config "$v2ray_config_file" >/dev/null 2>&1; then
+            info "✓ Configuration is valid"
+        else
+            error_msg="$($v2ray_bin -test -config "$v2ray_config_file" 2>&1)"
+            error "Configuration validation failed:\n$error_msg"
+        fi
+    fi
 }
 
 function create_client_config() {
@@ -280,31 +420,39 @@ function create_client_config() {
     }'
     fi
     
-    # Configure inbound based on TUN mode or proxy mode
-    local inbound_config=""
-    if [ "$tun_mode" = true ]; then
-        info "Configuring TUN mode (transparent proxy)"
-        inbound_config='{
-      "tag": "tun-in",
-      "protocol": "dokodemo-door",
-      "settings": {
-        "network": "tcp,udp",
-        "followRedirect": true
-      }
-    },
-    {
-      "tag": "tun",
-      "protocol": "tun",
-      "settings": {
-        "address": "'$tun_address'",
-        "gateway": "'$tun_gateway'",
-        "mtu": 1500,
-        "name": "v2ray-tun"
-      }
-    }'
+    # Try to preserve ports from existing config
+    local socks_port=1080
+    local http_port=1081
+    
+    if [ -f "$v2ray_config_file" ]; then
+        # Extract existing ports
+        local existing_socks=$(grep -B2 '"protocol": "socks"' "$v2ray_config_file" 2>/dev/null | grep -oE '"port": [0-9]+' | awk '{print $2}')
+        local existing_http=$(grep -B2 '"protocol": "http"' "$v2ray_config_file" 2>/dev/null | grep -oE '"port": [0-9]+' | awk '{print $2}' | tail -1)
+        
+        if [ -n "$existing_socks" ]; then
+            socks_port=$existing_socks
+            info "Preserving existing SOCKS5 port: $socks_port"
+        fi
+        
+        if [ -n "$existing_http" ]; then
+            http_port=$existing_http
+            info "Preserving existing HTTP port: $http_port"
+        fi
     else
-        inbound_config='{
-      "port": 1080,
+        # New installation - check and use alternative ports if default ports are in use
+        if is_port_in_use 1080; then
+            socks_port=$(generate_random_port)
+            info "Port 1080 in use, using port $socks_port for SOCKS5 proxy"
+        fi
+        
+        if is_port_in_use 1081; then
+            http_port=$(generate_random_port)
+            info "Port 1081 in use, using port $http_port for HTTP proxy"
+        fi
+    fi
+    
+    local inbound_config='{
+      "port": '$socks_port',
       "protocol": "socks",
       "settings": {
         "auth": "noauth",
@@ -312,11 +460,10 @@ function create_client_config() {
       }
     },
     {
-      "port": 1081,
+      "port": '$http_port',
       "protocol": "http",
       "settings": {}
     }'
-    fi
     
     # Check if geoip.dat exists for routing rules
     local routing_config=""
@@ -374,6 +521,17 @@ EOF
     
     chmod 644 "$v2ray_config_file"
     info "Client configuration created: $v2ray_config_file"
+    
+    # Validate config
+    if [ -f "$v2ray_bin" ] && [ -x "$v2ray_bin" ]; then
+        info "Validating configuration..."
+        if $v2ray_bin -test -config "$v2ray_config_file" >/dev/null 2>&1; then
+            info "✓ Configuration is valid"
+        else
+            error_msg="$($v2ray_bin -test -config "$v2ray_config_file" 2>&1)"
+            error "Configuration validation failed:\n$error_msg"
+        fi
+    fi
 }
 
 function create_systemd_service() {
@@ -386,8 +544,8 @@ function create_systemd_service() {
     
     cat > "$v2ray_service_file" <<EOF
 [Unit]
-Description=V2Ray Service
-Documentation=https://www.v2fly.org/
+Description=Xray Service (V2Ray Enhanced)
+Documentation=https://xtls.github.io/
 After=network.target nss-lookup.target
 
 [Service]
@@ -436,43 +594,63 @@ function start_service() {
     fi
 }
 
+function get_public_ip() {
+    # Try multiple methods to get public IP
+    local public_ip=""
+    
+    # Method 1: ipinfo.io
+    public_ip=$(curl ${CURL_OPTS} -s --connect-timeout 5 ipinfo.io/ip 2>/dev/null)
+    [ -n "$public_ip" ] && echo "$public_ip" && return 0
+    
+    # Method 2: ifconfig.me
+    public_ip=$(curl ${CURL_OPTS} -s --connect-timeout 5 ifconfig.me 2>/dev/null)
+    [ -n "$public_ip" ] && echo "$public_ip" && return 0
+    
+    # Method 3: icanhazip.com
+    public_ip=$(curl ${CURL_OPTS} -s --connect-timeout 5 icanhazip.com 2>/dev/null | tr -d '\n')
+    [ -n "$public_ip" ] && echo "$public_ip" && return 0
+    
+    # Fallback
+    echo "YOUR_SERVER_IP"
+}
+
 function display_config() {
     info "======================================================================"
     if [ "$is_server" = true ]; then
-        info "V2Ray Server Configuration:"
+        info "Xray Server Configuration:"
         info "  Protocol: $protocol"
         info "  Port: $port"
         info "  UUID: $uuid"
         info "  Network: $network"
         info "  Security: $([ "$tls" = true ] && echo "TLS" || echo "None")"
+        
+        # Get public IP
+        local server_ip=$(get_public_ip)
+        [ "$server_ip" != "YOUR_SERVER_IP" ] && info "  Public IP: $server_ip"
+        
         info ""
         info "Client connection string (VMess):"
         if installed base64; then
-            local vmess_json="{\"v\":\"2\",\"ps\":\"v2ray-server\",\"add\":\"YOUR_SERVER_IP\",\"port\":\"$port\",\"id\":\"$uuid\",\"aid\":\"0\",\"net\":\"$network\",\"type\":\"none\",\"host\":\"\",\"path\":\"\",\"tls\":\"$([ "$tls" = true ] && echo "tls" || echo "")\"}"
+            local vmess_json="{\"v\":\"2\",\"ps\":\"xray-server\",\"add\":\"$server_ip\",\"port\":\"$port\",\"id\":\"$uuid\",\"aid\":\"0\",\"net\":\"$network\",\"type\":\"none\",\"host\":\"\",\"path\":\"\",\"tls\":\"$([ "$tls" = true ] && echo "tls" || echo "")\"}"
             local vmess_link="vmess://$(echo -n "$vmess_json" | base64 -w 0 2>/dev/null || echo -n "$vmess_json" | base64)"
             info "  $vmess_link"
+            [ "$server_ip" = "YOUR_SERVER_IP" ] && warn "  (Replace YOUR_SERVER_IP with actual server IP)"
         else
             info "  Install 'base64' to generate VMess link"
         fi
     else
-        info "V2Ray Client Configuration:"
+        info "Xray Client Configuration:"
         info "  Server: $server_addr:$port"
         info "  Protocol: $protocol"
         info "  UUID: $uuid"
         info "  Network: $network"
-        if [ "$tun_mode" = true ]; then
-            info "  Mode: TUN (Transparent Proxy)"
-            info "  TUN Interface: v2ray-tun"
-            info "  TUN Address: $tun_address"
-            info "  TUN Gateway: $tun_gateway"
-            info ""
-            warn "  Note: TUN mode requires CAP_NET_ADMIN capability"
-            warn "  Run with: sudo $v2ray_bin run -config $v2ray_config_file"
-        else
-            info "  Mode: Proxy"
-            info "  SOCKS5 Proxy: 127.0.0.1:1080"
-            info "  HTTP Proxy: 127.0.0.1:1081"
-        fi
+        # Extract actual ports from config file
+        local socks_port=$(grep -B2 '"protocol": "socks"' "$v2ray_config_file" 2>/dev/null | grep -oE '"port": [0-9]+' | awk '{print $2}')
+        local http_port=$(grep -B2 '"protocol": "http"' "$v2ray_config_file" 2>/dev/null | grep -oE '"port": [0-9]+' | awk '{print $2}' | tail -1)
+        socks_port=${socks_port:-1080}
+        http_port=${http_port:-1081}
+        info "  SOCKS5 Proxy: 127.0.0.1:$socks_port"
+        info "  HTTP Proxy: 127.0.0.1:$http_port"
     fi
     info "======================================================================"
 }
@@ -481,7 +659,7 @@ function usage() {
     cat <<EOF
 Usage: $(basename "$0") [OPTIONS]
 
-Install and configure V2Ray client or server
+Install and configure Xray (V2Ray enhanced fork) client or server
 
 OPTIONS:
   -s, --server              Install as server
@@ -496,10 +674,12 @@ OPTIONS:
   --network NET             Network type: tcp, ws, http, quic (default: tcp)
   --tls                     Enable TLS
   --ws-path PATH            WebSocket path (default: /v2ray)
-  --tun                     Enable TUN mode for client (transparent proxy)
-  --tun-address ADDR        TUN interface address (default: 10.0.85.1/24)
-  --tun-gateway GW          TUN gateway address (default: 10.0.85.1)
+  --tun                     Install goxray/tun for TUN mode (transparent VPN)
+  --link LINK               Connection link for TUN mode (vmess://... or vless://...)
   -h, --help                Show this help message
+
+NOTE: Using Xray-core (enhanced V2Ray fork) for better performance
+      TUN mode uses goxray/tun client: https://github.com/goxray/tun
 
 EXAMPLES:
   # Install server
@@ -514,8 +694,11 @@ EXAMPLES:
   # Install client (proxy mode)
   $(basename "$0") --client --address 1.2.3.4 --port 10086 --uuid xxxx-xxxx
 
-  # Install client with TUN mode (transparent proxy)
-  $(basename "$0") --client --address 1.2.3.4 --port 10086 --uuid xxxx-xxxx --tun
+  # Install TUN mode client with connection link
+  $(basename "$0") --client --tun --link 'vmess://your-connection-link'
+
+  # Install TUN mode and generate link from server details
+  $(basename "$0") --client --address server.com --port 443 --uuid xxxx-xxxx --tun
 
   # Install client with forced IPv6
   $(basename "$0") --client --address server.com --port 443 --uuid xxxx-xxxx -6
@@ -588,12 +771,8 @@ while [ $# -gt 0 ]; do
             tun_mode=true
             shift
             ;;
-        --tun-address)
-            tun_address="$2"
-            shift 2
-            ;;
-        --tun-gateway)
-            tun_gateway="$2"
+        --link)
+            connection_link="$2"
             shift 2
             ;;
         *)
@@ -630,20 +809,146 @@ elif installed pacman; then
 fi
 
 # Main installation
-info "Installing V2Ray..."
+info "Installing Xray..."
 download_v2ray
 
 if [ "$is_server" = true ]; then
-    info "Configuring V2Ray server..."
+    info "Configuring Xray server..."
     create_server_config
-else
-    info "Configuring V2Ray client..."
-    create_client_config
-fi
+    create_systemd_service
+    start_service
+    display_config
+elif [ "$tun_mode" = true ]; then
+    info "TUN mode requested - installing goxray/tun client..."
+    download_goxray_tun
+    
+    # Create config file for goxray/tun
+    [ ! -d "$v2ray_config_dir" ] && mkdir -p "$v2ray_config_dir"
+    goxray_config="$v2ray_config_dir/goxray-tun.conf"
+    
+    # Use provided link, or try to preserve existing, or generate from server details
+    if [ -z "$connection_link" ] && [ -f "$goxray_config" ]; then
+        connection_link=$(grep -oE '^(vmess|vless)://.*' "$goxray_config" 2>/dev/null | head -1)
+        [ -n "$connection_link" ] && info "Preserving existing connection link"
+    fi
+    
+    # Generate connection link if we have server details and no link provided
+    if [ -z "$connection_link" ] && [ -n "$server_addr" ] && [ -n "$uuid" ] && [ -n "$port" ]; then
+        # Generate VMess link
+        if installed base64; then
+            vmess_json="{\"v\":\"2\",\"ps\":\"xray-tun\",\"add\":\"$server_addr\",\"port\":\"$port\",\"id\":\"$uuid\",\"aid\":\"0\",\"scy\":\"auto\",\"net\":\"$network\",\"type\":\"none\",\"host\":\"\",\"path\":\"\",\"tls\":\"$([ "$tls" = true ] && echo "tls" || echo "")\",\"sni\":\"\",\"alpn\":\"\"}"
+            connection_link="vmess://$(echo -n "$vmess_json" | base64 -w 0 2>/dev/null || echo -n "$vmess_json" | base64)"
+            info "Generated connection link from server details"
+        fi
+    fi
+    
+    # Create config file as environment file for systemd
+    if [ -n "$connection_link" ]; then
+        cat > "$goxray_config" <<EOF
+CONNECTION_LINK=$connection_link
+EOF
+        chmod 600 "$goxray_config"
+        info "Configuration created: $goxray_config"
+        info "Connection link configured"
+    else
+        # Create empty placeholder
+        cat > "$goxray_config" <<EOF
+# Add your connection link in environment variable format
+# CONNECTION_LINK=vmess://your-link-here
+# CONNECTION_LINK=vless://your-link-here
+CONNECTION_LINK=
+EOF
+        chmod 600 "$goxray_config"
+        warn "Configuration created: $goxray_config"
+        warn "Connection link NOT set - you need to:"
+        warn "  1. Edit $goxray_config"
+        warn "  2. Set CONNECTION_LINK=vmess://... or vless://..."
+        warn "  3. Or re-run with: --link 'your-link'"
+        warn "  4. Or provide: --address SERVER --port PORT --uuid UUID"
+    fi
+    
+    # Create systemd service for goxray/tun
+    if installed systemctl; then
+        goxray_service="/etc/systemd/system/goxray-tun.service"
+        
+        cat > "$goxray_service" <<EOF
+[Unit]
+Description=goxray TUN VPN Client
+Documentation=https://github.com/goxray/tun
+After=network.target
 
-create_systemd_service
-start_service
-display_config
+[Service]
+Type=simple
+User=root
+EnvironmentFile=$goxray_config
+ExecStart=$prefix/bin/goxray-tun \${CONNECTION_LINK}
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target
+EOF
+        
+        systemctl daemon-reload
+        systemctl enable goxray-tun
+        info "goxray-tun service created and enabled"
+        
+        if [ -n "$connection_link" ]; then
+            info "Starting goxray-tun service..."
+            systemctl start goxray-tun
+            sleep 2
+            if systemctl is-active --quiet goxray-tun; then
+                info "✓ goxray-tun service is running"
+            else
+                warn "goxray-tun service failed to start (may need valid connection link)"
+            fi
+        else
+            warn "No connection link configured. Update $goxray_config and run:"
+            warn "  systemctl start goxray-tun"
+        fi
+    else
+        warn "systemctl not found, skipping service creation"
+    fi
+    
+    # Display configuration
+    info "======================================================================"
+    info "Xray TUN Mode Installation Complete!"
+    info "Installation prefix: $prefix"
+    info "Xray binary: $v2ray_bin"
+    info "TUN client: $prefix/bin/goxray-tun"
+    info "Config file: $goxray_config"
+    
+    if [ -n "$connection_link" ]; then
+        info "Connection link: Configured"
+        info ""
+        info "Service management:"
+        info "  systemctl status goxray-tun"
+        info "  systemctl start goxray-tun"
+        info "  systemctl stop goxray-tun"
+        info "  journalctl -u goxray-tun -f"
+    else
+        info "Connection link: NOT SET"
+        info ""
+        warn "To configure:"
+        warn "  1. Edit: $goxray_config"
+        warn "  2. Add your connection link (vmess://... or vless://...)"
+        warn "  3. Start: systemctl start goxray-tun"
+    fi
+    
+    info ""
+    info "Manual usage:"
+    info "  sudo $prefix/bin/goxray-tun 'vmess://your-link'"
+    info ""
+    info "Documentation: https://github.com/goxray/tun"
+    info "======================================================================"
+else
+    info "Configuring Xray client..."
+    create_client_config
+    create_systemd_service
+    start_service
+    display_config
+fi
 
 info ""
 info "Installation completed successfully!"
@@ -655,7 +960,7 @@ if installed systemctl; then
     info "Service status: systemctl status v2ray"
     info "View logs: journalctl -u v2ray -f"
 else
-    info "Start V2Ray: $v2ray_bin run -config $v2ray_config_file"
-    info "Test config: $v2ray_bin test -config $v2ray_config_file"
+    info "Start Xray: $v2ray_bin run -config $v2ray_config_file"
+    info "Test config: $v2ray_bin -test -config $v2ray_config_file"
 fi
 

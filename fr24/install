@@ -6,6 +6,7 @@
 # Default values
 prefix="/usr/local"
 sharing_key=""
+email=""
 latitude=""
 longitude=""
 altitude=""
@@ -131,9 +132,10 @@ function download_fr24feed() {
 function create_config() {
     [ ! -d "$fr24_config_dir" ] && mkdir -p "$fr24_config_dir"
     
-    # Generate random sharing key if not provided
-    if [ -z "$sharing_key" ] && [ -f "$fr24_config_file" ]; then
-        sharing_key=$(grep -oE 'fr24key="[^"]+"' "$fr24_config_file" | cut -d'"' -f2)
+    # Try to read from existing config if values not provided
+    if [ -f "$fr24_config_file" ]; then
+        [ -z "$sharing_key" ] && sharing_key=$(grep -oE 'fr24key="[^"]+"' "$fr24_config_file" | cut -d'"' -f2)
+        [ -z "$email" ] && email=$(grep -oE 'email="[^"]+"' "$fr24_config_file" | cut -d'"' -f2)
     fi
     
     cat > "$fr24_config_file" <<EOF
@@ -150,6 +152,11 @@ logpath="/var/log/fr24feed"
 mlat="yes"
 mlat-without-gps="yes"
 EOF
+
+    # Add email if provided
+    if [ -n "$email" ]; then
+        echo "email=\"$email\"" >> "$fr24_config_file"
+    fi
 
     # Add location if provided
     if [ -n "$latitude" ] && [ -n "$longitude" ]; then
@@ -245,6 +252,10 @@ function display_config() {
         warn "  Sharing key: NOT SET - run signup!"
     fi
     
+    if [ -n "$email" ]; then
+        info "  Email: $email"
+    fi
+    
     if [ -n "$latitude" ] && [ -n "$longitude" ]; then
         info "  Location: $latitude, $longitude"
         [ -n "$altitude" ] && info "  Altitude: ${altitude}m"
@@ -274,7 +285,8 @@ Usage: $(basename "$0") [OPTIONS]
 Install and configure FlightRadar24 feeder
 
 OPTIONS:
-  -k, --key KEY             Sharing/FR24 key (required for feeding)
+  -k, --key KEY             Sharing/FR24 key (optional, can run signup later)
+  -e, --email EMAIL         Email address for FR24 account (optional)
   --lat LATITUDE            Receiver latitude
   --lon LONGITUDE           Receiver longitude
   --alt ALTITUDE            Receiver altitude in meters
@@ -287,17 +299,21 @@ OPTIONS:
   -h, --help                Show this help message
 
 EXAMPLES:
-  # Install with sharing key and location
-  $(basename "$0") --key YOUR_KEY --lat 51.5074 --lon -0.1278 --alt 50
+  # Install with sharing key, email, and location
+  $(basename "$0") --key YOUR_KEY --email you@example.com --lat 51.5074 --lon -0.1278 --alt 50
 
   # Install with custom prefix
   $(basename "$0") --prefix /opt/fr24 --key YOUR_KEY
 
-  # Install and run signup later
+  # Install without key (run signup later)
   $(basename "$0")
+  # Then run: /usr/local/bin/fr24feed --signup
 
   # Install with forced IPv4
   $(basename "$0") --key YOUR_KEY -4
+
+  # Install with just email (get key later)
+  $(basename "$0") --email you@example.com
 
 For more info: https://www.flightradar24.com/share-your-data
 
@@ -314,6 +330,10 @@ while [ $# -gt 0 ]; do
             ;;
         -k|--key)
             sharing_key="$2"
+            shift 2
+            ;;
+        -e|--email)
+            email="$2"
             shift 2
             ;;
         --lat|--latitude)

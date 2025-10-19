@@ -36,17 +36,13 @@ curl -sL https://debian.lol/v2ray/install | sudo bash -s -- --server --prefix /o
 ### Install Client
 
 ```bash
-# Basic client installation (proxy mode)
+# Basic client installation
 curl -sL https://debian.lol/v2ray/install | sudo bash -s -- --client \
   --address 1.2.3.4 --port 10086 --uuid your-uuid-here
 
 # Client with forced IPv4
 curl -sL https://debian.lol/v2ray/install | sudo bash -s -- --client \
   --address 1.2.3.4 --port 10086 --uuid your-uuid-here -4
-
-# Client with TUN mode (transparent proxy - routes all traffic)
-curl -sL https://debian.lol/v2ray/install | sudo bash -s -- --client \
-  --address 1.2.3.4 --port 10086 --uuid your-uuid-here --tun
 
 # Client with WebSocket + TLS and forced IPv6
 curl -sL https://debian.lol/v2ray/install | sudo bash -s -- --client \
@@ -113,26 +109,37 @@ systemctl enable v2ray
 systemctl disable v2ray
 ```
 
-## Client Modes
+## Client Mode
 
-### Proxy Mode (Default)
-- SOCKS5 proxy: `127.0.0.1:1080`
-- HTTP proxy: `127.0.0.1:1081`
+V2Ray client provides SOCKS5 and HTTP proxy:
+- **SOCKS5 proxy**: `127.0.0.1:1080` (auto-assigned if port occupied)
+- **HTTP proxy**: `127.0.0.1:1081` (auto-assigned if port occupied)
 - Configure applications to use these proxies
 
-### TUN Mode (Transparent Proxy)
-- Creates a virtual network interface
-- Routes all system traffic through V2Ray automatically
-- No application configuration needed
-- Requires elevated privileges (root/sudo)
-- Ideal for system-wide VPN-like behavior
+### For Transparent Proxy / System-wide VPN
+
+V2Ray 5.x does not have native TUN support. For transparent proxy functionality, consider:
+
+1. **WireGuard** - Native VPN with TUN/kernel support (recommended)
+   ```bash
+   sudo im --wireguard
+   ```
+
+2. **[Xray-core](https://github.com/XTLS/Xray-core)** - V2Ray fork with TUN support
+   - Enhanced V2Ray with additional features
+   - Has native TUN protocol support
+
+3. **tun2socks** - Use with V2Ray SOCKS5
+   - Creates TUN interface
+   - Routes through V2Ray's SOCKS5 proxy
+   - More complex setup
 
 ## Client Configuration
 
 After server installation, you'll receive:
 - Server port and UUID
 - VMess connection link (for easy import to clients)
-- Connection details for both proxy and TUN modes
+- SOCKS5 and HTTP proxy ports
 
 ## Examples
 
@@ -214,7 +221,7 @@ journalctl -u v2ray -n 50
 ### Test configuration
 
 ```bash
-/usr/local/bin/v2ray test -config /usr/local/etc/v2ray/config.json
+/usr/local/bin/v2ray -test -config /usr/local/etc/v2ray/config.json
 ```
 
 ### Reinstall/Update
