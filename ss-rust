@@ -47,7 +47,7 @@ fi
 
 # install dependencies
 if installed apt; then
-    apt-get update && sudo apt install --no-install-recommends build-essential autoconf libtool libssl-dev libpcre3-dev libev-dev automake asciidoc xmlto git pwgen -y
+    apt-get update && sudo apt install --no-install-recommends build-essential autoconf libtool libssl-dev libpcre2-dev libev-dev automake asciidoc xmlto git pwgen -y
 elif installed yum; then
     yum update && yum install -y git gcc make autoconf libtool openssl-devel pcre-devel libev-devel asciidoc xmlto automake pwgen
 elif installed dnf; then

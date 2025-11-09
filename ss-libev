@@ -121,7 +121,7 @@ wd=$(mktemp -t "ss-libev.XXXXXXXXXXXXXXXX" -d 2>/dev/null)
 pushd "$wd" >>/dev/null 2>&1 || exit
 
 sudo apt -y update && DEBIAN_FRONTEND=noninteractive UCF_FORCE_CONFFOLD=1 sudo -E apt -y --no-install-recommends install gettext \
-    build-essential autoconf libtool libpcre3-dev asciidoc xmlto libev-dev libc-ares-dev automake libmbedtls-dev libsodium-dev pkg-config
+    build-essential autoconf libtool libpcre2-dev asciidoc xmlto libev-dev libc-ares-dev automake libmbedtls-dev libsodium-dev pkg-config
 
 # Installation of Libsodium
 libsodium_directory="libsodium-$libsodium_version"
