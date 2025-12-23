@@ -1,0 +1,339 @@
+#!/usr/bin/env bash
+
+# Check root privileges
+[ $EUID -ne 0 ] && echo "Error: This script must be run as root!" && exit 1
+
+# Use CURL_OPTS and WGET_OPTS from environment if set
+[ -z "$CURL_OPTS" ] && CURL_OPTS=""
+[ -z "$WGET_OPTS" ] && WGET_OPTS=""
+
+# PiAware repository configuration
+PIAWARE_REPO_URL="https://flightaware.com/adsb/piaware/files/packages"
+PIAWARE_REPO_DEB_URL="https://www.flightaware.com/adsb/piaware/files/packages/pool/piaware/f/flightaware-apt-repository/flightaware-apt-repository_1.2_all.deb"
+PIAWARE_REPO_FILE="/etc/apt/sources.list.d/piaware.list"
+PIAWARE_KEYRING="/usr/share/keyrings/flightaware-archive-keyring.gpg"
+TEMP_DIR="/tmp/piaware-setup-$$"
+
+function info() {
+    echo -e "\033[1;32m${*}\033[0m"
+}
+
+function warn() {
+    echo -e "\033[1;33m${*}\033[0m"
+}
+
+function error() {
+    echo -e "\033[1;31m${*}\033[0m"
+    exit 1
+}
+
+function installed() {
+    command -v "$1" >/dev/null 2>&1
+}
+
+function detect_distro() {
+    if [ -f /etc/os-release ]; then
+        . /etc/os-release
+        echo "$ID"
+    elif [ -f /etc/debian_version ]; then
+        echo "debian"
+    elif [ -f /etc/redhat-release ]; then
+        echo "rhel"
+    else
+        echo "unknown"
+    fi
+}
+
+function detect_debian_codename() {
+    if [ -f /etc/os-release ]; then
+        . /etc/os-release
+        if [ -n "$VERSION_CODENAME" ]; then
+            echo "$VERSION_CODENAME"
+        elif [ -n "$VERSION_ID" ]; then
+            case "$VERSION_ID" in
+                "12") echo "bookworm" ;;
+                "11") echo "bullseye" ;;
+                "10") echo "buster" ;;
+                "9") echo "stretch" ;;
+                *) echo "buster" ;; # Default fallback
+            esac
+        else
+            echo "buster" # Default fallback
+        fi
+    elif [ -f /etc/debian_version ]; then
+        local version=$(cat /etc/debian_version | cut -d. -f1)
+        case "$version" in
+            "12") echo "bookworm" ;;
+            "11") echo "bullseye" ;;
+            "10") echo "buster" ;;
+            "9") echo "stretch" ;;
+            *) echo "buster" ;;
+        esac
+    else
+        echo "buster" # Default fallback
+    fi
+}
+
+function detect_arch() {
+    local arch=$(dpkg --print-architecture 2>/dev/null)
+    if [ -z "$arch" ]; then
+        case $(uname -m) in
+            x86_64) arch="amd64" ;;
+            i386|i686) arch="i386" ;;
+            armv7l|armhf) arch="armhf" ;;
+            aarch64|arm64) arch="arm64" ;;
+            *) error "Unsupported architecture: $(uname -m)" ;;
+        esac
+    fi
+    echo "$arch"
+}
+
+function download_gpg_key() {
+    info "Downloading FlightAware repository package to extract GPG key..."
+    
+    # Create temporary directory
+    mkdir -p "$TEMP_DIR"
+    cd "$TEMP_DIR" || error "Failed to create temporary directory"
+    
+    # Create keyrings directory if it doesn't exist
+    mkdir -p /usr/share/keyrings
+    
+    # Download the .deb package
+    local deb_file="flightaware-apt-repository.deb"
+    if installed wget; then
+        wget ${WGET_OPTS} -qO "$deb_file" "$PIAWARE_REPO_DEB_URL" || error "Failed to download repository package"
+    elif installed curl; then
+        curl ${CURL_OPTS} -sSL -o "$deb_file" "$PIAWARE_REPO_DEB_URL" || error "Failed to download repository package"
+    else
+        error "Neither wget nor curl is installed. Please install one of them first."
+    fi
+    
+    if [ ! -f "$deb_file" ] || [ ! -s "$deb_file" ]; then
+        error "Failed to download repository package"
+    fi
+    
+    info "Extracting GPG key from package..."
+    
+    # Extract the .deb package
+    ar x "$deb_file" || error "Failed to extract .deb package"
+    
+    # Extract data.tar.xz or data.tar.gz
+    if [ -f "data.tar.xz" ]; then
+        tar -xf data.tar.xz || error "Failed to extract data.tar.xz"
+    elif [ -f "data.tar.gz" ]; then
+        tar -xzf data.tar.gz || error "Failed to extract data.tar.gz"
+    else
+        error "Could not find data archive in .deb package"
+    fi
+    
+    # Find and copy the GPG key
+    local extracted_key="usr/share/keyrings/flightaware-archive-keyring.gpg"
+    if [ -f "$extracted_key" ]; then
+        cp "$extracted_key" "$PIAWARE_KEYRING" || error "Failed to copy GPG key"
+        chmod 644 "$PIAWARE_KEYRING"
+        info "GPG key extracted and imported successfully to $PIAWARE_KEYRING"
+    else
+        error "GPG key not found in extracted package. Expected: $extracted_key"
+    fi
+    
+    # Clean up temporary directory
+    cd / || true
+    rm -rf "$TEMP_DIR"
+}
+
+function add_repository() {
+    local codename="$1"
+    local arch="$2"
+    
+    info "Adding PiAware repository..."
+    
+    # Check if repository already exists
+    if [ -f "$PIAWARE_REPO_FILE" ]; then
+        warn "Repository file already exists: $PIAWARE_REPO_FILE"
+        warn "Backing up existing file..."
+        cp "$PIAWARE_REPO_FILE" "${PIAWARE_REPO_FILE}.bak.$(date +%Y%m%d_%H%M%S)"
+    fi
+    
+    # Add repository entry
+    # PiAware typically uses armhf architecture, but we'll use detected arch
+    echo "deb [arch=${arch} signed-by=${PIAWARE_KEYRING}] ${PIAWARE_REPO_URL} ${codename} piaware" > "$PIAWARE_REPO_FILE"
+    
+    if [ $? -eq 0 ]; then
+        info "Repository added successfully to $PIAWARE_REPO_FILE"
+    else
+        error "Failed to add repository"
+    fi
+}
+
+function update_package_lists() {
+    info "Updating package lists..."
+    apt-get update
+    if [ $? -eq 0 ]; then
+        info "Package lists updated successfully"
+    else
+        warn "Package list update completed with warnings. Please check the output above."
+    fi
+}
+
+function verify_setup() {
+    info "Verifying PiAware repository setup..."
+    
+    # Check if repository file exists
+    if [ ! -f "$PIAWARE_REPO_FILE" ]; then
+        error "Repository file not found: $PIAWARE_REPO_FILE"
+    fi
+    
+    # Check if GPG key exists
+    if [ ! -f "$PIAWARE_KEYRING" ]; then
+        error "GPG keyring not found: $PIAWARE_KEYRING"
+    fi
+    
+    # Check if repository is accessible
+    if apt-cache search piaware 2>/dev/null | grep -q piaware; then
+        info "✓ Repository is accessible and packages are available"
+    else
+        warn "⚠ Repository added but packages may not be available yet"
+        warn "  This might be normal if the repository needs time to sync"
+    fi
+    
+    info "Setup verification completed"
+}
+
+function usage() {
+    echo "Usage: $(basename "$0") [options]"
+    echo ""
+    echo "Options:"
+    echo "  -h, --help              Show this help message"
+    echo "  --codename CODENAME     Debian codename (e.g., buster, bullseye, bookworm)"
+    echo "                          Auto-detected if not specified"
+    echo "  --arch ARCHITECTURE     Architecture (e.g., armhf, arm64, amd64)"
+    echo "                          Auto-detected if not specified"
+    echo "  --repo-url URL          Custom repository URL"
+    echo ""
+    echo "This script manually sets up the PiAware repository and GPG key"
+    echo "without using dpkg, following best practices for APT repositories."
+}
+
+# Parse command line arguments
+CUSTOM_CODENAME=""
+CUSTOM_ARCH=""
+CUSTOM_REPO_URL=""
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        --codename)
+            CUSTOM_CODENAME="$2"
+            shift 2
+            ;;
+        --arch)
+            CUSTOM_ARCH="$2"
+            shift 2
+            ;;
+        --repo-url)
+            CUSTOM_REPO_URL="$2"
+            shift 2
+            ;;
+        *)
+            warn "Unknown option: $1"
+            usage
+            exit 1
+            ;;
+    esac
+done
+
+# Override repository URL if custom one is provided
+[ -n "$CUSTOM_REPO_URL" ] && PIAWARE_REPO_URL="$CUSTOM_REPO_URL"
+
+# Detect distribution
+DISTRO=$(detect_distro)
+info "Detected distribution: $DISTRO"
+
+# Check if this is a Debian-based system
+if [ "$DISTRO" != "debian" ] && [ "$DISTRO" != "ubuntu" ]; then
+    error "This script is designed for Debian/Ubuntu systems. Detected: $DISTRO"
+fi
+
+# Ensure required tools are installed
+# Map: command -> package name
+declare -A DEPENDENCIES
+DEPENDENCIES[gpg]="gnupg"
+DEPENDENCIES[ar]="binutils"
+DEPENDENCIES[curl]="curl"
+DEPENDENCIES[wget]="wget"
+
+# Collect missing dependencies
+MISSING_PACKAGES=()
+for cmd in "${!DEPENDENCIES[@]}"; do
+    if ! installed "$cmd"; then
+        MISSING_PACKAGES+=("${DEPENDENCIES[$cmd]}")
+    fi
+done
+
+# Check for xz-utils (provides both xz and unxz)
+if ! installed xz && ! installed unxz; then
+    MISSING_PACKAGES+=("xz-utils")
+fi
+
+# Install missing dependencies in a single command
+if [ ${#MISSING_PACKAGES[@]} -gt 0 ]; then
+    info "Installing required dependencies: ${MISSING_PACKAGES[*]}"
+    apt-get update >/dev/null 2>&1
+    DEBIAN_FRONTEND=noninteractive apt-get install -y "${MISSING_PACKAGES[@]}" || error "Failed to install dependencies: ${MISSING_PACKAGES[*]}"
+fi
+
+# Ensure at least one download tool is available
+if ! installed curl && ! installed wget; then
+    error "Neither curl nor wget is installed. Please install one of them first."
+fi
+
+# Detect codename
+if [ -n "$CUSTOM_CODENAME" ]; then
+    CODENAME="$CUSTOM_CODENAME"
+    info "Using custom codename: $CODENAME"
+else
+    CODENAME=$(detect_debian_codename)
+    info "Detected Debian codename: $CODENAME"
+fi
+
+# Detect architecture
+if [ -n "$CUSTOM_ARCH" ]; then
+    ARCH="$CUSTOM_ARCH"
+    info "Using custom architecture: $ARCH"
+else
+    ARCH=$(detect_arch)
+    info "Detected architecture: $ARCH"
+fi
+
+# Main installation process
+info "Setting up PiAware repository..."
+info "Repository URL: $PIAWARE_REPO_URL"
+info ""
+
+# Step 1: Download and import GPG key
+download_gpg_key
+
+# Step 2: Add repository
+add_repository "$CODENAME" "$ARCH"
+
+# Step 3: Update package lists
+update_package_lists
+
+# Step 4: Verify setup
+verify_setup
+
+info ""
+info "PiAware repository setup completed successfully!"
+info ""
+info "You can now install PiAware packages with:"
+info "  apt-get install piaware"
+info ""
+info "Repository configuration:"
+info "  Repository file: $PIAWARE_REPO_FILE"
+info "  GPG keyring: $PIAWARE_KEYRING"
+info "  Codename: $CODENAME"
+info "  Architecture: $ARCH"
+

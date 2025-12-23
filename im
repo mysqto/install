@@ -2,7 +2,15 @@
 
 if ((EUID != 0)); then
     echo "Granting root privileges for ""$(basename "$0")"
-    if [ -t 1 ]; then
+    # Use sudo if:
+    # - Over SSH (SSH_CONNECTION or SSH_CLIENT is set)
+    # - No GUI environment (DISPLAY not set)
+    # - gksu not available
+    # - Running in a TTY (interactive terminal)
+    # Otherwise use gksu (GUI environment, non-interactive)
+    if [ -n "$SSH_CONNECTION" ] || [ -n "$SSH_CLIENT" ] || \
+       [ -z "$DISPLAY" ] || ! command -v gksu >/dev/null 2>&1 || \
+       [ -t 1 ]; then
         sudo "$0" "$@"
     else
         exec 1>output_file
