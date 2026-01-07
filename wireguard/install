@@ -426,11 +426,31 @@ EOF
 function enable_service() {
     local interface_name="${1:-wg0}"
     
+    # Check if systemctl is available
+    if ! command -v systemctl >/dev/null 2>&1; then
+        info "systemctl not available. Service auto-enablement skipped."
+        info "In Docker/container environments, start manually with: wg-quick up $interface_name"
+        return 0
+    fi
+    
+    # Check if systemd is running
+    if ! systemctl --version >/dev/null 2>&1 || ! systemd-detect-virt -q 2>/dev/null; then
+        if [ ! -d "/run/systemd/system" ]; then
+            info "SystemD not running. Service auto-enablement skipped."
+            info "Start manually with: wg-quick up $interface_name"
+            return 0
+        fi
+    fi
+    
     if systemctl is-enabled "wg-quick@${interface_name}" >/dev/null 2>&1; then
         info "WireGuard service already enabled"
     else
-        systemctl enable "wg-quick@${interface_name}"
-        info "WireGuard service enabled for interface $interface_name"
+        if systemctl enable "wg-quick@${interface_name}" >/dev/null 2>&1; then
+            info "WireGuard service enabled for interface $interface_name"
+        else
+            warn "Failed to enable WireGuard service. Start manually with:"
+            warn "  wg-quick up $interface_name"
+        fi
     fi
 }
 
@@ -439,22 +459,48 @@ function get_next_client_ip() {
     local base_ip
     local network_base
     local server_last_octet
-    local client_config_dir="/etc/wireguard/clients"
+    local server_config="/etc/wireguard/${interface_name}.conf"
     
     base_ip=$(echo "$subnet" | cut -d'/' -f1)
     network_base=$(echo "$base_ip" | cut -d'.' -f1-3)
     server_last_octet=$(echo "$server_ip" | cut -d'.' -f4)
     
+    # Get all existing client IPs from server config
+    local used_ips=()
+    if [ -f "$server_config" ]; then
+        # Extract all AllowedIPs from the server config and get just the IP part (before /32)
+        used_ips=( $(grep '^AllowedIPs' "$server_config" 2>/dev/null | awk -F'=' '{print $2}' | tr -d ' ' | cut -d'/' -f1) )
+    fi
+    
     # Find the next available IP
     local next_ip=2
-    while [ -f "$client_config_dir/client-${network_base}.${next_ip}.conf" ] || [ "$next_ip" -eq "$server_last_octet" ]; do
-        next_ip=$((next_ip + 1))
-        if [ "$next_ip" -gt 254 ]; then
-            error "No more available IP addresses in subnet $subnet"
+    while [ "$next_ip" -le 254 ]; do
+        local candidate_ip="${network_base}.${next_ip}"
+        local ip_taken=false
+        
+        # Check if this IP is already used by a client
+        for used_ip in "${used_ips[@]}"; do
+            if [ "$used_ip" = "$candidate_ip" ]; then
+                ip_taken=true
+                break
+            fi
+        done
+        
+        # Check if this IP is the server IP
+        if [ "$next_ip" -eq "$server_last_octet" ]; then
+            ip_taken=true
         fi
+        
+        # If IP is not taken, return it
+        if [ "$ip_taken" = false ]; then
+            echo "$candidate_ip"
+            return 0
+        fi
+        
+        next_ip=$((next_ip + 1))
     done
     
-    echo "${network_base}.${next_ip}"
+    error "No more available IP addresses in subnet $subnet"
 }
 
 function add_client_to_server_config() {
@@ -521,17 +567,15 @@ function generate_client_config() {
         return 1
     fi
     
-    # Auto-assign client IP if using default
+    # Auto-assign client IP if using default or if user didn't specify a custom IP
     local assigned_client_ip="$client_ip"
-    if [ "$client_ip" = "10.0.0.2" ] && [ "$subnet" != "10.0.0.0/24" ]; then
+    local default_client_ip=$(echo "$subnet" | sed 's|/.*||' | awk -F. '{print $1"."$2"."$3".2"}')
+    
+    # If client_ip is the default value "10.0.0.2" or matches the subnet's default .2 address,
+    # always get the next available IP to avoid conflicts
+    if [ "$client_ip" = "10.0.0.2" ] || [ "$client_ip" = "$default_client_ip" ]; then
         assigned_client_ip=$(get_next_client_ip "$subnet")
-        info "Auto-assigned client IP: $assigned_client_ip"
-    elif [ "$client_ip" = "10.0.0.2" ]; then
-        # Check if default IP is available
-        if [ -f "$client_config_dir/client1.conf" ]; then
-            assigned_client_ip=$(get_next_client_ip "$subnet")
-            info "Default client IP taken, assigned: $assigned_client_ip"
-        fi
+        info "Auto-assigned next available client IP: $assigned_client_ip"
     fi
     
     info "Generating client configuration for $client_name..."
@@ -652,35 +696,44 @@ EOF
 function restart_wireguard_service() {
     local interface_name="$1"
     
+    # Check if systemctl is available
     if ! command -v systemctl >/dev/null 2>&1; then
-        info "systemctl not available. Please restart WireGuard manually if needed."
+        info "systemctl not available. Please start WireGuard manually:"
+        info "  wg-quick up $interface_name"
+        return 0
+    fi
+    
+    # Check if systemd is running
+    if ! systemctl --version >/dev/null 2>&1 || [ ! -d "/run/systemd/system" ]; then
+        info "SystemD not running. Please start WireGuard manually:"
+        info "  wg-quick up $interface_name"
         return 0
     fi
     
     # Check if service is active
-    if systemctl is-active --quiet "wg-quick@${interface_name}"; then
+    if systemctl is-active --quiet "wg-quick@${interface_name}" 2>/dev/null; then
         info "Restarting WireGuard service to apply configuration changes..."
-        if systemctl restart "wg-quick@${interface_name}"; then
+        if systemctl restart "wg-quick@${interface_name}" 2>/dev/null; then
             info "✅ WireGuard service restarted successfully"
-            info "Service status: $(systemctl is-active wg-quick@${interface_name})"
+            info "Service status: $(systemctl is-active wg-quick@${interface_name} 2>/dev/null)"
         else
-            warn "❌ Failed to restart WireGuard service. You may need to restart it manually:"
-            warn "  sudo systemctl restart wg-quick@${interface_name}"
+            warn "❌ Failed to restart WireGuard service. Start manually:"
+            warn "  wg-quick down $interface_name && wg-quick up $interface_name"
             return 1
         fi
     elif systemctl is-enabled --quiet "wg-quick@${interface_name}" 2>/dev/null; then
         info "WireGuard service is enabled but not running. Starting..."
-        if systemctl start "wg-quick@${interface_name}"; then
+        if systemctl start "wg-quick@${interface_name}" 2>/dev/null; then
             info "✅ WireGuard service started successfully"
         else
-            warn "❌ Failed to start WireGuard service. Start it manually:"
-            warn "  sudo systemctl start wg-quick@${interface_name}"
+            warn "❌ Failed to start WireGuard service. Start manually:"
+            warn "  wg-quick up $interface_name"
             return 1
         fi
     else
-        info "WireGuard service is not enabled. To start it manually:"
-        info "  sudo systemctl start wg-quick@${interface_name}"
-        info "  sudo systemctl enable wg-quick@${interface_name}  # for auto-start"
+        info "WireGuard service not available via systemctl."
+        info "To start manually: wg-quick up $interface_name"
+        info "To stop: wg-quick down $interface_name"
     fi
     
     return 0
