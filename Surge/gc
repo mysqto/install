@@ -1,0 +1,643 @@
+#!/bin/bash
+
+function warn() {
+    echo -e "\033[1;33m${*}\033[0m"
+}
+
+function error() {
+    echo -e "\033[1;31m${*}\033[0m"
+    exit 1
+}
+
+function info() {
+    echo -e "\033[1;32m${*}\033[0m"
+}
+
+function installed() {
+    command -v "$1" >/dev/null 2>&1
+}
+
+function usage() {
+    cat <<EOF
+Usage: $(basename "$0") [OPTIONS] [hostname]
+
+Generate Surge proxy config from remote server.
+If no hostname is provided, process all hosts from ~/.ssh/config.
+
+OPTIONS:
+    -h, --help              Show this help message
+    -u, --user <user>       SSH username
+    -p, --port <port>       SSH port
+    -P, --password <pass>   SSH password (not recommended, use key instead)
+    -i, --identity <file>   SSH private key file
+    -o, --output <file>     Output file (default: stdout)
+    -a, --all               Process all hosts from SSH config
+
+EXAMPLES:
+    $(basename "$0")                              # Process all SSH hosts
+    $(basename "$0") my-server                    # Process single host
+    $(basename "$0") -u root -p 22 192.168.1.1
+    $(basename "$0") -i ~/.ssh/id_rsa user@host
+EOF
+    exit 0
+}
+
+# check if host is a wildcard/regex pattern
+function is_wildcard_host() {
+    local host="$1"
+    [[ "$host" == *"*"* ]] && return 0
+    [[ "$host" == *"?"* ]] && return 0
+    [[ "$host" == *"!"* ]] && return 0
+    return 1
+}
+
+# check if host should be skipped (local, git, or special hosts)
+function should_skip_host() {
+    local host="$1"
+    # localhost variants
+    [[ "$host" == "localhost" ]] && return 0
+    [[ "$host" == "127."* ]] && return 0
+    [[ "$host" == "::1" ]] && return 0
+    # private IP ranges
+    [[ "$host" == "10."* ]] && return 0
+    [[ "$host" == "172.16."* ]] && return 0
+    [[ "$host" == "172.17."* ]] && return 0
+    [[ "$host" == "172.18."* ]] && return 0
+    [[ "$host" == "172.19."* ]] && return 0
+    [[ "$host" == "172.2"[0-9]"."* ]] && return 0
+    [[ "$host" == "172.30."* ]] && return 0
+    [[ "$host" == "172.31."* ]] && return 0
+    [[ "$host" == "192.168."* ]] && return 0
+    # link-local
+    [[ "$host" == "169.254."* ]] && return 0
+    # orbstack local containers
+    [[ "$host" == "orb" ]] && return 0
+    # git hosts
+    [[ "$host" == "github" ]] && return 0
+    [[ "$host" == "github.com" ]] && return 0
+    [[ "$host" == "bitbucket" ]] && return 0
+    [[ "$host" == "bitbucket.org" ]] && return 0
+    [[ "$host" == "gitlab" ]] && return 0
+    [[ "$host" == "gitlab.com" ]] && return 0
+    # local machines (common patterns)
+    [[ "$host" == *"iMac"* ]] && return 0
+    [[ "$host" == *"MacBook"* ]] && return 0
+    [[ "$host" == *".local" ]] && return 0
+    return 1
+}
+
+# alias for backward compatibility
+function is_local_host() {
+    should_skip_host "$1"
+}
+
+# get all ssh config files (including includes)
+function get_ssh_config_files() {
+    local config_dir="$HOME/.ssh"
+    local main_config="$config_dir/config"
+    local files=()
+
+    [ ! -f "$main_config" ] && return
+
+    files+=("$main_config")
+
+    # parse Include directives
+    while IFS= read -r line; do
+        [[ "$line" =~ ^[[:space:]]*[Ii]nclude[[:space:]]+ ]] || continue
+        local pattern="${line#*[Ii]nclude}"
+        pattern="${pattern#"${pattern%%[![:space:]]*}"}"
+        pattern="${pattern/#\~/$HOME}"
+        # handle relative paths
+        [[ "$pattern" != /* ]] && pattern="$config_dir/$pattern"
+        # skip orbstack and other container/VM tool configs
+        [[ "$pattern" == *"orbstack"* ]] && continue
+        [[ "$pattern" == *"multipass"* ]] && continue
+        [[ "$pattern" == *"lima"* ]] && continue
+        # expand glob
+        shopt -s nullglob
+        for f in $pattern; do
+            [ -f "$f" ] && files+=("$f")
+        done
+    done <"$main_config"
+
+    printf '%s\n' "${files[@]}"
+}
+
+# get all valid hosts from ssh config
+function get_all_ssh_hosts() {
+    local hosts=()
+    local config_files=()
+
+    # get config files first (with glob expansion enabled)
+    while IFS= read -r f; do
+        [ -n "$f" ] && config_files+=("$f")
+    done < <(get_ssh_config_files)
+
+    for config_file in "${config_files[@]}"; do
+        [ -z "$config_file" ] && continue
+        [ ! -f "$config_file" ] && continue
+
+        while IFS= read -r line; do
+            # match Host directive (not Match)
+            [[ "$line" =~ ^[[:space:]]*[Hh]ost[[:space:]]+ ]] || continue
+            [[ "$line" =~ ^[[:space:]]*[Hh]ost[Nn]ame ]] && continue
+
+            local host_list="${line#*[Hh]ost}"
+            host_list="${host_list#"${host_list%%[![:space:]]*}"}"
+
+            # split by whitespace using read to avoid glob expansion
+            local host_array
+            IFS=' ' read -ra host_array <<< "$host_list"
+            for host in "${host_array[@]}"; do
+                [ -z "$host" ] && continue
+                # skip wildcards
+                is_wildcard_host "$host" && continue
+                # skip local hosts
+                is_local_host "$host" && continue
+                # skip if already in list
+                local exists=false
+                for h in "${hosts[@]}"; do
+                    [ "$h" = "$host" ] && exists=true && break
+                done
+                [ "$exists" = true ] && continue
+                hosts+=("$host")
+            done
+        done <"$config_file"
+    done
+
+    printf '%s\n' "${hosts[@]}"
+}
+
+# test URLs for China servers
+china_test_urls=(
+    "http://connect.rom.miui.com/generate_204"
+    "http://connectivitycheck.platform.hicloud.com/generate_204"
+    "http://wifi.vivo.com.cn/generate_204"
+)
+
+# test URLs for international servers
+intl_test_urls=(
+    "http://www.gstatic.com/generate_204"
+    "http://cp.cloudflare.com/generate_204"
+    "http://www.msftconnecttest.com/connecttest.txt"
+    "http://connectivitycheck.amazonaws.com/"
+)
+
+# country code to flag emoji
+function country_to_flag() {
+    local country="$1"
+    [ -z "$country" ] && echo "🌐" && return
+    country=$(echo "$country" | tr '[:lower:]' '[:upper:]')
+    # use python3 to convert country code to flag emoji (regional indicator symbols)
+    python3 -c "print(''.join(chr(127397 + ord(c)) for c in '$country'))" 2>/dev/null || echo "🌐"
+}
+
+# get IP info (country, org name)
+function get_ip_info() {
+    local ip="$1"
+    local info
+    info=$(curl -sL "https://ipinfo.io/${ip}/json" 2>/dev/null)
+    [ -z "$info" ] && return 1
+
+    local country org org_name
+    country=$(echo "$info" | grep -Eo '"country"\s*:\s*"[^"]+"' | cut -d'"' -f4)
+    org=$(echo "$info" | grep -Eo '"org"\s*:\s*"[^"]+"' | cut -d'"' -f4)
+    # extract org name without ASN prefix (format: "AS12345 Company Name" -> "Company Name")
+    org_name="${org#AS[0-9]* }"
+    # clean up org name: take first part, remove special chars, limit length
+    org_name=$(echo "$org_name" | cut -d',' -f1 | sed 's/[^a-zA-Z0-9 ]//g' | awk '{print $1}' | head -c 20)
+    [ -z "$org_name" ] && org_name="Unknown"
+    echo "${country}|${org_name}"
+}
+
+# parse ssh config for a host (searches all config files including includes)
+function parse_ssh_config() {
+    local target_host="$1"
+    local in_host=false
+    local hostname="" user="" port="" identity=""
+    local config_files=()
+
+    # get all config files
+    while IFS= read -r f; do
+        [ -n "$f" ] && config_files+=("$f")
+    done < <(get_ssh_config_files)
+
+    for config_file in "${config_files[@]}"; do
+        [ ! -f "$config_file" ] && continue
+
+        while IFS= read -r line || [ -n "$line" ]; do
+            # skip comments and empty lines
+            [[ "$line" =~ ^[[:space:]]*# ]] && continue
+            [[ -z "${line// /}" ]] && continue
+
+            # check for Host directive
+            if [[ "$line" =~ ^[[:space:]]*[Hh]ost[[:space:]]+ ]]; then
+                [[ "$line" =~ ^[[:space:]]*[Hh]ost[Nn]ame ]] && continue
+                local host_pattern="${line#*[Hh]ost}"
+                host_pattern="${host_pattern#"${host_pattern%%[![:space:]]*}"}"
+                # check if this host matches - use exact match
+                local host_array
+                IFS=' ' read -ra host_array <<< "$host_pattern"
+                in_host=false
+                for h in "${host_array[@]}"; do
+                    [ "$h" = "$target_host" ] && in_host=true && break
+                done
+                continue
+            fi
+
+            [ "$in_host" != true ] && continue
+
+            # parse directives
+            local key value
+            key=$(echo "$line" | awk '{print $1}' | tr '[:upper:]' '[:lower:]')
+            value=$(echo "$line" | awk '{$1=""; print $0}' | sed 's/^[[:space:]]*//')
+
+            case "$key" in
+                hostname) hostname="$value" ;;
+                user) user="$value" ;;
+                port) port="$value" ;;
+                identityfile) identity="${value/#\~/$HOME}" ;;
+            esac
+        done <"$config_file"
+
+        # if we found the host, stop searching
+        [ -n "$hostname" ] && break
+    done
+
+    [ -n "$hostname" ] && echo "hostname=$hostname"
+    [ -n "$user" ] && echo "user=$user"
+    [ -n "$port" ] && echo "port=$port"
+    [ -n "$identity" ] && echo "identity=$identity"
+}
+
+# build ssh command
+function build_ssh_cmd() {
+    local cmd="ssh"
+    [ -n "$ssh_user" ] && cmd="$cmd -l $ssh_user"
+    [ -n "$ssh_port" ] && cmd="$cmd -p $ssh_port"
+    [ -n "$ssh_identity" ] && cmd="$cmd -i $ssh_identity"
+    [ -n "$ssh_password" ] && {
+        installed sshpass || error "sshpass required for password auth, please install it"
+        cmd="sshpass -p '$ssh_password' $cmd"
+    }
+    cmd="$cmd -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=no"
+    echo "$cmd $ssh_host"
+}
+
+# read remote file via ssh
+function ssh_read_file() {
+    local file="$1"
+    local ssh_cmd
+    ssh_cmd=$(build_ssh_cmd)
+    eval "$ssh_cmd cat '$file' 2>/dev/null"
+}
+
+# get remote public IP
+function get_remote_public_ip() {
+    local ssh_cmd
+    ssh_cmd=$(build_ssh_cmd)
+    eval "$ssh_cmd 'curl -sL ifconfig.me 2>/dev/null || curl -sL icanhazip.com 2>/dev/null || curl -sL ipinfo.io/ip 2>/dev/null'" 2>/dev/null
+}
+
+# test URL latency from remote server (returns latency in ms)
+function test_url_latency() {
+    local url="$1"
+    local ssh_cmd
+    ssh_cmd=$(build_ssh_cmd)
+    # use curl to measure time, timeout 5s
+    local result
+    result=$(eval "$ssh_cmd 'curl -o /dev/null -s -w \"%{time_total}\" --connect-timeout 3 --max-time 5 \"$url\"'" 2>/dev/null)
+    [ -z "$result" ] && echo "9999" && return
+    # convert to ms (multiply by 1000)
+    python3 -c "print(int(float('$result') * 1000))" 2>/dev/null || echo "9999"
+}
+
+# select best test URL based on country
+function select_best_test_url() {
+    local country="$1"
+    local urls=()
+    local best_url=""
+    local best_latency=9999
+
+    # select URL list based on country
+    if [ "$country" = "CN" ]; then
+        urls=("${china_test_urls[@]}")
+        info "Server in China, testing Chinese URLs..." >&2
+    else
+        urls=("${intl_test_urls[@]}")
+        info "Server outside China, testing international URLs..." >&2
+    fi
+
+    # test each URL and find the fastest
+    for url in "${urls[@]}"; do
+        local latency
+        latency=$(test_url_latency "$url")
+        info "  $url: ${latency}ms" >&2
+        if [ "$latency" -lt "$best_latency" ]; then
+            best_latency="$latency"
+            best_url="$url"
+        fi
+    done
+
+    [ -z "$best_url" ] && {
+        # fallback to first URL if all failed
+        best_url="${urls[0]}"
+    }
+
+    info "Selected test URL: $best_url (${best_latency}ms)" >&2
+    echo "$best_url"
+}
+
+# parse shadowsocks config
+function parse_ss_config() {
+    local config="$1"
+    [ -z "$config" ] && return 1
+
+    ss_port=$(echo "$config" | grep -Eo '"server_port"\s*:\s*[0-9]+' | grep -Eo '[0-9]+')
+    ss_password=$(echo "$config" | grep -Eo '"password"\s*:\s*"[^"]+"' | cut -d'"' -f4)
+    ss_method=$(echo "$config" | grep -Eo '"method"\s*:\s*"[^"]+"' | cut -d'"' -f4)
+    ss_plugin_opts=$(echo "$config" | grep -Eo '"plugin_opts"\s*:\s*"[^"]+"' | cut -d'"' -f4)
+
+    # parse obfs from plugin_opts
+    ss_obfs=$(echo "$ss_plugin_opts" | grep -Eo 'obfs=[^;]+' | cut -d'=' -f2)
+    ss_obfs_host=$(echo "$ss_plugin_opts" | grep -Eo 'obfs-host=[^;,"]+' | cut -d'=' -f2)
+
+    [ -n "$ss_port" ] && [ -n "$ss_password" ]
+}
+
+# parse snell config
+function parse_snell_config() {
+    local config="$1"
+    [ -z "$config" ] && return 1
+
+    snell_port=$(echo "$config" | grep -Eo 'listen\s*=\s*[^[:space:]]+' | grep -Eo '[0-9]+$')
+    snell_psk=$(echo "$config" | grep -Eo 'psk\s*=\s*[^[:space:]]+' | awk -F'=' '{print $2}' | tr -d ' ')
+    snell_version=$(echo "$config" | grep -Eo 'version\s*=\s*[0-9]+' | grep -Eo '[0-9]+')
+    snell_obfs=$(echo "$config" | grep -Eo 'obfs\s*=\s*[^[:space:]]+' | awk -F'=' '{print $2}' | tr -d ' ')
+    snell_obfs_host=$(echo "$config" | grep -Eo 'obfs-host\s*=\s*[^[:space:]]+' | awk -F'=' '{print $2}' | tr -d ' ')
+
+    [ -n "$snell_port" ] && [ -n "$snell_psk" ]
+}
+
+# parse shadow-tls config
+function parse_shadow_tls_config() {
+    local config="$1"
+    [ -z "$config" ] && return 1
+
+    shadow_tls_port=$(echo "$config" | grep -Eo 'shadow_tls_port=[0-9]+' | cut -d'=' -f2)
+    shadow_tls_password=$(echo "$config" | grep -Eo 'shadow_tls_password=[^[:space:]]+' | cut -d'=' -f2)
+    shadow_tls_obfs_host=$(echo "$config" | grep -Eo 'obfs_host=[^[:space:]]+' | cut -d'=' -f2)
+
+    [ -n "$shadow_tls_port" ] && [ -n "$shadow_tls_password" ]
+}
+
+# generate surge config for shadowsocks
+function generate_ss_surge_config() {
+    local name="$1"
+    local host="$2"
+    local test_url="$3"
+    local config=""
+
+    config="${name} = ss, ${host}, ${ss_port}, encrypt-method=${ss_method}, password=${ss_password}"
+    config="${config}, tfo=true, test-url=${test_url}"
+    config="${config}, block-quic=off, udp-relay=true"
+
+    [ -n "$ss_obfs" ] && config="${config}, obfs=${ss_obfs}"
+    [ -n "$ss_obfs_host" ] && config="${config}, obfs-host=${ss_obfs_host}"
+
+    echo "$config"
+}
+
+# generate surge config for snell
+function generate_snell_surge_config() {
+    local name="$1"
+    local host="$2"
+    local test_url="$3"
+    local port="$snell_port"
+    local config=""
+
+    # use shadow-tls port if available
+    [ -n "$shadow_tls_port" ] && port="$shadow_tls_port"
+
+    config="${name} = snell, ${host}, ${port}, psk=${snell_psk}, version=${snell_version:-4}"
+    config="${config}, reuse=true, tfo=true, test-url=${test_url}"
+
+    # add shadow-tls options if available
+    [ -n "$shadow_tls_password" ] && {
+        local sni="${shadow_tls_obfs_host:-$snell_obfs_host}"
+        config="${config}, shadow-tls-password=${shadow_tls_password}"
+        [ -n "$sni" ] && config="${config}, shadow-tls-sni=${sni}"
+        config="${config}, shadow-tls-version=3"
+    }
+
+    echo "$config"
+}
+
+# process a single host and return config (returns config via stdout)
+function process_host() {
+    local host="$1"
+    local result=""
+
+    # reset ssh variables for this host
+    ssh_host="$host"
+    ssh_user=""
+    ssh_port=""
+    ssh_identity=""
+
+    # parse user@host format
+    [[ "$ssh_host" == *@* ]] && {
+        ssh_user="${ssh_host%@*}"
+        ssh_host="${ssh_host#*@}"
+    }
+
+    # remote_host defaults to ssh_host (without user@)
+    remote_host="$ssh_host"
+
+    # try to get config from ssh config file
+    info "Checking SSH config for host: $ssh_host" >&2
+    while IFS= read -r line; do
+        [ -z "$line" ] && continue
+        key="${line%%=*}"
+        value="${line#*=}"
+        case "$key" in
+            hostname) remote_host="$value" ;;
+            user) [ -n "$ssh_user" ] || ssh_user="$value" ;;
+            port) [ -n "$ssh_port" ] || ssh_port="$value" ;;
+            identity) [ -n "$ssh_identity" ] || ssh_identity="$value" ;;
+        esac
+    done < <(parse_ssh_config "$ssh_host")
+
+    # skip local hosts based on resolved hostname
+    is_local_host "$remote_host" && {
+        warn "Skipping local host: $ssh_host ($remote_host)" >&2
+        return 1
+    }
+
+    info "Connecting to: ${ssh_user:+$ssh_user@}${ssh_host}${ssh_port:+:$ssh_port}" >&2
+
+    # get remote public IP if remote_host is not a public IP
+    local public_ip=""
+    if [[ "$remote_host" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        public_ip="$remote_host"
+    else
+        info "Getting remote public IP..." >&2
+        public_ip=$(get_remote_public_ip)
+    fi
+
+    [ -z "$public_ip" ] && {
+        warn "Failed to get remote public IP for $ssh_host, skipping..." >&2
+        return 1
+    }
+    info "Remote public IP: $public_ip" >&2
+
+    # read config files
+    info "Reading remote config files..." >&2
+
+    local ss_config snell_config shadow_tls_config
+    ss_config=$(ssh_read_file "/etc/shadowsocks/config.json")
+    [ -z "$ss_config" ] && ss_config=$(ssh_read_file "/etc/shadowsocks-libev/config.json")
+    snell_config=$(ssh_read_file "/etc/snell/snell-server.conf")
+    shadow_tls_config=$(ssh_read_file "/etc/default/shadow-tls")
+
+    # parse configs
+    ss_port="" ss_password="" ss_method="" ss_obfs="" ss_obfs_host=""
+    # shellcheck disable=SC2034
+    snell_port="" snell_psk="" snell_version="" snell_obfs="" snell_obfs_host=""
+    shadow_tls_port="" shadow_tls_password="" shadow_tls_obfs_host=""
+
+    local has_ss=false has_snell=false has_shadow_tls=false
+    parse_ss_config "$ss_config" && has_ss=true
+    parse_snell_config "$snell_config" && has_snell=true
+    parse_shadow_tls_config "$shadow_tls_config" && has_shadow_tls=true
+
+    # check if any config found
+    [ "$has_ss" != true ] && [ "$has_snell" != true ] && {
+        warn "No proxy config found on $ssh_host, skipping..." >&2
+        return 1
+    }
+
+    # get IP info for naming and test URL selection
+    info "Getting IP info for $public_ip..." >&2
+    local ip_info server_country server_org server_flag
+    ip_info=$(get_ip_info "$public_ip")
+    server_country=$(echo "$ip_info" | cut -d'|' -f1)
+    server_org=$(echo "$ip_info" | cut -d'|' -f2)
+    server_flag=$(country_to_flag "$server_country")
+    [ -z "$server_org" ] && server_org="Unknown"
+
+    info "Server location: $server_country ($server_flag $server_org)" >&2
+
+    # select best test URL based on server location
+    local best_test_url
+    best_test_url=$(select_best_test_url "$server_country")
+
+    # generate surge config
+    [ "$has_snell" = true ] && {
+        local suffix=""
+        [ "$has_shadow_tls" = true ] && suffix="-Snell+ShadowTLS" || suffix="-Snell"
+        local name="${server_flag}${server_org}${suffix}"
+        result="${result}$(generate_snell_surge_config "$name" "$remote_host" "$best_test_url")\n"
+        info "Generated Snell config for $ssh_host" >&2
+    }
+
+    [ "$has_ss" = true ] && {
+        local name="${server_flag}${server_org}-SS"
+        result="${result}$(generate_ss_surge_config "$name" "$remote_host" "$best_test_url")\n"
+        info "Generated Shadowsocks config for $ssh_host" >&2
+    }
+
+    echo -e "$result"
+}
+
+# main
+output_file=""
+single_host=""
+
+POSITIONAL=()
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -h | --help)
+            usage
+            ;;
+        -u | --user)
+            ssh_user="$2"
+            shift 2
+            ;;
+        -p | --port)
+            ssh_port="$2"
+            shift 2
+            ;;
+        -P | --password)
+            ssh_password="$2"
+            shift 2
+            ;;
+        -i | --identity)
+            ssh_identity="$2"
+            shift 2
+            ;;
+        -o | --output)
+            output_file="$2"
+            shift 2
+            ;;
+        -a | --all)
+            # process all is default when no host given
+            shift
+            ;;
+        -*)
+            warn "Unknown option: $1"
+            shift
+            ;;
+        *)
+            POSITIONAL+=("$1")
+            shift
+            ;;
+    esac
+done
+
+set -- "${POSITIONAL[@]}"
+
+# determine mode: single host or all hosts
+all_output=""
+
+if [ $# -ge 1 ]; then
+    # single host mode
+    single_host="$1"
+    info "Processing single host: $single_host"
+    all_output=$(process_host "$single_host")
+else
+    # batch mode: process all hosts from SSH config
+    info "No host specified, processing all hosts from SSH config..."
+    echo ""
+
+    hosts=()
+    while IFS= read -r host; do
+        [ -n "$host" ] && hosts+=("$host")
+    done < <(get_all_ssh_hosts)
+
+    if [ ${#hosts[@]} -eq 0 ]; then
+        error "No valid hosts found in SSH config"
+    fi
+
+    info "Found ${#hosts[@]} hosts to process"
+    echo ""
+
+    for host in "${hosts[@]}"; do
+        warn "========== Processing: $host =========="
+        host_output=$(process_host "$host") && {
+            all_output="${all_output}${host_output}"
+        }
+        echo ""
+    done
+fi
+
+# output
+[ -z "$all_output" ] && error "No config generated"
+
+echo ""
+warn "========== Surge Proxy Config =========="
+echo -e "$all_output"
+
+[ -n "$output_file" ] && {
+    echo -e "$all_output" >"$output_file"
+    info "Config saved to: $output_file"
+}
