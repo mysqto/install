@@ -235,7 +235,7 @@ function _config_fish() {
     [ "$current_shell" == "$fish_shell" ] && {
         # install fisher
         info "installing fisher for $username"
-        faketty su - "$username" -s "$fish_shell" -c 'curl ${CURL_OPTS} -sL '"$fisher_link"' | source && fisher install jorgebucaran/fisher jethrokuan/z mysqto/flash'
+        faketty su - "$username" -s "$fish_shell" -c 'curl '"$CURL_OPTS"' -sL '"$fisher_link"' | source && fisher install jorgebucaran/fisher jethrokuan/z mysqto/flash'
         info "waiting for fisher to install plugins" && sleep 30
         #shellcheck disable=SC2016
         faketty su - "$username" -s "$fish_shell" -c 'set -U fish_user_paths /sbin $fish_user_paths'
