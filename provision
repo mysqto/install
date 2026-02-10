@@ -144,13 +144,15 @@ function _enable_bbr() {
 }
 
 function _enable_ipv6() {
-    if=$(ip -6 route | grep default | awk '{print $5}')
-    if [ -z "$if" ]; then
+    local iface
+    iface=$(ip -6 route | grep default | awk '{print $5}')
+    if [ -z "$iface" ]; then
         warn "ipv6_dchp is true but no default ipv6 route found"
-    elif grep -q "iface $if inet6 dhcp" /etc/network/interfaces 2>/dev/null; then
+    elif grep -q "iface $iface inet6 dhcp" /etc/network/interfaces 2>/dev/null; then
         warn "ipv6_dchp is true but ipv6 dhcp is already enabled"
     else
-        echo "iface $if inet6 dhcp" >>/etc/network/interfaces
+        echo "iface $iface inet6 dhcp" >>/etc/network/interfaces
+    fi
 }
 
 function _enable_socat() {
