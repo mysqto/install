@@ -136,7 +136,7 @@ function _install_im() {
 }
 
 function _enable_bbr() {
-    if ! grep -q "bbr" /etc/sysctl.conf; then
+    if ! grep -q "bbr" /etc/sysctl.conf 2>/dev/null; then
         echo "net.core.default_qdisc=fq" >>/etc/sysctl.conf
         echo "net.ipv4.tcp_congestion_control=bbr" >>/etc/sysctl.conf
     fi
@@ -147,11 +147,10 @@ function _enable_ipv6() {
     if=$(ip -6 route | grep default | awk '{print $5}')
     if [ -z "$if" ]; then
         warn "ipv6_dchp is true but no default ipv6 route found"
-    elif grep -q "iface $if inet6 dhcp" /etc/network/interfaces; then
+    elif grep -q "iface $if inet6 dhcp" /etc/network/interfaces 2>/dev/null; then
         warn "ipv6_dchp is true but ipv6 dhcp is already enabled"
     else
         echo "iface $if inet6 dhcp" >>/etc/network/interfaces
-    fi
 }
 
 function _enable_socat() {
@@ -781,3 +780,6 @@ grub_cmdline="$(sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' <<<"$grub_cmdl
 [ "$enable_byobu" = true ] && [ -n "$username" ] && _enable_byobu "$username"
 
 [ "$install_quemu_guest_agent" = true ] && _install_quemu_guest_agent
+
+# always exit 0 to avoid preseed failure
+exit 0
