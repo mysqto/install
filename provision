@@ -421,6 +421,14 @@ while [ $# -gt 0 ]; do
             ssh_authorized_keys="$2"
             shift 2
             ;;
+        -akb | --authorized-keys-base64)
+            # Decode base64-encoded authorized keys
+            ssh_authorized_keys=$(echo "$2" | base64 -d 2>/dev/null) || {
+                warn "Failed to decode base64 authorized keys"
+                ssh_authorized_keys=""
+            }
+            shift 2
+            ;;
         -6 | --ipv6-dhcp)
             ipv6_dchp=true
             shift

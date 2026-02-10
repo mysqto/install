@@ -1344,10 +1344,17 @@ add_flag() {
 }
 
 # Helper function to add conditional parameters
+# Usage: add_param var_name [param_name] [base64]
 add_param() {
     local var="$1"
     local param="${2:-${var//_/-}}" # Use provided param or convert var name
-    [ -n "${!var}" ] && cmd+=("--$param \"${!var}\"")
+    local encode_base64="$3"
+    [ -z "${!var}" ] && return
+    local value="${!var}"
+    if [ "$encode_base64" = "base64" ]; then
+        value=$(printf '%s' "$value" | base64 | tr -d '\n')
+    fi
+    cmd+=("--$param \"$value\"")
 }
 
 function build_provision_params() {
@@ -1361,7 +1368,7 @@ function build_provision_params() {
     # User and SSH options
     add_param "username"
     add_param "ssh_port" "ssh"
-    add_param "authorized_keys"
+    add_param "authorized_keys" "authorized-keys-base64" "base64"
     add_flag "sudo_without_password"
 
     # System tools installation flags
