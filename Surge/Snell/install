@@ -99,7 +99,7 @@ function download_snell() {
     }
     chmod +x "$snell_bin"
     # check snell version
-    installed_version="$(snell-server --version 2>&1 | grep -Eo "snell-server v[0-9\.]+" | cut -d ' ' -f 2 | sed 's/ *$//g')"
+    installed_version="$("$snell_bin" --version 2>/dev/null | grep -Eo "snell-server v[0-9\.]+" | cut -d ' ' -f 2 | sed 's/ *$//g')"
     [ "$installed_version" != "$remove_version" ] && {
         error "Snell update failed, expected version: $remove_version, got: $installed_version"
     }
@@ -190,7 +190,7 @@ function download_shadow_tls() {
         [ -f "$prefix/bin/shadow-tls" ] || error "Failed to download shadow-tls"
         chmod +x "$prefix/bin/shadow-tls"
     }
-    installed_version="$(shadow-tls -V 2>/dev/null | grep "shadow-tls" | cut -d ' ' -f 2)"
+    installed_version="$("$prefix/bin/shadow-tls" -V 2>/dev/null | grep "shadow-tls" | cut -d ' ' -f 2)"
     [ "v$installed_version" != "$latest_release" ] && {
         error "Shadow-TLS update failed, expected version: $latest_release, got: $installed_version"
     }

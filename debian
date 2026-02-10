@@ -1318,6 +1318,11 @@ ssh_private_key=""
 }
 
 [ "$use_ethx" == true ] && {
+    # if interface is not legacy, use eth0 instead
+    [[ "$interface" != eth* ]] && {
+        warn "interface $interface is not legacy, will use eth0 instead"
+        interface="eth0"
+    }
     kernel_params="$kernel_params net.ifnames=0 biosdevname=0"
 }
 

@@ -57,11 +57,13 @@ function error() {
 }
 
 function _installed() {
-    command -v "$1" &>/dev/null
+    # add /usr/local/bin to PATH
+    PATH="/usr/local/bin:$PATH" command -v "$1" &>/dev/null
 }
 
 function faketty() {
-    script -qfc "$(printf "%q " "$@")" /dev/null
+    # add /usr/local/bin to PATH
+    PATH="/usr/local/bin:$PATH" script -qfc "$(printf "%q " "$@")" /dev/null
 }
 
 # shellcheck disable=SC2120
@@ -98,7 +100,8 @@ function _install_fish() {
     fi
     apt -y --no-install-recommends install fish
     if ! _installed fish; then
-        warn "fish installation failed" && return
+        warn "fish installation failed"
+        return 1
     fi
     [ -n "$username" ] && _config_fish "$username"
 }
@@ -120,7 +123,11 @@ function _install_neofetch() {
     fi
     popd >>/dev/null 2>&1 || exit
     rm -rf "$temp_dir"
-    ! _installed neofetch && warn "neofetch installation failed"
+    if ! _installed neofetch; then
+        warn "neofetch installation failed"
+    else
+        info "neofetch installed"
+    fi
 }
 
 function _install_im() {
@@ -550,7 +557,9 @@ apt -y --no-install-recommends install byobu wget curl net-tools build-essential
 [ "$install_go" = true ] && {
     go_script="$(mktemp 2>/dev/null)"
     curl -sL "$base_url/go" -o "$go_script"
-    [ ! -f "$go_script" ] && warn "failed to download go script" && return
+    if [ ! -f "$go_script" ]; then
+        error "failed to download go script"
+    fi
     chmod +x "$go_script"
     info "installing go"
     faketty "$go_script"
@@ -598,13 +607,18 @@ apt -y --no-install-recommends install byobu wget curl net-tools build-essential
     }
     ss_script="$(mktemp 2>/dev/null)"
     curl -sL "$base_url/ss-rust" -o "$ss_script"
-    [ ! -f "$ss_script" ] && warn "failed to download shadowsocks script" && return
+    if [ ! -f "$ss_script" ]; then
+        error "failed to download shadowsocks script"
+    fi
     chmod +x "$ss_script"
     info "installing shadowsocks-rust"
     faketty "$ss_script" --password "$shadowsocks_password" --port "$shadowsocks_port" --obfs-host "$shadowsocks_obfs_host" --setup
     [ -f "$ss_script" ] && rm -f "$ss_script"
-    ! _installed ss-server && warn "shadowsocks-rust installation failed, please check the script output"
-    info "shadowsocks-rust installed"
+    if ! _installed ss-server; then
+        warn "shadowsocks-rust installation failed, please check the script output"
+    else
+        info "shadowsocks-rust installed"
+    fi
 }
 
 [ "$install_shadow_tls" = true ] && {
@@ -676,13 +690,16 @@ apt -y --no-install-recommends install byobu wget curl net-tools build-essential
 
     snell_script="$(mktemp 2>/dev/null)"
     curl -sL "$base_url/Surge/Snell/install" -o "$snell_script"
-    [ ! -f "$snell_script" ] && warn "failed to download snell script" && return
+    [ ! -f "$snell_script" ] && error "failed to download snell script"
     chmod +x "$snell_script"
     info "installing snell"
     "$snell_script" --snell-port "$snell_port" --snell-psk "$snell_psk" --snell-version "$snell_version" --shadow-tls --shadow-tls-password "$shadow_tls_password" --shadow-tls-port "$shadow_tls_port" --obfs-host "$shadow_tls_obfs_host" --snell-obfs "$snell_obfs"
     [ -f "$snell_script" ] && rm -f "$snell_script"
-    ! _installed snell-server && warn "snell installation failed, please check the script output" && return
-    info "snell installed"
+    if ! _installed snell-server; then
+        warn "snell installation failed, please check the script output"
+    else
+        info "snell installed"
+    fi
 }
 
 #enable bbr
@@ -747,7 +764,11 @@ grub_cmdline="$(sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' <<<"$grub_cmdl
     docker_script="$(mktemp 2>/dev/null)"
     curl -sL "$base_url/docker" -o "$docker_script" && chmod +x "$docker_script" && faketty "$docker_script" && rm -f "$docker_script"
 
-    ! _installed docker && warn "docker installation failed, please check the script output" && return
+    if ! _installed docker; then
+        warn "docker installation failed, please check the script output"
+    else
+        info "docker installed"
+    fi
 
     [ -n "$username" ] && usermod -aG docker "$username"
 }
