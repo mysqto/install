@@ -1793,8 +1793,6 @@ EOF
     cat >>"$preseed_file" <<"EOF"
         1024 1024 -1 $default_filesystem        \
             method{ lvm }                       \
-            device{ }                           \
-            vg_name{ vg0 }                      \
             .                                   \
         1024 1024 -1 $default_filesystem        \
             $lvmok{ }                           \
@@ -1891,6 +1889,8 @@ d-i partman/confirm_nooverwrite boolean true
 # contains an old LVM configuration, the user will normally receive a
 # warning. Preseed this away
 d-i partman-lvm/device_remove_lvm boolean true
+# Remove existing software RAID partitions
+d-i partman-md/device_remove_md boolean true
 
 # And the same goes for the confirmation to write the lvm partitions.
 d-i partman-lvm/confirm boolean true
