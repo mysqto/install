@@ -264,6 +264,17 @@ function get_disk() {
     lsblk -oMOUNTPOINT,PKNAME -rn | awk '$1 ~ /^\/$/ { print $2 }'
 }
 
+function get_all_disks() {
+    # list all disks (type "disk"), exclude loop/rom devices, normalize to /dev/ paths
+    lsblk -dnro NAME,TYPE | awk '$2 == "disk" { print "/dev/" $1 }'
+}
+
+function normalize_disk() {
+    local d="$1"
+    [[ "$d" =~ ^/dev/ ]] || d="/dev/$d"
+    echo "$d"
+}
+
 function has_kernel() {
     local suite="$1"
     local arch="$2"
@@ -385,6 +396,8 @@ bbr=false
 filesystem=ext4
 firmware=false
 disk=
+use_lvm=false
+use_jbod=false
 efi=
 gpt=true
 esp=
@@ -625,6 +638,14 @@ while [ $# -gt 0 ]; do
         -d | --disk)
             disk="$2"
             shift 2
+            ;;
+        --lvm)
+            use_lvm=true
+            shift
+            ;;
+        --jbod)
+            use_jbod=true
+            shift
             ;;
         --debug)
             debug_provision=true
@@ -935,6 +956,32 @@ while [ $# -gt 0 ]; do
 done
 
 set -- "${POSITIONAL[@]}" # restore positional parameters
+
+# validate lvm and jbod are mutually exclusive
+[ "$use_lvm" = true ] && [ "$use_jbod" = true ] && {
+    error "--lvm and --jbod are mutually exclusive, please choose one"
+}
+
+# resolve disks for lvm/jbod
+if [ "$use_lvm" = true ] || [ "$use_jbod" = true ]; then
+    if [ -n "$disk" ]; then
+        # user specified disks (comma-separated)
+        IFS=',' read -ra disks <<<"$disk"
+        for i in "${!disks[@]}"; do
+            disks[$i]="$(normalize_disk "${disks[$i]}")"
+        done
+    else
+        # auto-detect all available disks
+        mapfile -t disks < <(get_all_disks)
+    fi
+
+    [ "${#disks[@]}" -lt 1 ] && error "no disks found for $([ "$use_lvm" = true ] && echo "lvm" || echo "jbod")"
+    [ "${#disks[@]}" -lt 2 ] && warn "only one disk found, $([ "$use_lvm" = true ] && echo "lvm" || echo "jbod") will use single disk"
+
+    # set disk to first disk for boot loader installation
+    disk="${disks[0]}"
+    disk_list="${disks[*]}"
+fi
 
 [ -z "$version" ] && {
     warn "version is not specified, use stable as default"
@@ -1444,6 +1491,8 @@ warn "uid:                     $uid"
 [ -n "$password" ] && warn "password:                $password"
 [ -n "$password_hash" ] && warn "password hash:           $password_hash"
 warn "boot size:               $boot_size MB"
+[ "$use_lvm" = true ] && warn "partition method:        lvm (disks: $disk_list)"
+[ "$use_jbod" = true ] && warn "partition method:        jbod (disks: $disk_list)"
 warn "hostname:                $hostname"
 warn "domain:                  $domain"
 warn "timezone:                $timezone"
@@ -1576,10 +1625,20 @@ d-i clock-setup/ntp-server string $ntp_server
 
 EOF
 
-echo "d-i partman-auto/method string regular" >>"$preseed_file"
+# partitioning method
+if [ "$use_lvm" = true ]; then
+    echo "d-i partman-auto/method string lvm" >>"$preseed_file"
+elif [ "$use_jbod" = true ]; then
+    echo "d-i partman-auto/method string raid" >>"$preseed_file"
+else
+    echo "d-i partman-auto/method string regular" >>"$preseed_file"
+fi
 
+# disk selection
 [ -z "$disk" ] && disk="$(get_disk)"
-if [ -z "$disk" ]; then
+if [ "$use_lvm" = true ] || [ "$use_jbod" = true ]; then
+    echo "d-i partman-auto/disk string $disk_list" >>"$preseed_file"
+elif [ -z "$disk" ]; then
     # shellcheck disable=SC2016
     echo 'd-i partman/early_command string debconf-set partman-auto/disk "$(list-devices disk | head -n 1)"' >>"$preseed_file"
 else
@@ -1598,16 +1657,18 @@ cat >>"$preseed_file" <<EOF
 d-i partman/default_filesystem string $filesystem
 EOF
 
-cat >>"$preseed_file" <<'EOF'
+if [ "$use_jbod" = true ]; then
+    # JBOD uses mdadm linear RAID across all disks
+    # partition recipe: boot partition on first disk + raid partition on each disk
+    cat >>"$preseed_file" <<'EOF'
 d-i partman-auto/expert_recipe string           \
-    naive ::                                    \
+    jbod-recipe ::                              \
 EOF
-if [ "$efi" = true ]; then
-    # shellcheck disable=SC2129
-    cat >>"$preseed_file" <<EOF
+    if [ "$efi" = true ]; then
+        cat >>"$preseed_file" <<EOF
     $esp $esp $esp fat32                       \\
 EOF
-    cat >>"$preseed_file" <<"EOF"
+        cat >>"$preseed_file" <<"EOF"
             $iflabel{ gpt }                     \
             $primary{ }                         \
             $reusemethod{ }                     \
@@ -1615,12 +1676,10 @@ EOF
             format{ }                           \
             .                                   \
 EOF
-
-    cat >>"$preseed_file" <<EOF
+        cat >>"$preseed_file" <<EOF
         $boot_size $boot_size $boot_size ext4                        \\
 EOF
-
-    cat >>"$preseed_file" <<"EOF"
+        cat >>"$preseed_file" <<"EOF"
             $primary{ }                         \
             $bootable{ }                        \
             method{ format }                    \
@@ -1630,26 +1689,179 @@ EOF
             mountpoint{ /boot }                 \
             .                                   \
 EOF
-else
-    cat >>"$preseed_file" <<"EOF"
+    else
+        cat >>"$preseed_file" <<"EOF"
         1 1 1 free                              \
             $primary{ }                         \
             $bios_boot{ }                       \
             $reusemethod{ }                     \
 EOF
-
-    [ "$gpt" == true ] && {
-        cat >>"$preseed_file" <<"EOF"
+        [ "$gpt" == true ] && {
+            cat >>"$preseed_file" <<"EOF"
             $iflabel{ gpt }                     \
 EOF
-    }
-    cat >>"$preseed_file" <<"EOF"
+        }
+        cat >>"$preseed_file" <<"EOF"
             method{ biosgrub }                  \
         .                                       \
 EOF
-fi
+    fi
 
-cat >>"$preseed_file" <<"EOF"
+    cat >>"$preseed_file" <<"EOF"
+        1024 1024 -1 raid                       \
+            $primary{ }                         \
+            method{ raid }                      \
+            raidid{ 1 }                         \
+    .
+EOF
+
+    # build JBOD (linear) RAID recipe
+    # format: <raidlevel> <devcount> <sparecount> <fstype> <mountpoint> <devices> <sparedevices>
+    raid_devices=""
+    dev_count="${#disks[@]}"
+    for d in "${disks[@]}"; do
+        # use partition 2 (or 3 for efi) on each disk for the raid array
+        if [ "$efi" = true ]; then
+            raid_devices+="${d}3#"
+        elif [ "$gpt" = true ]; then
+            raid_devices+="${d}2#"
+        else
+            raid_devices+="${d}1#"
+        fi
+    done
+    # remove trailing #
+    raid_devices="${raid_devices%#}"
+
+    cat >>"$preseed_file" <<EOF
+# JBOD: use RAID0 (stripe) to combine all disks into a single volume
+d-i partman-auto-raid/recipe string \\
+    0 $dev_count 0 $filesystem / $raid_devices .
+d-i mdadm/boot_degraded boolean true
+EOF
+
+elif [ "$use_lvm" = true ]; then
+    # LVM across all disks
+    cat >>"$preseed_file" <<'EOF'
+d-i partman-auto/expert_recipe string           \
+    lvm-recipe ::                               \
+EOF
+    if [ "$efi" = true ]; then
+        cat >>"$preseed_file" <<EOF
+    $esp $esp $esp fat32                       \\
+EOF
+        cat >>"$preseed_file" <<"EOF"
+            $iflabel{ gpt }                     \
+            $primary{ }                         \
+            $reusemethod{ }                     \
+            method{ efi }                       \
+            format{ }                           \
+            .                                   \
+EOF
+        cat >>"$preseed_file" <<EOF
+        $boot_size $boot_size $boot_size ext4                        \\
+EOF
+        cat >>"$preseed_file" <<"EOF"
+            $primary{ }                         \
+            $bootable{ }                        \
+            method{ format }                    \
+            format{ }                           \
+            use_filesystem{ }                   \
+            filesystem{ ext4 }                  \
+            mountpoint{ /boot }                 \
+            .                                   \
+EOF
+    else
+        cat >>"$preseed_file" <<"EOF"
+        1 1 1 free                              \
+            $primary{ }                         \
+            $bios_boot{ }                       \
+            $reusemethod{ }                     \
+EOF
+        [ "$gpt" == true ] && {
+            cat >>"$preseed_file" <<"EOF"
+            $iflabel{ gpt }                     \
+EOF
+        }
+        cat >>"$preseed_file" <<"EOF"
+            method{ biosgrub }                  \
+        .                                       \
+EOF
+    fi
+
+    cat >>"$preseed_file" <<"EOF"
+        1024 1024 -1 $default_filesystem        \
+            method{ lvm }                       \
+            device{ }                           \
+            vg_name{ vg0 }                      \
+            .                                   \
+        1024 1024 -1 $default_filesystem        \
+            $lvmok{ }                           \
+            method{ format }                    \
+            format{ }                           \
+            use_filesystem{ }                   \
+            $default_filesystem{ }              \
+            mountpoint{ / }                     \
+            lv_name{ root }                     \
+    .
+EOF
+
+    cat >>"$preseed_file" <<EOF
+d-i partman-auto-lvm/guided_size string max
+d-i partman-auto-lvm/new_vg_name string vg0
+d-i partman-auto-lvm/no_boot boolean true
+EOF
+
+else
+    # regular single-disk partitioning
+    cat >>"$preseed_file" <<'EOF'
+d-i partman-auto/expert_recipe string           \
+    naive ::                                    \
+EOF
+    if [ "$efi" = true ]; then
+        # shellcheck disable=SC2129
+        cat >>"$preseed_file" <<EOF
+    $esp $esp $esp fat32                       \\
+EOF
+        cat >>"$preseed_file" <<"EOF"
+            $iflabel{ gpt }                     \
+            $primary{ }                         \
+            $reusemethod{ }                     \
+            method{ efi }                       \
+            format{ }                           \
+            .                                   \
+EOF
+        cat >>"$preseed_file" <<EOF
+        $boot_size $boot_size $boot_size ext4                        \\
+EOF
+        cat >>"$preseed_file" <<"EOF"
+            $primary{ }                         \
+            $bootable{ }                        \
+            method{ format }                    \
+            format{ }                           \
+            use_filesystem{ }                   \
+            filesystem{ ext4 }                  \
+            mountpoint{ /boot }                 \
+            .                                   \
+EOF
+    else
+        cat >>"$preseed_file" <<"EOF"
+        1 1 1 free                              \
+            $primary{ }                         \
+            $bios_boot{ }                       \
+            $reusemethod{ }                     \
+EOF
+        [ "$gpt" == true ] && {
+            cat >>"$preseed_file" <<"EOF"
+            $iflabel{ gpt }                     \
+EOF
+        }
+        cat >>"$preseed_file" <<"EOF"
+            method{ biosgrub }                  \
+        .                                       \
+EOF
+    fi
+
+    cat >>"$preseed_file" <<"EOF"
         1024 1024 -1 $default_filesystem        \
             method{ format }                    \
             format{ }                           \
@@ -1658,6 +1870,8 @@ cat >>"$preseed_file" <<"EOF"
             mountpoint{ / }                     \
     .
 EOF
+fi
+
 if [ "$efi" = true ]; then
     cat >>"$preseed_file" <<"EOF"
 d-i partman-efi/non_efi_system boolean true
@@ -1665,7 +1879,7 @@ EOF
 fi
 
 cat >>"$preseed_file" <<EOF
-d-i partman-auto/choose_recipe select naive
+d-i partman-auto/choose_recipe select $(if [ "$use_jbod" = true ]; then echo "jbod-recipe"; elif [ "$use_lvm" = true ]; then echo "lvm-recipe"; else echo "naive"; fi)
 d-i partman-basicfilesystems/no_swap boolean false
 d-i partman-partitioning/confirm_write_new_label boolean true
 d-i partman/choose_partition select finish
@@ -1678,6 +1892,9 @@ d-i partman-lvm/device_remove_lvm boolean true
 
 # And the same goes for the confirmation to write the lvm partitions.
 d-i partman-lvm/confirm boolean true
+d-i partman-lvm/confirm_nooverwrite boolean true
+d-i partman-md/confirm boolean true
+d-i partman-md/confirm_nooverwrite boolean true
 EOF
 
 cat >>"$preseed_file" <<EOF
