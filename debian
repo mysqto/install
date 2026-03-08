@@ -1110,9 +1110,11 @@ esac
 [ -z "$boot_size" ] && {
     boot_size="$(lsblk -oMOUNTPOINT,SIZE -P | grep -E '^MOUNTPOINT="/boot"' | grep -Eo 'SIZE="[^"]+"' | cut -d'"' -f2)"
     # check the unit of boot size
-    size_unit="${boot_size//[0-9]/}"      # Remove all digits to get the unit
-    boot_size_num="${boot_size//[^0-9]/}" # Remove all non-digits to get the number
-    boot_size="$boot_size_num"
+    # lsblk may output values like "512M", "1G", "1.5G", "512.0M"
+    size_unit="${boot_size//[0-9.]/}"     # Remove digits and dots to get the unit
+    boot_size_num="${boot_size//[^0-9.]/}" # Remove all non-digits/dots to get the number
+    # truncate decimal part for integer arithmetic
+    boot_size="${boot_size_num%%.*}"
     case "$size_unit" in
         K | k)
             boot_size=$((boot_size / 1024)) # convert to MB
