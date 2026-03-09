@@ -55,7 +55,7 @@ elif installed dnf; then
 elif installed zypper; then
     zypper refresh && zypper install -y git gcc make autoconf libtool openssl-devel pcre-devel libev-devel asciidoc xmlto automake pwgen
 elif installed apk; then
-    apk upgrade && apk add --no-cache git build-base autoconf libtool openssl-dev pcre-dev libev-dev asciidoc xmlto automake pwgen
+    apk upgrade && apk add --no-cache git build-base autoconf libtool openssl-dev pcre-dev libev-dev asciidoc xmlto automake pwgen linux-headers
 else
     error "no package manager found, please install dependencies manually"
 fi
@@ -147,7 +147,7 @@ done
 
 set -- "${POSITIONAL[@]}" # restore positional parameters
 
-[ "$setup" == "true" ] && {
+if [ "$setup" == "true" ]; then
     shadowsocks_config_file="/etc/shadowsocks/config.json"
     shadowsocks_libev_config_file="/etc/shadowsocks-libev/config.json"
 
@@ -198,7 +198,7 @@ set -- "${POSITIONAL[@]}" # restore positional parameters
     [ -z "$password" ] && error "password required, please specify it with -p or --password"
     [ -z "$port" ] && error "port required, please specify it with -P or --port"
     [ -z "$obfs_host" ] && error "obfs-host required, please specify it with -o or --obfs-host"
-}
+fi
 
 libc=$(ldd "$(readlink -f /bin/sh)" 2>/dev/null | grep -q 'musl' && echo 'musl' || echo 'gnu')
 
@@ -243,7 +243,7 @@ for file in "$out_dir"/*server; do
     }
 done
 
-"$prefix/bin/ss-server" -V || error "Failed to run ss-server"
+/usr/local/bin/ss-server -V || error "Failed to run ss-server"
 
 rm -rf "$ssr_temp_dir" || error "Failed to remove temporary files"
 info "shadowsocks-rust installed successfully"
@@ -272,7 +272,7 @@ make install
 popd >>/dev/null 2>&1 || error "failed to leave simple-obfs directory"
 info "simple-obfs installed successfully"
 
-[ "$setup" == "true" ] && {
+if [ "$setup" == "true" ]; then
     info "setting up shadowsocks service, will use the following settings:"
     info "port               : $port"
     info "password           : $password"
@@ -366,4 +366,4 @@ EOF
 
     systemctl restart shadowsocks.service
     info "shadowsocks service started"
-}
+fi
