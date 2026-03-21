@@ -170,17 +170,21 @@ function get_all_ssh_hosts() {
 
 # test URLs for China servers
 china_test_urls=(
-    "http://connect.rom.miui.com/generate_204"
     "http://connectivitycheck.platform.hicloud.com/generate_204"
+    "http://www.qualcomm.cn/generate_204"
+    "http://connect.rom.miui.com/generate_204"
     "http://wifi.vivo.com.cn/generate_204"
 )
 
 # test URLs for international servers
 intl_test_urls=(
-    "http://www.gstatic.com/generate_204"
+    "http://captive.apple.com/hotspot-detect.html"
+    "http://connectivitycheck.gstatic.com/generate_204"
     "http://cp.cloudflare.com/generate_204"
+    "http://www.gstatic.com/generate_204"
     "http://www.msftconnecttest.com/connecttest.txt"
-    "http://connectivitycheck.amazonaws.com/"
+    "http://www.msftncsi.com/ncsi.txt"
+    "http://detectportal.firefox.com/success.txt"
 )
 
 # country code to flag emoji
@@ -436,6 +440,7 @@ function generate_snell_surge_config() {
 # process a single host and return config (returns config via stdout)
 function process_host() {
     local host="$1"
+    local use_cli_opts="${2:-false}"  # whether to use CLI options
     local result=""
 
     # reset ssh variables for this host
@@ -448,6 +453,13 @@ function process_host() {
     [[ "$ssh_host" == *@* ]] && {
         ssh_user="${ssh_host%@*}"
         ssh_host="${ssh_host#*@}"
+    }
+
+    # apply CLI options if in single host mode
+    [ "$use_cli_opts" = true ] && {
+        [ -n "$cli_user" ] && ssh_user="$cli_user"
+        [ -n "$cli_port" ] && ssh_port="$cli_port"
+        [ -n "$cli_identity" ] && ssh_identity="$cli_identity"
     }
 
     # remote_host defaults to ssh_host (without user@)
@@ -553,6 +565,11 @@ function process_host() {
 output_file=""
 single_host=""
 
+# command-line provided values (saved for single host mode)
+cli_user=""
+cli_port=""
+cli_identity=""
+
 POSITIONAL=()
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -560,11 +577,11 @@ while [ $# -gt 0 ]; do
             usage
             ;;
         -u | --user)
-            ssh_user="$2"
+            cli_user="$2"
             shift 2
             ;;
         -p | --port)
-            ssh_port="$2"
+            cli_port="$2"
             shift 2
             ;;
         -P | --password)
@@ -572,7 +589,7 @@ while [ $# -gt 0 ]; do
             shift 2
             ;;
         -i | --identity)
-            ssh_identity="$2"
+            cli_identity="$2"
             shift 2
             ;;
         -o | --output)
@@ -603,7 +620,7 @@ if [ $# -ge 1 ]; then
     # single host mode
     single_host="$1"
     info "Processing single host: $single_host"
-    all_output=$(process_host "$single_host")
+    all_output=$(process_host "$single_host" true)
 else
     # batch mode: process all hosts from SSH config
     info "No host specified, processing all hosts from SSH config..."
