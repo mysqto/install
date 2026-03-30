@@ -1,0 +1,244 @@
+#!/usr/bin/env bash
+
+# Cloudflare DDNS installer
+# Installs a script that periodically updates a Cloudflare DNS record
+# with the current public IP address of the server.
+
+# Check root privileges
+[ $EUID -ne 0 ] && echo "Error: This script must be run as root!" && exit 1
+
+# Use CURL_OPTS from environment if set
+[ -z "$CURL_OPTS" ] && CURL_OPTS=""
+
+# Default values
+cf_api_token=""
+cf_zone_id=""
+cf_record_name=""
+cf_record_type="A"
+cf_ttl=60
+cf_proxied=false
+cron_interval="*/5"
+ddns_config_dir="/etc/ddns"
+ddns_config_file="$ddns_config_dir/cloudflare.conf"
+ddns_script="/usr/local/bin/ddns-cloudflare"
+ddns_log="/var/log/ddns-cloudflare.log"
+
+function info() {
+    echo -e "\033[32m$1\033[0m"
+}
+
+function warn() {
+    echo -e "\033[33m$1\033[0m"
+}
+
+function error() {
+    echo -e "\033[31m$1\033[0m"
+    exit 1
+}
+
+function installed() {
+    command -v "$1" >/dev/null 2>&1
+}
+
+function usage() {
+    info "Usage: $(basename "$0") [options]"
+    info "Options:"
+    info "  -t  | --token      Cloudflare API token (required)"
+    info "  -z  | --zone-id    Cloudflare Zone ID (required)"
+    info "  -n  | --name       DNS record name, e.g. home.example.com (required)"
+    info "  -T  | --type       DNS record type, A or AAAA (default: A)"
+    info "  -l  | --ttl        DNS record TTL in seconds (default: 60)"
+    info "  -P  | --proxied    Enable Cloudflare proxy (default: false)"
+    info "  -i  | --interval   Cron interval in minutes (default: */5)"
+    info "  -h  | --help       Show this help message"
+}
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -t | --token)
+            cf_api_token="$2"
+            shift 2
+            ;;
+        -z | --zone-id)
+            cf_zone_id="$2"
+            shift 2
+            ;;
+        -n | --name)
+            cf_record_name="$2"
+            shift 2
+            ;;
+        -T | --type)
+            cf_record_type="$2"
+            shift 2
+            ;;
+        -l | --ttl)
+            cf_ttl="$2"
+            shift 2
+            ;;
+        -P | --proxied)
+            cf_proxied=true
+            shift
+            ;;
+        -i | --interval)
+            cron_interval="$2"
+            shift 2
+            ;;
+        -h | --help)
+            usage
+            exit 0
+            ;;
+        *)
+            warn "unknown option $1"
+            shift
+            ;;
+    esac
+done
+
+# Validate required parameters
+[ -z "$cf_api_token" ] && error "Cloudflare API token is required (--token)"
+[ -z "$cf_zone_id" ] && error "Cloudflare Zone ID is required (--zone-id)"
+[ -z "$cf_record_name" ] && error "DNS record name is required (--name)"
+
+# Ensure dependencies
+for dep in curl jq; do
+    if ! installed "$dep"; then
+        info "Installing $dep..."
+        apt-get update >/dev/null 2>&1 && apt-get install -y "$dep" >/dev/null 2>&1 ||
+            yum install -y "$dep" >/dev/null 2>&1 ||
+            error "Failed to install $dep"
+    fi
+done
+
+# Create config directory
+mkdir -p "$ddns_config_dir"
+
+# Write config file
+info "Writing config to $ddns_config_file"
+cat >"$ddns_config_file" <<EOF
+# Cloudflare DDNS configuration
+CF_API_TOKEN="$cf_api_token"
+CF_ZONE_ID="$cf_zone_id"
+CF_RECORD_NAME="$cf_record_name"
+CF_RECORD_TYPE="$cf_record_type"
+CF_TTL=$cf_ttl
+CF_PROXIED=$cf_proxied
+CURL_OPTS="$CURL_OPTS"
+EOF
+chmod 600 "$ddns_config_file"
+
+# Write the DDNS update script
+info "Installing DDNS script to $ddns_script"
+cat >"$ddns_script" <<'SCRIPT'
+#!/usr/bin/env bash
+
+CONFIG="/etc/ddns/cloudflare.conf"
+LOG="/var/log/ddns-cloudflare.log"
+IP_CACHE="/etc/ddns/.current_ip"
+
+[ ! -f "$CONFIG" ] && echo "config not found: $CONFIG" && exit 1
+
+# shellcheck disable=SC1090
+source "$CONFIG"
+
+function log() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') $1" >>"$LOG"
+}
+
+# Get current public IP
+if [ "$CF_RECORD_TYPE" == "AAAA" ]; then
+    current_ip=$(curl ${CURL_OPTS} -6 -sL --connect-timeout 5 https://api64.ipify.org 2>/dev/null) ||
+        current_ip=$(curl ${CURL_OPTS} -6 -sL --connect-timeout 5 https://ifconfig.co 2>/dev/null)
+else
+    current_ip=$(curl ${CURL_OPTS} -4 -sL --connect-timeout 5 https://api.ipify.org 2>/dev/null) ||
+        current_ip=$(curl ${CURL_OPTS} -4 -sL --connect-timeout 5 https://ifconfig.co 2>/dev/null)
+fi
+
+[ -z "$current_ip" ] && log "ERROR: failed to get public IP" && exit 1
+
+# Check cached IP to avoid unnecessary API calls
+cached_ip=""
+[ -f "$IP_CACHE" ] && cached_ip=$(cat "$IP_CACHE")
+if [ "$current_ip" == "$cached_ip" ]; then
+    log "IP unchanged: $current_ip"
+    exit 0
+fi
+
+# Get the DNS record ID
+cf_api="https://api.cloudflare.com/client/v4"
+record_response=$(curl ${CURL_OPTS} -sL --connect-timeout 10 \
+    -H "Authorization: Bearer $CF_API_TOKEN" \
+    -H "Content-Type: application/json" \
+    "$cf_api/zones/$CF_ZONE_ID/dns_records?type=$CF_RECORD_TYPE&name=$CF_RECORD_NAME")
+
+record_id=$(echo "$record_response" | jq -r '.result[0].id // empty')
+record_ip=$(echo "$record_response" | jq -r '.result[0].content // empty')
+
+if [ -z "$record_id" ]; then
+    # Record does not exist, create it
+    log "Creating DNS record $CF_RECORD_NAME -> $current_ip"
+    create_response=$(curl ${CURL_OPTS} -sL --connect-timeout 10 -X POST \
+        -H "Authorization: Bearer $CF_API_TOKEN" \
+        -H "Content-Type: application/json" \
+        -d "{\"type\":\"$CF_RECORD_TYPE\",\"name\":\"$CF_RECORD_NAME\",\"content\":\"$current_ip\",\"ttl\":$CF_TTL,\"proxied\":$CF_PROXIED}" \
+        "$cf_api/zones/$CF_ZONE_ID/dns_records")
+
+    success=$(echo "$create_response" | jq -r '.success')
+    if [ "$success" == "true" ]; then
+        echo "$current_ip" >"$IP_CACHE"
+        log "DNS record created: $CF_RECORD_NAME -> $current_ip"
+    else
+        errors=$(echo "$create_response" | jq -r '.errors')
+        log "ERROR: failed to create DNS record: $errors"
+        exit 1
+    fi
+else
+    # Record exists, update if IP changed
+    if [ "$record_ip" == "$current_ip" ]; then
+        echo "$current_ip" >"$IP_CACHE"
+        log "IP unchanged (from DNS): $current_ip"
+        exit 0
+    fi
+
+    log "Updating DNS record $CF_RECORD_NAME: $record_ip -> $current_ip"
+    update_response=$(curl ${CURL_OPTS} -sL --connect-timeout 10 -X PUT \
+        -H "Authorization: Bearer $CF_API_TOKEN" \
+        -H "Content-Type: application/json" \
+        -d "{\"type\":\"$CF_RECORD_TYPE\",\"name\":\"$CF_RECORD_NAME\",\"content\":\"$current_ip\",\"ttl\":$CF_TTL,\"proxied\":$CF_PROXIED}" \
+        "$cf_api/zones/$CF_ZONE_ID/dns_records/$record_id")
+
+    success=$(echo "$update_response" | jq -r '.success')
+    if [ "$success" == "true" ]; then
+        echo "$current_ip" >"$IP_CACHE"
+        log "DNS record updated: $CF_RECORD_NAME -> $current_ip"
+    else
+        errors=$(echo "$update_response" | jq -r '.errors')
+        log "ERROR: failed to update DNS record: $errors"
+        exit 1
+    fi
+fi
+SCRIPT
+chmod +x "$ddns_script"
+
+# Add cron job
+cron_entry="$cron_interval * * * * $ddns_script"
+cron_checksum=$(echo "$cron_entry" | md5sum | cut -d' ' -f1)
+
+if crontab -l 2>/dev/null | grep -q "$cron_checksum"; then
+    warn "DDNS cron job already exists"
+else
+    (
+        crontab -l 2>/dev/null
+        echo "$cron_entry # $cron_checksum"
+    ) | crontab -
+    info "DDNS cron job added: $cron_entry"
+fi
+
+# Run once immediately
+info "Running DDNS update now..."
+"$ddns_script"
+
+info "Cloudflare DDNS installed successfully"
+info "  Config:  $ddns_config_file"
+info "  Script:  $ddns_script"
+info "  Log:     $ddns_log"
+info "  Cron:    $cron_entry"
