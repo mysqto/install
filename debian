@@ -186,7 +186,7 @@ function netmask() {
             ;;
         4)
             mask=$(cidr_to_netmask "$(ip -"$type" -o addr show "$if" | head -1 | awk '{split($4,a,"/"); print a[2]}')")
-            # Handle Google Cloud Platform special case
+            # Handle /32 netmask special cases
             if [ "$mask" == "255.255.255.255" ]; then
                 local asn
                 asn=$(curl ${CURL_OPTS} --connect-timeout 30 -s -"$type" "https://ipconfig.io/json" | jq -r '.asn_org' 2>/dev/null)
@@ -1355,6 +1355,25 @@ ssh_private_key=""
     }
 }
 
+# check if gateway is on the same subnet as the IP address
+# if not, we need to add a host route in the installer's early_command
+gateway_unreachable=false
+if [ "$network_type" = 4 ] && [ -n "$ip_address" ] && [ -n "$gateway" ] && [ -n "$netmask" ]; then
+    # convert IP and gateway to integers, apply netmask to check same subnet
+    ip_to_int() {
+        local IFS=.
+        read -r a b c d <<<"$1"
+        echo $(( (a << 24) + (b << 16) + (c << 8) + d ))
+    }
+    ip_int=$(ip_to_int "$ip_address")
+    gw_int=$(ip_to_int "$gateway")
+    mask_int=$(ip_to_int "$netmask")
+    if [ $(( ip_int & mask_int )) -ne $(( gw_int & mask_int )) ]; then
+        warn "gateway $gateway is not on the same subnet as $ip_address/$netmask, will add host route"
+        gateway_unreachable=true
+    fi
+fi
+
 [ "$static_ip" == true ] && {
     warn "static ip is enabled, will select interface with static ip"
     interface="$(default_interface "$network_type")"
@@ -1514,8 +1533,8 @@ warn "netmask:                 $netmask"
 warn "gateway:                 $gateway"
 warn "dns:                     $dns"
 warn "ssh port:                $ssh_port"
-[ -n "$ssh_private_key" ] && warn "ssh private key: \n$ssh_private_key"
-[ -n "$authorized_keys" ] && warn "ssh public key: \n$authorized_keys"
+[ -n "$ssh_private_key" ] && { warn "ssh private key:"; warn "$ssh_private_key"; }
+[ -n "$authorized_keys" ] && { warn "ssh public key:"; warn "$authorized_keys"; }
 [ "$install_shadow_tls" = true ] && {
     warn "install shadowTLS        $install_shadow_tls"
     warn "snell port:              $snell_port"
@@ -1574,12 +1593,19 @@ d-i hw-detect/load_firmware boolean true
 
 EOF
 
+# build early_command: add host route for unreachable gateway + optional network-console
+early_cmd=""
+if [ "$gateway_unreachable" = true ]; then
+    early_cmd="ip addr add $ip_address/32 dev $interface 2>/dev/null; ip route add $gateway/32 dev $interface 2>/dev/null; "
+fi
+
 [ "$network_console" = true ] && {
+    early_cmd="${early_cmd}anna-install network-console bash"
     cat >>"$preseed_file" <<EOF
 # Network console
 
 d-i anna/choose_modules string network-console
-d-i preseed/early_command string anna-install network-console bash
+d-i preseed/early_command string $early_cmd
 EOF
     if [ -n "$nc_authorized_keys_url" ]; then
         cat >>"$preseed_file" <<EOF
@@ -1595,6 +1621,13 @@ EOF
 d-i network-console/start select Continue
 EOF
 }
+
+# if gateway is unreachable but network_console is not enabled, still need early_command for route
+if [ "$gateway_unreachable" = true ] && [ "$network_console" != true ]; then
+    cat >>"$preseed_file" <<EOF
+d-i preseed/early_command string ${early_cmd% }
+EOF
+fi
 
 cat >>"$preseed_file" <<EOF
 
