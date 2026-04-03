@@ -398,6 +398,7 @@ firmware=false
 disk=
 use_lvm=false
 use_jbod=false
+use_netplan=false
 efi=
 gpt=true
 esp=
@@ -645,6 +646,10 @@ while [ $# -gt 0 ]; do
             ;;
         --jbod)
             use_jbod=true
+            shift
+            ;;
+        --netplan)
+            use_netplan=true
             shift
             ;;
         --debug)
@@ -1437,6 +1442,7 @@ function build_provision_params() {
     ipv6_enabled && cmd+=("--ipv6-dhcp")
     add_flag "disable_ipv6"
     add_flag "use_ethx" "ethx"
+    add_flag "use_netplan" "netplan"
 
     # User and SSH options
     add_param "username"

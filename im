@@ -151,6 +151,100 @@ function fix_grub() {
     update-grub
 }
 
+function default_interface() {
+    local type="${1:-4}"
+    local result
+    result="$(ip -"$type" route show default | awk '{print $5}' | head -n1)"
+    # if no default interface for ipv4, try ipv6
+    if [ -z "$result" ] && [ "$type" == "4" ]; then
+        result="$(ip -6 route show default | awk '{print $5}' | head -n1)"
+    fi
+    echo "$result"
+}
+
+function convert_to_netplan() {
+    info "converting /etc/network/interfaces to netplan"
+
+    # check if already using netplan
+    if command -v netplan >/dev/null 2>&1 && [ -n "$(ls /etc/netplan/*.yaml 2>/dev/null)" ]; then
+        warn "netplan is already configured, skipping"
+        return 0
+    fi
+
+    DEBIAN_FRONTEND=noninteractive UCF_FORCE_CONFFOLD=1 apt -y --no-install-recommends install netplan.io
+
+    local iface gw dns ip mask
+    iface="$(default_interface)"
+    [ -z "$iface" ] && iface="eth0"
+
+    ip="$(ip -4 -o addr show "$iface" | awk '{print $4}' | head -1)"
+    gw="$(ip -4 route show default | awk '{print $3}' | head -1)"
+    dns="$(awk '/^nameserver/ {print $2}' /etc/resolv.conf | head -3 | paste -sd, -)"
+    [ -z "$dns" ] && dns="1.1.1.1"
+
+    # check if gateway needs on-link route
+    mask="$(ip -4 -o addr show "$iface" | awk '{split($4,a,"/"); print a[2]}' | head -1)"
+    local gateway_onlink=false
+    if [ "$mask" = "32" ] || [ -n "$(ip -4 route show "$gw" dev "$iface" scope link 2>/dev/null)" ]; then
+        gateway_onlink=true
+    fi
+
+    mkdir -p /etc/netplan
+    rm -f /etc/netplan/*.yaml
+
+    if [ "$gateway_onlink" = true ]; then
+        cat >/etc/netplan/01-netcfg.yaml <<NETPLAN
+network:
+  version: 2
+  ethernets:
+    $iface:
+      addresses:
+        - $ip
+      routes:
+        - to: ${gw}/32
+          scope: link
+        - to: default
+          via: $gw
+          on-link: true
+      nameservers:
+        addresses: [${dns}]
+NETPLAN
+    else
+        cat >/etc/netplan/01-netcfg.yaml <<NETPLAN
+network:
+  version: 2
+  ethernets:
+    $iface:
+      addresses:
+        - $ip
+      routes:
+        - to: default
+          via: $gw
+      nameservers:
+        addresses: [${dns}]
+NETPLAN
+    fi
+
+    # add ipv6 if currently active
+    if ip -6 route show default >/dev/null 2>&1 && [ -n "$(ip -6 route show default)" ]; then
+        cat >>/etc/netplan/01-netcfg.yaml <<NETPLAN
+      dhcp6: true
+NETPLAN
+    fi
+
+    chmod 600 /etc/netplan/01-netcfg.yaml
+
+    # strip /etc/network/interfaces to loopback only
+    if [ -f /etc/network/interfaces ]; then
+        grep -E '^(auto lo|iface lo)' /etc/network/interfaces > /etc/network/interfaces.tmp 2>/dev/null
+        mv /etc/network/interfaces.tmp /etc/network/interfaces
+    fi
+    systemctl enable systemd-networkd 2>/dev/null
+
+    info "netplan config written to /etc/netplan/01-netcfg.yaml"
+    info "run 'netplan apply' or reboot to activate"
+}
+
 function update() {
     info "checking for updates"
     if kernal_updateable; then
@@ -542,6 +636,7 @@ function usage() {
     info "  -c    | --cleanup                        cleanup the server"
     info "  -a    | --auto                           auto update or upgrade the server"
     info "  -f    | --fix-grub                       fix grub boot menu"
+    info "        | --netplan                        convert /etc/network/interfaces to netplan"
     info "  -e    | --edge-kernel                    install edge kernel"
     info ""
     info "Shadowsocks & Network Tools:"
@@ -694,6 +789,10 @@ while [ $# -gt 0 ]; do
             _netflix_test=true
             shift 1
             ;;
+        --netplan)
+            _convert_netplan=true
+            shift
+            ;;
         -so | --socat)
             _install_socat=true
             shift
@@ -812,6 +911,8 @@ action() {
         distro
     elif [ "$_fix_grub" == true ]; then
         fix_grub
+    elif [ "$_convert_netplan" == true ]; then
+        convert_to_netplan
     elif [ "$_install_docker" == true ]; then
         install_docker "$username"
     elif [ "$_install_socat" == true ]; then

@@ -381,6 +381,7 @@ shadow_tls_obfs_host=
 snell_config_file="/etc/snell/snell-server.conf"
 shadow_tls_default_file="/etc/default/shadow-tls"
 ethx=false
+use_netplan=false
 grub_default="/etc/default/grub"
 
 distro="$(lsb_release -is 2>/dev/null)"
@@ -495,6 +496,10 @@ while [ $# -gt 0 ]; do
             ;;
         --ethx)
             ethx=true
+            shift
+            ;;
+        --netplan)
+            use_netplan=true
             shift
             ;;
         -d | --docker)
@@ -745,6 +750,81 @@ grub_cmdline=$(grep -oP '^GRUB_CMDLINE_LINUX_DEFAULT="\K[^"]+' "$grub_default" 2
         }
     }
     info "rebooting to apply changes"
+}
+
+[ "$use_netplan" = true ] && {
+    info "converting /etc/network/interfaces to netplan"
+    DEBIAN_FRONTEND=noninteractive UCF_FORCE_CONFFOLD=1 apt -y --no-install-recommends install netplan.io
+
+    local_iface="$(default_interface)"
+    [ -z "$local_iface" ] && local_iface="eth0"
+
+    local_ip="$(ip -4 -o addr show "$local_iface" | awk '{print $4}' | head -1)"
+    local_gw="$(ip -4 route show default | awk '{print $3}' | head -1)"
+    local_dns="$(awk '/^nameserver/ {print $2}' /etc/resolv.conf | head -3 | paste -sd, -)"
+    [ -z "$local_dns" ] && local_dns="1.1.1.1"
+
+    # check if gateway is on a different subnet (needs on-link route)
+    local_mask="$(ip -4 -o addr show "$local_iface" | awk '{split($4,a,"/"); print a[2]}' | head -1)"
+    gateway_onlink=false
+    if [ "$local_mask" = "32" ] || [ -n "$(ip -4 route show "$local_gw" dev "$local_iface" scope link 2>/dev/null)" ]; then
+        gateway_onlink=true
+    fi
+
+    mkdir -p /etc/netplan
+    # remove any existing netplan configs
+    rm -f /etc/netplan/*.yaml
+
+    if [ "$gateway_onlink" = true ]; then
+        cat >/etc/netplan/01-netcfg.yaml <<NETPLAN
+network:
+  version: 2
+  ethernets:
+    $local_iface:
+      addresses:
+        - $local_ip
+      routes:
+        - to: ${local_gw}/32
+          scope: link
+        - to: default
+          via: $local_gw
+          on-link: true
+      nameservers:
+        addresses: [${local_dns}]
+NETPLAN
+    else
+        cat >/etc/netplan/01-netcfg.yaml <<NETPLAN
+network:
+  version: 2
+  ethernets:
+    $local_iface:
+      addresses:
+        - $local_ip
+      routes:
+        - to: default
+          via: $local_gw
+      nameservers:
+        addresses: [${local_dns}]
+NETPLAN
+    fi
+
+    # add ipv6 dhcp if enabled
+    [ "$ipv6_dchp" = true ] && {
+        cat >>/etc/netplan/01-netcfg.yaml <<NETPLAN
+      dhcp6: true
+NETPLAN
+    }
+
+    chmod 600 /etc/netplan/01-netcfg.yaml
+
+    # disable ifupdown and enable netplan/networkd
+    if [ -f /etc/network/interfaces ]; then
+        # keep loopback, remove everything else
+        grep -E '^(auto lo|iface lo)' /etc/network/interfaces > /etc/network/interfaces.tmp 2>/dev/null
+        mv /etc/network/interfaces.tmp /etc/network/interfaces
+    fi
+    systemctl enable systemd-networkd 2>/dev/null
+    info "netplan config written to /etc/netplan/01-netcfg.yaml"
 }
 
 # trim grub_cmdline
