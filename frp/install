@@ -146,6 +146,45 @@ function parse_frps_field() {
         | head -n1 | sed 's/.*=[[:space:]]*//' | tr -d '"' | tr -d "'" | tr -d ' '
 }
 
+function emit_ssh_hint() {
+    # Print a ~/.ssh/config snippet for every TCP proxy in $1 that forwards to localPort 22.
+    # $2 (optional) = User= value to emit; if empty, the User line is left commented.
+    local config="$1" user="$2"
+    [ ! -f "$config" ] && return 0
+
+    local snippet
+    snippet=$(awk -v user="$user" '
+        function flush() {
+            if (in_p && ptype=="tcp" && lport=="22" && rport!="" && server!="") {
+                printf "Host %s\n", name
+                printf "    HostName %s\n", server
+                printf "    Port %s\n", rport
+                if (user != "") printf "    User %s\n\n", user
+                else            printf "    # User <user-on-the-NAT-box>\n\n"
+            }
+        }
+        BEGIN { in_p=0 }
+        /^[[:space:]]*#/ { next }
+        /^[[:space:]]*serverAddr[[:space:]]*=/ {
+            v=$0; sub(/.*=[[:space:]]*"?/,"",v); sub(/"?[[:space:]]*$/,"",v); server=v
+        }
+        /^[[:space:]]*\[\[proxies\]\]/ { flush(); in_p=1; name=""; ptype=""; lport=""; rport=""; next }
+        /^[[:space:]]*\[/             { flush(); in_p=0; next }
+        in_p && /^[[:space:]]*name[[:space:]]*=/       { v=$0; sub(/.*=[[:space:]]*"?/,"",v); sub(/"?[[:space:]]*$/,"",v); name=v }
+        in_p && /^[[:space:]]*type[[:space:]]*=/       { v=$0; sub(/.*=[[:space:]]*"?/,"",v); sub(/"?[[:space:]]*$/,"",v); ptype=v }
+        in_p && /^[[:space:]]*localPort[[:space:]]*=/  { v=$0; sub(/.*=[[:space:]]*/,"",v); sub(/[[:space:]]*$/,"",v); lport=v }
+        in_p && /^[[:space:]]*remotePort[[:space:]]*=/ { v=$0; sub(/.*=[[:space:]]*/,"",v); sub(/[[:space:]]*$/,"",v); rport=v }
+        END { flush() }
+    ' "$config")
+
+    [ -z "$snippet" ] && return 0
+
+    info ""
+    info "SSH config — paste into ~/.ssh/config on any machine that can reach the server:"
+    info ""
+    printf '%s\n' "$snippet"
+}
+
 FRP_RELEASES_URL="https://api.github.com/repos/fatedier/frp/releases/latest"
 
 function get_frp_version() {
@@ -407,6 +446,8 @@ function install_client() {
     info "FRP client installed:"
     info "  binary      : $prefix/bin/frpc"
     info "  config      : $config_dir/frpc.toml"
+
+    emit_ssh_hint "$config_dir/frpc.toml" "${SUDO_USER:-}"
 }
 
 function install_client_from_config() {
@@ -441,6 +482,8 @@ function install_client_from_config() {
     info "FRP client installed:"
     info "  binary      : $prefix/bin/frpc"
     info "  config      : $config_dir/frpc.toml"
+
+    emit_ssh_hint "$config_dir/frpc.toml" "${SUDO_USER:-}"
 }
 
 function gen_client_config() {
@@ -489,6 +532,8 @@ function gen_client_config() {
     info "Next: copy to the NAT'd client and install with --from-config, e.g.:"
     info "  scp $gen_client_path user@nat-box:~/frpc.toml"
     info "  ssh user@nat-box 'sudo bash -c \"\$(curl -sL https://debian.lol/frp/install)\" -- --from-config ~/frpc.toml'"
+
+    emit_ssh_hint "$gen_client_path" ""
 }
 
 function usage() {
