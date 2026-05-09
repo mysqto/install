@@ -202,9 +202,13 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+DynamicUser=true
 Restart=on-failure
 RestartSec=5
 ExecStart=${exec_path} -c ${config_path}
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
 LimitNOFILE=1048576
 
 [Install]
@@ -241,6 +245,10 @@ function install_launchd_unit() {
         <string>-c</string>
         <string>${config_path}</string>
     </array>
+    <key>UserName</key>
+    <string>nobody</string>
+    <key>GroupName</key>
+    <string>nobody</string>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
@@ -290,6 +298,10 @@ function install_server() {
     install -m 0755 "$extracted/frps" "$prefix/bin/frps" || error "failed to install frps binary"
     info "frps installed to $prefix/bin/frps"
 
+    if [ -z "$token" ] && [ -f "$config_dir/frps.toml" ]; then
+        token=$(parse_frps_field "$(cat "$config_dir/frps.toml")" "token")
+        [ -n "$token" ] && info "preserving existing token from $config_dir/frps.toml"
+    fi
     [ -z "$token" ] && token=$(gen_token)
 
     mkdir -p "$config_dir"
@@ -314,7 +326,7 @@ function install_server() {
         } >> "$config_dir/frps.toml"
     fi
 
-    chmod 600 "$config_dir/frps.toml"
+    chmod 644 "$config_dir/frps.toml"
     info "config written to $config_dir/frps.toml"
 
     install_service "frps" "$prefix/bin/frps" "$config_dir/frps.toml"
@@ -384,7 +396,7 @@ function install_client() {
     write_frpc_header "$config_dir/frpc.toml" "$server_host" "$server_port" "$server_token"
     write_proxies_to "$config_dir/frpc.toml"
 
-    chmod 600 "$config_dir/frpc.toml"
+    chmod 644 "$config_dir/frpc.toml"
     info "config written to $config_dir/frpc.toml"
 
     install_service "frpc" "$prefix/bin/frpc" "$config_dir/frpc.toml"
@@ -435,7 +447,7 @@ function gen_client_config() {
     write_frpc_header "$gen_client_path" "$server_host" "$server_port" "$server_token"
     write_proxies_to "$gen_client_path"
 
-    chmod 600 "$gen_client_path"
+    chmod 644 "$gen_client_path"
     info "frpc config written to $gen_client_path"
     info ""
     info "Next: copy to NAT'd client and run frpc, e.g.:"
