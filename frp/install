@@ -2,8 +2,10 @@
 
 # FRP installer
 # Modes:
-#   default: install frps on this machine
-#   --client user@host: install frpc on this machine, fetching server bindPort/token via SSH
+#   default:               install frps on this machine
+#   --client user@host:    install frpc on this machine, fetching server bindPort/token via SSH
+#   --gen-client PATH:     on the server, emit an frpc.toml to PATH (no install, no SSH)
+#   --from-config PATH:    install frpc on this machine using a pre-generated frpc.toml
 
 function warn()  { echo -e "\033[1;33m${*}\033[0m"; }
 function error() { echo -e "\033[1;31m${*}\033[0m"; exit 1; }
@@ -407,6 +409,40 @@ function install_client() {
     info "  config      : $config_dir/frpc.toml"
 }
 
+function install_client_from_config() {
+    [ -z "$from_config_path" ] && error "--from-config requires a path"
+    [ ! -f "$from_config_path" ] && error "config file not found: $from_config_path"
+
+    local os arch version tmpdir extracted
+    os=$(detect_os); arch=$(detect_arch)
+    version=$(get_frp_version)
+    [ -z "$version" ] && error "could not detect FRP version"
+    info "installing FRP client v${version} (${os}_${arch})"
+
+    tmpdir=$(mktemp -d -t frp-XXXXXXXX) || error "failed to create temp dir"
+    trap 'rm -rf "$tmpdir"' EXIT
+    extracted=$(download_frp "$version" "$os" "$arch" "$tmpdir")
+
+    mkdir -p "$prefix/bin"
+    install -m 0755 "$extracted/frpc" "$prefix/bin/frpc" || error "failed to install frpc binary"
+    info "frpc installed to $prefix/bin/frpc"
+
+    mkdir -p "$config_dir"
+    if [ "$from_config_path" != "$config_dir/frpc.toml" ]; then
+        cp -- "$from_config_path" "$config_dir/frpc.toml" \
+            || error "failed to copy $from_config_path to $config_dir/frpc.toml"
+    fi
+    chmod 644 "$config_dir/frpc.toml"
+    info "config installed at $config_dir/frpc.toml"
+
+    install_service "frpc" "$prefix/bin/frpc" "$config_dir/frpc.toml"
+
+    info ""
+    info "FRP client installed:"
+    info "  binary      : $prefix/bin/frpc"
+    info "  config      : $config_dir/frpc.toml"
+}
+
 function gen_client_config() {
     [ -z "$gen_client_path" ] && error "--gen-client requires output path"
 
@@ -450,9 +486,9 @@ function gen_client_config() {
     chmod 644 "$gen_client_path"
     info "frpc config written to $gen_client_path"
     info ""
-    info "Next: copy to NAT'd client and run frpc, e.g.:"
-    info "  scp $gen_client_path user@nat-box:/etc/frp/frpc.toml"
-    info "  ssh user@nat-box 'frpc -c /etc/frp/frpc.toml'"
+    info "Next: copy to the NAT'd client and install with --from-config, e.g.:"
+    info "  scp $gen_client_path user@nat-box:~/frpc.toml"
+    info "  ssh user@nat-box 'sudo bash -c \"\$(curl -sL https://debian.lol/frp/install)\" -- --from-config ~/frpc.toml'"
 }
 
 function usage() {
@@ -487,6 +523,11 @@ Gen-client mode (run on the server, no SSH; emits a frpc.toml to copy out):
   --name NAME             client name prefix (default: client)
   --proxy SPEC            same format as client mode (repeatable)
 
+From-config mode (run on the NAT'd box with a pre-generated frpc.toml):
+  --from-config PATH      install frpc binary + service using the config at PATH
+                          (PATH is copied to <config-dir>/frpc.toml unless it
+                          already lives there)
+
 Common:
   --prefix DIR            install prefix for the binary (default: /usr/local)
                           binary lands at <prefix>/bin/frps or <prefix>/bin/frpc
@@ -517,6 +558,7 @@ prefix="/usr/local"
 config_dir="/etc/frp"
 frp_version=""
 gen_client_path=""
+from_config_path=""
 
 POSITIONAL=()
 while [ $# -gt 0 ]; do
@@ -528,6 +570,7 @@ while [ $# -gt 0 ]; do
         --dashboard-pwd)   dashboard_pwd="$2"; shift 2 ;;
         --client)          mode="client"; ssh_target="$2"; shift 2 ;;
         --gen-client)      mode="gen-client"; gen_client_path="$2"; shift 2 ;;
+        --from-config)     mode="from-config"; from_config_path="$2"; shift 2 ;;
         --ssh-port)        ssh_port="$2"; shift 2 ;;
         --ssh-key)         ssh_key="$2"; shift 2 ;;
         --ssh-pass)        ssh_pass="$2"; shift 2 ;;
@@ -550,8 +593,9 @@ set -- "${POSITIONAL[@]}"
 ensure_curl
 
 case "$mode" in
-    server)     install_server ;;
-    client)     install_client ;;
-    gen-client) gen_client_config ;;
+    server)      install_server ;;
+    client)      install_client ;;
+    gen-client)  gen_client_config ;;
+    from-config) install_client_from_config ;;
     *) error "unknown mode: $mode" ;;
 esac
