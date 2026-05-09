@@ -163,7 +163,7 @@ function download_frp() {
     local pkg="frp_${version}_${os}_${arch}.tar.gz"
     local url="https://github.com/fatedier/frp/releases/download/v${version}/${pkg}"
 
-    info "downloading $url"
+    info "downloading $url" >&2
     curl ${CURL_OPTS} -fsSL "$url" -o "$out_dir/$pkg" || error "download failed: $url"
     tar -xzf "$out_dir/$pkg" -C "$out_dir" || error "failed to extract $pkg"
     echo "$out_dir/frp_${version}_${os}_${arch}"
