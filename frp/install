@@ -265,7 +265,7 @@ EOF
 function install_launchd_unit() {
     local name="$1" exec_path="$2" config_path="$3"
     local label="com.fatedier.${name}"
-    local plist="/Library/LaunchDaemons/${label}.plist"
+    local plist domain log_path
 
     if ! installed launchctl; then
         warn "launchctl not found, skipping launchd unit"
@@ -273,7 +273,19 @@ function install_launchd_unit() {
         return 0
     fi
 
-    cat > "$plist" <<EOF
+    if [ "$user_mode" = true ]; then
+        mkdir -p "$HOME/Library/LaunchAgents" "$HOME/Library/Logs"
+        plist="$HOME/Library/LaunchAgents/${label}.plist"
+        domain="gui/$(id -u)"
+        log_path="$HOME/Library/Logs/${name}.log"
+    else
+        plist="/Library/LaunchDaemons/${label}.plist"
+        domain="system"
+        log_path="/var/log/${name}.log"
+    fi
+
+    {
+        cat <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -286,28 +298,36 @@ function install_launchd_unit() {
         <string>-c</string>
         <string>${config_path}</string>
     </array>
+EOF
+        if [ "$user_mode" = false ]; then
+            cat <<EOF
     <key>UserName</key>
     <string>nobody</string>
     <key>GroupName</key>
     <string>nobody</string>
+EOF
+        fi
+        cat <<EOF
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
     <true/>
     <key>StandardOutPath</key>
-    <string>/var/log/${name}.log</string>
+    <string>${log_path}</string>
     <key>StandardErrorPath</key>
-    <string>/var/log/${name}.log</string>
+    <string>${log_path}</string>
 </dict>
 </plist>
 EOF
-    chmod 644 "$plist"
-    chown root:wheel "$plist" 2>/dev/null || true
+    } > "$plist"
 
-    launchctl bootout "system/${label}" >/dev/null 2>&1 || true
-    if launchctl bootstrap system "$plist" 2>/dev/null; then
-        launchctl enable "system/${label}" >/dev/null 2>&1 || true
-        launchctl kickstart -k "system/${label}" >/dev/null 2>&1 || true
+    chmod 644 "$plist"
+    [ "$user_mode" = false ] && chown root:wheel "$plist" 2>/dev/null || true
+
+    launchctl bootout "${domain}/${label}" >/dev/null 2>&1 || true
+    if launchctl bootstrap "$domain" "$plist" 2>/dev/null; then
+        launchctl enable "${domain}/${label}" >/dev/null 2>&1 || true
+        launchctl kickstart -k "${domain}/${label}" >/dev/null 2>&1 || true
     else
         # fallback for older launchctl (pre-10.10)
         launchctl unload -w "$plist" >/dev/null 2>&1 || true
@@ -447,7 +467,7 @@ function install_client() {
     info "  binary      : $prefix/bin/frpc"
     info "  config      : $config_dir/frpc.toml"
 
-    emit_ssh_hint "$config_dir/frpc.toml" "${SUDO_USER:-}"
+    emit_ssh_hint "$config_dir/frpc.toml" "${SUDO_USER:-$USER}"
 }
 
 function install_client_from_config() {
@@ -483,7 +503,7 @@ function install_client_from_config() {
     info "  binary      : $prefix/bin/frpc"
     info "  config      : $config_dir/frpc.toml"
 
-    emit_ssh_hint "$config_dir/frpc.toml" "${SUDO_USER:-}"
+    emit_ssh_hint "$config_dir/frpc.toml" "${SUDO_USER:-$USER}"
 }
 
 function gen_client_config() {
@@ -574,10 +594,18 @@ From-config mode (run on the NAT'd box with a pre-generated frpc.toml):
                           already lives there)
 
 Common:
-  --prefix DIR            install prefix for the binary (default: /usr/local)
+  --prefix DIR            install prefix for the binary
+                          (default: /usr/local as root, \$HOME/.local in user-mode)
                           binary lands at <prefix>/bin/frps or <prefix>/bin/frpc
-  --config-dir DIR        config directory (default: /etc/frp)
+  --config-dir DIR        config directory
+                          (default: /etc/frp as root, \$HOME/.config/frp in user-mode)
                           also used as the first remote lookup path in client mode
+
+  Note: on macOS, client-side modes (--client / --from-config) auto-switch to
+  user-mode when run without sudo: binary in \$HOME/.local/bin, config in
+  \$HOME/.config/frp, service registered as a per-user LaunchAgent in
+  \$HOME/Library/LaunchAgents (stops at logout). Run with sudo to get a
+  system-wide LaunchDaemon instead. Server mode (frps) always needs sudo.
   --version VERSION       pin a specific FRP version (e.g. 0.62.1); default: latest
   -4 | --ipv4             force IPv4 for downloads
   -6 | --ipv6             force IPv6 for downloads
@@ -599,11 +627,12 @@ ssh_pass="${FRP_SSH_PASS:-}"
 server_addr=""
 client_name=""
 proxies=()
-prefix="/usr/local"
-config_dir="/etc/frp"
+prefix=""
+config_dir=""
 frp_version=""
 gen_client_path=""
 from_config_path=""
+user_mode=false
 
 POSITIONAL=()
 while [ $# -gt 0 ]; do
@@ -633,7 +662,25 @@ while [ $# -gt 0 ]; do
 done
 set -- "${POSITIONAL[@]}"
 
-[ "$(id -u)" -ne 0 ] && error "Please run as root"
+# Decide between system-wide install (root) and user-mode install (Darwin only,
+# uid != 0). User-mode skips sudo entirely: binary lands in $HOME/.local/bin,
+# config in $HOME/.config/frp, and the service registers as a per-user
+# LaunchAgent instead of a system-wide LaunchDaemon.
+if [ "$(id -u)" -eq 0 ]; then
+    user_mode=false
+    [ -z "$prefix" ]     && prefix="/usr/local"
+    [ -z "$config_dir" ] && config_dir="/etc/frp"
+elif [ "$(uname -s)" = "Darwin" ]; then
+    if [ "$mode" = "server" ]; then
+        error "frps install needs root (binds to a privileged-ish port and writes /Library/LaunchDaemons); re-run with sudo"
+    fi
+    user_mode=true
+    [ -z "$prefix" ]     && prefix="$HOME/.local"
+    [ -z "$config_dir" ] && config_dir="$HOME/.config/frp"
+    info "running in user-mode (no sudo): binary→$prefix/bin, config→$config_dir, service→LaunchAgent"
+else
+    error "Please run as root"
+fi
 
 ensure_curl
 
