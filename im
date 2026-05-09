@@ -548,6 +548,11 @@ function install_ddns() {
     curl ${CURL_OPTS} -sL "$base_url/ddns/install" | bash -s -- "$@"
 }
 
+function install_frp() {
+    info "Installing FRP"
+    curl ${CURL_OPTS} -sL "$base_url/frp/install" | bash -s -- "$@"
+}
+
 _install_pyenv=false
 _install_speedtest=false
 _install_lookbusy=false
@@ -580,10 +585,12 @@ _install_wireguard=false
 _install_v2ray=false
 _install_fr24=false
 _install_ddns=false
+_install_frp=false
 v2ray_mode=""
 v2ray_args=()
 fr24_args=()
 ddns_args=()
+frp_args=()
 wg_client=()
 username=""
 _host=""
@@ -612,6 +619,7 @@ function usage() {
     info "  -v2c  | --v2ray-client [options]         install v2ray client (all args after -v2c go to v2ray)"
     info "  -fr24 | --flightradar24 [options]        install FlightRadar24 feeder"
     info "  -ddns | --ddns [options]                 install Cloudflare DDNS"
+    info "  -frp  | --frp [options]                  install FRP (server/client/gen-client)"
     info ""
     info "  V2Ray (Xray) Examples:"
     info "    im -4 -v2s --port 10086                 # server with IPv4 and custom port"
@@ -628,6 +636,12 @@ function usage() {
     info "    im -ddns --token CF_API_TOKEN --zone-id ZONE_ID --name home.example.com"
     info "    im -ddns --token CF_API_TOKEN --zone-id ZONE_ID --name home.example.com --type AAAA"
     info "    im -ddns --token CF_API_TOKEN --zone-id ZONE_ID --name home.example.com --interval '*/10'"
+    info ""
+    info "  FRP Examples:"
+    info "    im -frp                                                          # install frps (defaults: port 7000, auto token)"
+    info "    im -frp --bind-port 7000 --dashboard-port 7500                   # frps with dashboard"
+    info "    im -frp --client user@frp-server.com --proxy ssh:tcp::22:6022    # install frpc on this NAT'd box"
+    info "    im -frp --gen-client /tmp/frpc.toml --proxy ssh:tcp::22:6022     # on server: emit frpc.toml to copy out"
     info "System Updates & Maintenance:"
     info "  -uu   | --update                         update the server"
     info "  -uuu  | --upgrade                        upgrade the server if needed"
@@ -843,6 +857,15 @@ while [ $# -gt 0 ]; do
                 shift
             done
             ;;
+        -frp | --frp)
+            _install_frp=true
+            shift
+            # Collect all remaining arguments for frp
+            while [[ $# -gt 0 ]]; do
+                frp_args+=("$1")
+                shift
+            done
+            ;;
         *)
             POSITIONAL+=("$1")
             warn "unknown option $1"
@@ -925,6 +948,8 @@ action() {
         install_fr24 "${fr24_args[@]}"
     elif [ "$_install_ddns" == true ]; then
         install_ddns "${ddns_args[@]}"
+    elif [ "$_install_frp" == true ]; then
+        install_frp "${frp_args[@]}"
     elif [ "$_auto" == true ]; then
         do_all
     else
