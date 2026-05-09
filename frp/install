@@ -210,6 +210,39 @@ function download_frp() {
     echo "$out_dir/frp_${version}_${os}_${arch}"
 }
 
+function binary_version() {
+    # Best-effort version probe — returns the first X.Y.Z found in -v / --version output.
+    local bin="$1" out
+    [ ! -x "$bin" ] && return 1
+    out=$("$bin" -v 2>/dev/null) || out=$("$bin" --version 2>/dev/null) || out=""
+    echo "$out" | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -n1
+}
+
+function ensure_binary() {
+    # Install $prefix/bin/$component at $version, downloading only if missing or outdated.
+    local component="$1" version="$2" os="$3" arch="$4"
+    local target="$prefix/bin/$component"
+    local current
+    current=$(binary_version "$target" 2>/dev/null)
+
+    if [ -n "$current" ] && [ "$current" = "$version" ]; then
+        info "$component v$version already installed at $target — skipping download"
+        return 0
+    fi
+    [ -n "$current" ] && info "found $component v${current}, upgrading to v${version}"
+
+    local tmpdir extracted
+    tmpdir=$(mktemp -d -t frp-XXXXXXXX) || error "failed to create temp dir"
+    extracted=$(download_frp "$version" "$os" "$arch" "$tmpdir")
+    mkdir -p "$prefix/bin"
+    if ! install -m 0755 "$extracted/$component" "$target"; then
+        rm -rf "$tmpdir"
+        error "failed to install $component binary"
+    fi
+    rm -rf "$tmpdir"
+    info "$component installed to $target"
+}
+
 function ssh_run() {
     local target="$1" cmd="$2"
     local -a opts=(-p "$ssh_port"
@@ -345,19 +378,13 @@ function install_service() {
 }
 
 function install_server() {
-    local os arch version tmpdir extracted
+    local os arch version
     os=$(detect_os); arch=$(detect_arch)
     version=$(get_frp_version)
     [ -z "$version" ] && error "could not detect FRP version"
     info "installing FRP server v${version} (${os}_${arch})"
 
-    tmpdir=$(mktemp -d -t frp-XXXXXXXX) || error "failed to create temp dir"
-    trap 'rm -rf "$tmpdir"' EXIT
-    extracted=$(download_frp "$version" "$os" "$arch" "$tmpdir")
-
-    mkdir -p "$prefix/bin"
-    install -m 0755 "$extracted/frps" "$prefix/bin/frps" || error "failed to install frps binary"
-    info "frps installed to $prefix/bin/frps"
+    ensure_binary "frps" "$version" "$os" "$arch"
 
     if [ -z "$token" ] && [ -f "$config_dir/frps.toml" ]; then
         token=$(parse_frps_field "$(cat "$config_dir/frps.toml")" "token")
@@ -438,18 +465,13 @@ function install_client() {
     info "  server addr : $server_host:$server_port"
     info "  auth token  : ${server_token:-<none>}"
 
-    local os arch version tmpdir extracted
+    local os arch version
     os=$(detect_os); arch=$(detect_arch)
     version=$(get_frp_version)
     [ -z "$version" ] && error "could not detect FRP version"
     info "installing FRP client v${version} (${os}_${arch})"
 
-    tmpdir=$(mktemp -d -t frp-XXXXXXXX) || error "failed to create temp dir"
-    trap 'rm -rf "$tmpdir"' EXIT
-    extracted=$(download_frp "$version" "$os" "$arch" "$tmpdir")
-
-    mkdir -p "$prefix/bin"
-    install -m 0755 "$extracted/frpc" "$prefix/bin/frpc" || error "failed to install frpc binary"
+    ensure_binary "frpc" "$version" "$os" "$arch"
 
     mkdir -p "$config_dir"
     [ -z "$client_name" ] && client_name="$(hostname -s 2>/dev/null || echo client)"
@@ -474,19 +496,13 @@ function install_client_from_config() {
     [ -z "$from_config_path" ] && error "--from-config requires a path"
     [ ! -f "$from_config_path" ] && error "config file not found: $from_config_path"
 
-    local os arch version tmpdir extracted
+    local os arch version
     os=$(detect_os); arch=$(detect_arch)
     version=$(get_frp_version)
     [ -z "$version" ] && error "could not detect FRP version"
     info "installing FRP client v${version} (${os}_${arch})"
 
-    tmpdir=$(mktemp -d -t frp-XXXXXXXX) || error "failed to create temp dir"
-    trap 'rm -rf "$tmpdir"' EXIT
-    extracted=$(download_frp "$version" "$os" "$arch" "$tmpdir")
-
-    mkdir -p "$prefix/bin"
-    install -m 0755 "$extracted/frpc" "$prefix/bin/frpc" || error "failed to install frpc binary"
-    info "frpc installed to $prefix/bin/frpc"
+    ensure_binary "frpc" "$version" "$os" "$arch"
 
     mkdir -p "$config_dir"
     if [ "$from_config_path" != "$config_dir/frpc.toml" ]; then
