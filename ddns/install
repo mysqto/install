@@ -109,6 +109,28 @@ for dep in curl jq; do
     fi
 done
 
+# Ensure crontab is available (package name differs across distros)
+if ! installed crontab; then
+    info "Installing cron..."
+    if installed apt-get; then
+        apt-get update >/dev/null 2>&1
+        apt-get install -y cron >/dev/null 2>&1 || error "Failed to install cron"
+        systemctl enable --now cron >/dev/null 2>&1 ||
+            service cron start >/dev/null 2>&1 || true
+    elif installed dnf; then
+        dnf install -y cronie >/dev/null 2>&1 || error "Failed to install cronie"
+        systemctl enable --now crond >/dev/null 2>&1 ||
+            service crond start >/dev/null 2>&1 || true
+    elif installed yum; then
+        yum install -y cronie >/dev/null 2>&1 || error "Failed to install cronie"
+        systemctl enable --now crond >/dev/null 2>&1 ||
+            service crond start >/dev/null 2>&1 || true
+    else
+        error "crontab not found and no supported package manager available"
+    fi
+    installed crontab || error "crontab still not available after install"
+fi
+
 # Create config directory
 mkdir -p "$ddns_config_dir"
 
@@ -226,11 +248,14 @@ cron_checksum=$(echo "$cron_entry" | md5sum | cut -d' ' -f1)
 if crontab -l 2>/dev/null | grep -q "$cron_checksum"; then
     warn "DDNS cron job already exists"
 else
-    (
+    if (
         crontab -l 2>/dev/null
         echo "$cron_entry # $cron_checksum"
-    ) | crontab -
-    info "DDNS cron job added: $cron_entry"
+    ) | crontab -; then
+        info "DDNS cron job added: $cron_entry"
+    else
+        error "Failed to add DDNS cron job"
+    fi
 fi
 
 # Run once immediately
