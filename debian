@@ -260,8 +260,12 @@ function ipv6_enabled() {
 }
 
 function get_disk() {
-    # lsblk -oMOUNTPOINT,PKNAME -P | grep 'MOUNTPOINT="/"' | cut -d'"' -f4 | sed 's/[n][0-9]//g'
-    lsblk -oMOUNTPOINT,PKNAME -rn | awk '$1 ~ /^\/$/ { print $2 }'
+    # Walk up the device tree from the root mount's source to the underlying disk.
+    # Handles LVM (/dev/mapper/*), plain partitions, and stacked dm/crypt setups.
+    local src
+    src="$(findmnt -no SOURCE / 2>/dev/null)"
+    [ -z "$src" ] && return 1
+    lsblk -nrso NAME,TYPE "$src" 2>/dev/null | awk '$2 == "disk" { print $1; exit }'
 }
 
 function get_all_disks() {
@@ -1116,8 +1120,17 @@ esac
 
 }
 
-[ -z "$filesystem" ] && filesystem="$(blkid -o value -s TYPE "/")"
+[ -z "$filesystem" ] && filesystem="$(findmnt -no FSTYPE / 2>/dev/null)"
 [ -z "$filesystem" ] && filesystem="ext4"
+
+# Resolve install disk early so it can be shown in the summary banner.
+# Skipped for lvm/jbod, which select disks separately.
+if [ "$use_lvm" != true ] && [ "$use_jbod" != true ]; then
+    [ -z "$disk" ] && disk="$(get_disk)"
+    if [ -n "$disk" ] && [[ "$disk" != /dev/* ]]; then
+        disk="/dev/$disk"
+    fi
+fi
 [ -z "$esp" ] && esp="$(fdisk -l 2>/dev/null | grep -E 'EFI System|EFI' | awk '{print $5}' | head -n1 | sed 's/.$//')"
 [ -z "$esp" ] && esp="128"
 [ -z "$boot_size" ] && {
@@ -1535,8 +1548,10 @@ warn "uid:                     $uid"
 [ -n "$password" ] && warn "password:                $password"
 [ -n "$password_hash" ] && warn "password hash:           $password_hash"
 warn "boot size:               $boot_size MB"
+warn "filesystem:              $filesystem"
 [ "$use_lvm" = true ] && warn "partition method:        lvm (disks: $disk_list)"
 [ "$use_jbod" = true ] && warn "partition method:        jbod (disks: $disk_list)"
+[ "$use_lvm" != true ] && [ "$use_jbod" != true ] && warn "install disk:            ${disk:-auto (first disk on target)}"
 warn "hostname:                $hostname"
 warn "domain:                  $domain"
 warn "timezone:                $timezone"
