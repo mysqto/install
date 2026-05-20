@@ -415,6 +415,7 @@ packages="openssh-server build-essential curl wget net-tools git vim tig libpam-
 grub_cfg=
 install_docker=false
 install_quemu_guest_agent=false
+install_tiny=false
 
 # extra packages config
 provision=false
@@ -819,6 +820,13 @@ while [ $# -gt 0 ]; do
             bbr=true
             cloud_kernel=true
             network_console=true
+            shift
+            ;;
+        --tiny)
+            # post-install: shrink to ~38MB RAM / ~275MB disk via tiny
+            install_tiny=true
+            provision=true
+            cloud_kernel=true
             shift
             ;;
         -ak | --authorized-keys)
@@ -1498,15 +1506,24 @@ function build_provision_command() {
     local late_command
 
     # Base command
-    late_command="curl -sL --connect-timeout 30 $base/provision -o $provision_file; chmod +x $provision_file; $provision_file $(build_provision_params)"
+    late_command="curl -sL --connect-timeout 30 $base/provision -o $provision_file; chmod +x $provision_file; $provision_file $(build_provision_params) >>$provision_log 2>&1"
 
-    # Add logging and optional cleanup
-    if [ "$debug_provision" = true ]; then
-        printf '%s >>%s 2>&1' "$late_command" "$provision_log"
-    else
-        printf '%s >>%s 2>&1; rm -rf "%s" "%s"' \
-            "$late_command" "$provision_log" "$provision_file" "$provision_log"
+    # Optionally chain tiny after provision (post-install minimization)
+    if [ "$install_tiny" = true ]; then
+        local tiny_file="/tmp/tiny_${timestamp}.sh"
+        local tiny_log="/var/log/tiny_${timestamp}.log"
+        late_command="$late_command; curl -sL --connect-timeout 30 $base/tiny -o $tiny_file; chmod +x $tiny_file; $tiny_file --all --yes --skip-reboot >>$tiny_log 2>&1"
+        if [ "$debug_provision" != true ]; then
+            late_command="$late_command; rm -f $tiny_file"
+        fi
     fi
+
+    # Optional cleanup of provision artefacts
+    if [ "$debug_provision" != true ]; then
+        late_command="$late_command; rm -f $provision_file $provision_log"
+    fi
+
+    printf '%s' "$late_command"
 }
 
 warn "#######################################################################"
@@ -1541,6 +1558,7 @@ warn "dns:                     $dns"
 warn "ssh port:                $ssh_port"
 [ -n "$ssh_private_key" ] && { warn "ssh private key:"; warn "$ssh_private_key"; }
 [ -n "$authorized_keys" ] && { warn "ssh public key:"; warn "$authorized_keys"; }
+[ "$install_tiny" = true ] && warn "post-install minimize:   tiny --all"
 [ "$install_shadow_tls" = true ] && {
     warn "install shadowTLS        $install_shadow_tls"
     warn "snell port:              $snell_port"

@@ -1,0 +1,536 @@
+#!/usr/bin/env bash
+#
+# tiny - shrink a fresh Debian install
+#
+# Trims a fresh Debian 13 install down to ~38 MB RAM / ~275 MB disk by
+# applying the eight stages from:
+#   https://tierhive.com/blog/tierhive-howto/debian-13-minimal-guide-reduce-ram-to-38mb-and-disk-to-275mb
+#
+# Designed for KVM VPS instances. Every stage is idempotent and individually
+# selectable. Defaults are conservative: if a stage's prerequisites cannot
+# be detected safely (e.g. no static IP for Stage 5), that stage is skipped
+# rather than risking remote-access loss.
+
+set -u
+
+readonly RED='\033[1;31m'
+readonly GREEN='\033[1;32m'
+readonly YELLOW='\033[1;33m'
+readonly BLUE='\033[1;34m'
+readonly NC='\033[0m'
+
+function info() { printf "${GREEN}%s${NC}\n" "$*"; }
+function warn() { printf "${YELLOW}%s${NC}\n" "$*"; }
+function step() { printf "${BLUE}==> %s${NC}\n" "$*"; }
+function error() {
+    printf "${RED}%s${NC}\n" "$*" >&2
+    exit 1
+}
+
+function installed() { command -v "$1" >/dev/null 2>&1; }
+
+function default_interface() {
+    ip -4 route show default 2>/dev/null | awk '/^default/ {print $5; exit}'
+}
+
+function default_gateway() {
+    ip -4 route show default 2>/dev/null | awk '/^default/ {print $3; exit}'
+}
+
+function current_cidr() {
+    local iface="$1"
+    ip -4 -o addr show "$iface" 2>/dev/null | awk '{print $4; exit}'
+}
+
+function root_disk() {
+    lsblk -oMOUNTPOINT,PKNAME -rn 2>/dev/null | awk '$1 == "/" { print $2; exit }'
+}
+
+function apt_purge() {
+    DEBIAN_FRONTEND=noninteractive apt-get purge -y "$@" 2>/dev/null || true
+}
+
+function apt_install() {
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "$@"
+}
+
+function disable_units() {
+    for unit in "$@"; do
+        systemctl disable "$unit" >/dev/null 2>&1 || true
+    done
+}
+
+function mask_units() {
+    for unit in "$@"; do
+        systemctl mask "$unit" >/dev/null 2>&1 || true
+    done
+}
+
+# === defaults ===
+do_grub=false
+do_dropbear=false
+do_purge_ssh=false
+do_strip_cloud=false
+do_strip_pkgs=false
+do_ifupdown=false
+do_strip_services=false
+do_initramfs=false
+do_tune=false
+
+assume_yes=false
+skip_reboot=false
+keep_mitigations=false
+disable_ipv6_grub=true
+
+iface=
+ip_cidr=
+gateway=
+dns_servers="1.1.1.1 1.0.0.1"
+block_device=
+
+function usage() {
+    cat <<'EOF'
+Usage: tiny [stage flags] [options]
+
+Stage flags (none = print help; --all enables every stage):
+  --all                 enable every stage below
+  --grub                Stage 1: GRUB tweaks (timeout, cmdline, locale strip)
+  --dropbear            Stage 2: install dropbear, stop OpenSSH (does NOT purge)
+  --purge-ssh           Stage 2b: purge openssh-server/client (run after reconnect)
+  --strip-cloud         Stage 3: purge cloud-init / python / unattended-upgrades
+  --strip-packages      Stage 4: remove vim/man/locales/etc, dpkg nodoc, locale strip
+  --ifupdown            Stage 5: replace systemd-resolved/networkd with ifupdown
+  --strip-services      Stage 6: mask kernel mounts, logind, PAM session
+  --initramfs           Stage 7: dependency-based initramfs + module blacklist
+  --tune                Stage 8: sysctl tuning + busybox syslogd, mask journald
+
+Options:
+  --interface IFACE     interface for Stage 5 (default: detect)
+  --ip CIDR             static IP in CIDR for Stage 5 (default: detect)
+  --gateway IP          default gateway for Stage 5 (default: detect)
+  --dns "S1 S2"         resolv.conf nameservers (default: 1.1.1.1 1.0.0.1)
+  --block-device DEV    block device basename for read-ahead (default: detect)
+  --keep-mitigations    do NOT add mitigations=off to GRUB cmdline
+  --keep-ipv6           do NOT add ipv6.disable=1 to GRUB cmdline
+  --skip-reboot         do not prompt to reboot at the end
+  -y, --yes             assume yes; required for destructive stages
+  -h, --help            show this help
+
+Stages are applied in order regardless of flag order. Stage 5 is skipped if
+interface/IP/gateway cannot be resolved safely.
+EOF
+}
+
+[ $# -eq 0 ] && {
+    usage
+    exit 0
+}
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --all)
+            do_grub=true
+            do_dropbear=true
+            do_strip_cloud=true
+            do_strip_pkgs=true
+            do_ifupdown=true
+            do_strip_services=true
+            do_initramfs=true
+            do_tune=true
+            shift
+            ;;
+        --grub) do_grub=true; shift ;;
+        --dropbear) do_dropbear=true; shift ;;
+        --purge-ssh) do_purge_ssh=true; shift ;;
+        --strip-cloud) do_strip_cloud=true; shift ;;
+        --strip-packages) do_strip_pkgs=true; shift ;;
+        --ifupdown) do_ifupdown=true; shift ;;
+        --strip-services) do_strip_services=true; shift ;;
+        --initramfs) do_initramfs=true; shift ;;
+        --tune) do_tune=true; shift ;;
+        --interface) iface="$2"; shift 2 ;;
+        --ip) ip_cidr="$2"; shift 2 ;;
+        --gateway) gateway="$2"; shift 2 ;;
+        --dns) dns_servers="$2"; shift 2 ;;
+        --block-device) block_device="$2"; shift 2 ;;
+        --keep-mitigations) keep_mitigations=true; shift ;;
+        --keep-ipv6) disable_ipv6_grub=false; shift ;;
+        --skip-reboot) skip_reboot=true; shift ;;
+        -y | --yes) assume_yes=true; shift ;;
+        -h | --help) usage; exit 0 ;;
+        *) warn "unknown option: $1"; shift ;;
+    esac
+done
+
+(( EUID == 0 )) || error "tiny must run as root"
+[ -f /etc/debian_version ] || error "tiny only supports Debian"
+installed apt-get || error "apt-get not found; not a Debian system?"
+
+if ! $assume_yes; then
+    warn "tiny makes destructive, system-wide changes (package purges, network rewrite,"
+    warn "GRUB cmdline edits, journald masking). Re-run with --yes when you are sure."
+    exit 1
+fi
+
+# ----- Stage 1: GRUB ---------------------------------------------------------
+function stage_grub() {
+    step "Stage 1: GRUB configuration"
+    [ -f /etc/default/grub ] || { warn "  /etc/default/grub missing, skipping"; return; }
+
+    sed -i 's/^GRUB_TIMEOUT=.*/GRUB_TIMEOUT=1/' /etc/default/grub
+    sed -i 's|^GRUB_DISTRIBUTOR=.*|GRUB_DISTRIBUTOR=Debian|' /etc/default/grub
+
+    local cmdline='console=tty0 console=ttyS0,115200 earlyprintk=ttyS0,115200 consoleblank=0 audit=0 nowatchdog'
+    [ "$keep_mitigations" = false ] && cmdline="mitigations=off $cmdline"
+    [ "$disable_ipv6_grub" = true ] && cmdline="$cmdline ipv6.disable=1"
+
+    if grep -q '^GRUB_CMDLINE_LINUX=' /etc/default/grub; then
+        sed -i "s|^GRUB_CMDLINE_LINUX=.*|GRUB_CMDLINE_LINUX=\"$cmdline\"|" /etc/default/grub
+    else
+        echo "GRUB_CMDLINE_LINUX=\"$cmdline\"" >> /etc/default/grub
+    fi
+
+    if installed update-grub; then
+        update-grub 2>/dev/null || warn "  update-grub returned non-zero"
+    elif installed grub-mkconfig; then
+        grub-mkconfig -o /boot/grub/grub.cfg 2>/dev/null || warn "  grub-mkconfig failed"
+    fi
+
+    rm -rf /boot/grub/locale 2>/dev/null
+    info "  GRUB updated (timeout=1, cmdline rewritten, /boot/grub/locale removed)"
+}
+
+# ----- Stage 2: dropbear / OpenSSH ------------------------------------------
+function stage_dropbear() {
+    step "Stage 2: install dropbear, stop OpenSSH"
+    apt-get update -qq >/dev/null 2>&1 || true
+    apt_install dropbear
+
+    if [ -f /etc/default/dropbear ]; then
+        sed -i 's/#\?DROPBEAR_EXTRA_ARGS=.*/DROPBEAR_EXTRA_ARGS=""/' /etc/default/dropbear
+    fi
+
+    systemctl stop ssh.socket ssh 2>/dev/null || true
+    systemctl start dropbear 2>/dev/null || warn "  dropbear failed to start"
+    disable_units ssh ssh.socket
+    info "  dropbear active on port 22; OpenSSH stopped/disabled"
+    warn "  reconnect via dropbear before running --purge-ssh"
+}
+
+function stage_purge_ssh() {
+    step "Stage 2b: purge OpenSSH"
+    apt_purge openssh-server openssh-sftp-server openssh-client ssh-import-id
+    apt-get autoremove -y --purge >/dev/null 2>&1 || true
+    info "  OpenSSH packages purged"
+}
+
+# ----- Stage 3: cloud-init / python -----------------------------------------
+function stage_strip_cloud() {
+    step "Stage 3: purge cloud-init, unattended-upgrades, python"
+
+    systemctl stop unattended-upgrades 2>/dev/null || true
+    disable_units unattended-upgrades apt-daily.timer apt-daily-upgrade.timer \
+        apt-listchanges.timer man-db.timer dpkg-db-backup.timer
+
+    apt_purge cloud-init cloud-guest-utils cloud-image-utils cloud-utils \
+        cloud-initramfs-growroot unattended-upgrades apt-listchanges \
+        netplan.io python3-netplan reportbug
+
+    local py_pkgs
+    py_pkgs=$(dpkg -l 2>/dev/null | awk '/^ii/ {print $2}' \
+        | grep -E '^(python3|python-apt-common|libpython3)' || true)
+    if [ -n "$py_pkgs" ]; then
+        # shellcheck disable=SC2086
+        apt_purge $py_pkgs
+    fi
+
+    apt-get autoremove -y --purge >/dev/null 2>&1 || true
+    rm -rf /var/lib/cloud
+    info "  cloud-init / python stack removed"
+}
+
+# ----- Stage 4: package cleanup + dpkg nodoc --------------------------------
+function stage_strip_packages() {
+    step "Stage 4: package cleanup"
+    apt_purge vim vim-runtime vim-tiny man-db groff-base manpages locales \
+        libc-l10n sudo qemu-guest-agent qemu-utils polkitd pciutils bind9-host \
+        traceroute socat wget ethtool screen apparmor lsb-release
+
+    apt-get autoremove -y --purge >/dev/null 2>&1 || true
+    apt-get clean >/dev/null 2>&1 || true
+    apt_install procps
+
+    mkdir -p /etc/dpkg/dpkg.cfg.d
+    cat > /etc/dpkg/dpkg.cfg.d/nodoc <<'EOF'
+path-exclude=/usr/share/doc/*
+path-include=/usr/share/doc/*/copyright
+path-exclude=/usr/share/man/*
+path-exclude=/usr/share/groff/*
+path-exclude=/usr/share/info/*
+path-exclude=/usr/share/lintian/*
+EOF
+
+    find /usr/share/doc -depth -type f ! -name 'copyright' -delete 2>/dev/null || true
+    find /usr/share/doc -depth -empty -type d -delete 2>/dev/null || true
+    rm -rf /usr/share/man /usr/share/groff /usr/share/info /usr/share/lintian
+
+    if [ -d /usr/share/locale ]; then
+        find /usr/share/locale -mindepth 1 -maxdepth 1 -type d ! -name 'en_US' -exec rm -rf {} +
+        find /usr/share/locale -mindepth 1 -maxdepth 1 ! -type d -delete
+    fi
+
+    if [ -d /usr/share/zoneinfo ]; then
+        find /usr/share/zoneinfo -mindepth 1 -maxdepth 1 ! -name 'Etc' -exec rm -rf {} +
+        find /usr/share/zoneinfo/Etc -mindepth 1 ! -name 'UTC' -delete 2>/dev/null || true
+    fi
+
+    if [ -f /etc/apt/sources.list.d/debian.sources ]; then
+        sed -i 's/^Types: deb deb-src/Types: deb/' /etc/apt/sources.list.d/debian.sources
+    fi
+
+    info "  packages stripped, dpkg nodoc filter installed"
+}
+
+# ----- Stage 5: ifupdown ----------------------------------------------------
+function stage_ifupdown() {
+    step "Stage 5: replace systemd-resolved/networkd with ifupdown"
+
+    [ -z "$iface" ] && iface="$(default_interface)"
+    [ -z "$gateway" ] && gateway="$(default_gateway)"
+    [ -z "$ip_cidr" ] && [ -n "$iface" ] && ip_cidr="$(current_cidr "$iface")"
+
+    if [ -z "$iface" ] || [ -z "$gateway" ] || [ -z "$ip_cidr" ]; then
+        warn "  cannot resolve interface/IP/gateway; skipping (use --interface/--ip/--gateway)"
+        return
+    fi
+    info "  using iface=$iface ip=$ip_cidr gateway=$gateway dns='$dns_servers'"
+
+    rm -f /etc/resolv.conf
+    : > /etc/resolv.conf
+    for ns in $dns_servers; do
+        printf 'nameserver %s\n' "$ns" >> /etc/resolv.conf
+    done
+
+    if [ -f /etc/nsswitch.conf ]; then
+        sed -i 's/resolve \[!UNAVAIL=return\] //g' /etc/nsswitch.conf
+        sed -i 's/ resolve//g' /etc/nsswitch.conf
+    fi
+
+    systemctl stop systemd-resolved 2>/dev/null || true
+    apt_purge systemd-resolved libnss-resolve
+
+    apt_install ifupdown
+    apt_purge dhcpcd-base
+
+    cat > /etc/network/interfaces <<EOF
+auto lo
+iface lo inet loopback
+
+auto $iface
+iface $iface inet static
+    address $ip_cidr
+    gateway $gateway
+EOF
+
+    disable_units systemd-networkd systemd-networkd.socket systemd-network-generator.service
+    mask_units systemd-networkd systemd-networkd.socket systemd-networkd-wait-online.service
+    rm -rf /etc/systemd/network/
+
+    info "  ifupdown configured; networkd masked"
+    warn "  network restart deferred to reboot to keep current session alive"
+}
+
+# ----- Stage 6: service cleanup ---------------------------------------------
+function stage_strip_services() {
+    step "Stage 6: mask filesystems, logind, PAM session"
+
+    systemctl disable --now systemd-timesyncd >/dev/null 2>&1 || true
+    mask_units sys-kernel-config.mount sys-kernel-debug.mount sys-kernel-tracing.mount \
+        systemd-pstore.service proc-sys-fs-binfmt_misc.automount proc-sys-fs-binfmt_misc.mount
+
+    disable_units fstrim.timer e2scrub_reap.service e2scrub_all.timer
+    mask_units uuidd.socket
+
+    if [ -f /etc/pam.d/common-session ]; then
+        sed -i '/pam_systemd\.so/s/^[^#]/# &/' /etc/pam.d/common-session
+    fi
+    mask_units systemd-logind.service
+
+    cat > /usr/local/sbin/reboot <<'EOF'
+#!/bin/sh
+exec systemctl reboot --no-wall 2>/dev/null
+EOF
+    chmod +x /usr/local/sbin/reboot
+
+    cat > /usr/local/sbin/poweroff <<'EOF'
+#!/bin/sh
+exec systemctl poweroff --no-wall 2>/dev/null
+EOF
+    chmod +x /usr/local/sbin/poweroff
+
+    info "  services masked, reboot/poweroff wrappers installed"
+}
+
+# ----- Stage 7: initramfs ----------------------------------------------------
+function stage_initramfs() {
+    step "Stage 7: minimal initramfs + module blacklist"
+
+    if [ -d /etc/initramfs-tools ]; then
+        cat > /etc/initramfs-tools/modules <<'EOF'
+virtio_blk
+virtio_net
+ext4
+EOF
+        if [ -f /etc/initramfs-tools/initramfs.conf ]; then
+            sed -i 's/^MODULES=most/MODULES=dep/' /etc/initramfs-tools/initramfs.conf
+        fi
+    else
+        warn "  /etc/initramfs-tools missing, skipping module list"
+    fi
+
+    mkdir -p /etc/modprobe.d
+    cat > /etc/modprobe.d/blacklist-vps.conf <<'EOF'
+blacklist isofs
+blacklist sr_mod
+blacklist cdrom
+blacklist kvm_intel
+blacklist kvm
+install kvm /bin/true
+install kvm_intel /bin/true
+blacklist virtio_balloon
+blacklist ata_piix
+blacklist ata_generic
+blacklist libata
+blacklist evdev
+blacklist button
+blacklist serio_raw
+blacklist vmw_vmci
+blacklist vmw_vsock_vmci_transport
+blacklist vmw_vsock_virtio_transport_common
+blacklist vsock_loopback
+blacklist vsock
+install vsock /bin/true
+blacklist qemu_fw_cfg
+blacklist sg
+blacklist i6300esb
+blacklist intel_rapl_msr
+blacklist intel_rapl_common
+blacklist iosf_mbi
+blacklist rapl
+blacklist efi_pstore
+blacklist binfmt_misc
+blacklist autofs4
+blacklist watchdog
+blacklist configfs
+install configfs /bin/true
+blacklist crct10dif_pclmul
+EOF
+
+    if installed update-initramfs; then
+        update-initramfs -u -k all 2>/dev/null || warn "  update-initramfs returned non-zero"
+    fi
+    info "  initramfs rebuilt with dependency-only modules"
+}
+
+# ----- Stage 8: sysctl + busybox syslog -------------------------------------
+function stage_tune() {
+    step "Stage 8: sysctl tuning + busybox syslog"
+
+    mkdir -p /etc/sysctl.d
+    cat > /etc/sysctl.d/90-minvps.conf <<'EOF'
+net.core.rmem_default = 32768
+net.core.wmem_default = 32768
+net.core.rmem_max = 131072
+net.core.wmem_max = 131072
+net.core.netdev_max_backlog = 64
+net.core.somaxconn = 128
+vm.vfs_cache_pressure = 500
+kernel.pid_max = 4096
+vm.dirty_background_ratio = 5
+vm.dirty_ratio = 10
+kernel.watchdog = 0
+EOF
+
+    [ -z "$block_device" ] && block_device="$(root_disk)"
+    if [ -n "$block_device" ] && [ -w "/sys/block/$block_device/queue/read_ahead_kb" ]; then
+        echo 128 > "/sys/block/$block_device/queue/read_ahead_kb"
+    else
+        warn "  block device not detected for read-ahead; using vda fallback"
+        block_device="vda"
+    fi
+
+    cat > /etc/systemd/system/readahead.service <<EOF
+[Unit]
+Description=Set block device read-ahead
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'echo 128 > /sys/block/$block_device/queue/read_ahead_kb'
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    systemctl enable readahead.service >/dev/null 2>&1 || true
+
+    apt_install busybox
+
+    cat > /etc/systemd/system/syslogd.service <<'EOF'
+[Unit]
+Description=Busybox syslogd
+DefaultDependencies=false
+After=systemd-tmpfiles-setup.service
+Before=sysinit.target
+
+[Service]
+Type=simple
+ExecStart=/bin/busybox syslogd -n -C64
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    systemctl enable syslogd.service >/dev/null 2>&1 || true
+
+    mask_units systemd-journald.service systemd-journald.socket \
+        systemd-journald-dev-log.socket systemd-journald-audit.socket
+
+    info "  sysctl tuned, busybox syslog enabled, journald masked"
+}
+
+# ----- final cleanup --------------------------------------------------------
+function final_cleanup() {
+    step "Final cleanup"
+    rm -rf /var/lib/apt/lists/* /var/cache/apt/*.bin 2>/dev/null || true
+    apt-get clean >/dev/null 2>&1 || true
+    info "  apt caches cleared"
+}
+
+# ----- run ------------------------------------------------------------------
+ran=false
+$do_grub             && { stage_grub;            ran=true; }
+$do_dropbear         && { stage_dropbear;        ran=true; }
+$do_purge_ssh        && { stage_purge_ssh;       ran=true; }
+$do_strip_cloud      && { stage_strip_cloud;     ran=true; }
+$do_strip_pkgs       && { stage_strip_packages;  ran=true; }
+$do_ifupdown         && { stage_ifupdown;        ran=true; }
+$do_strip_services   && { stage_strip_services;  ran=true; }
+$do_initramfs        && { stage_initramfs;       ran=true; }
+$do_tune             && { stage_tune;            ran=true; }
+
+if ! $ran; then
+    warn "no stage flags given (try --all)"
+    exit 1
+fi
+
+final_cleanup
+
+if $skip_reboot; then
+    info "all selected stages applied; reboot manually to take effect"
+else
+    warn "reboot required for kernel cmdline / initramfs / module blacklist to take effect"
+    info "rebooting in 5s; Ctrl-C to cancel"
+    sleep 5
+    systemctl reboot --no-wall 2>/dev/null || reboot
+fi
