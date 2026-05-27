@@ -553,6 +553,27 @@ function install_frp() {
     curl ${CURL_OPTS} -sL "$base_url/frp/install" | bash -s -- "$@"
 }
 
+function set_hostname() {
+    local new_hostname="$1"
+    [ -z "$new_hostname" ] && error "hostname is required when setting hostname"
+    local current_hostname
+    current_hostname="$(hostname)"
+    [ "$current_hostname" == "$new_hostname" ] && warn "hostname already set to $new_hostname" && return 0
+    info "setting hostname to $new_hostname"
+    if installed hostnamectl; then
+        hostnamectl set-hostname "$new_hostname" || error "failed to set hostname"
+    else
+        echo "$new_hostname" >/etc/hostname || error "failed to write /etc/hostname"
+        hostname "$new_hostname" || error "failed to apply hostname"
+    fi
+    if grep -qE '^127\.0\.1\.1\s+' /etc/hosts 2>/dev/null; then
+        sed -i -E "s/^(127\.0\.1\.1\s+).*/\1$new_hostname/" /etc/hosts
+    else
+        echo "127.0.1.1 $new_hostname" >>/etc/hosts
+    fi
+    info "hostname set to $new_hostname"
+}
+
 _install_pyenv=false
 _install_speedtest=false
 _install_lookbusy=false
@@ -586,6 +607,8 @@ _install_v2ray=false
 _install_fr24=false
 _install_ddns=false
 _install_frp=false
+_set_hostname=false
+_hostname_value=""
 v2ray_mode=""
 v2ray_args=()
 fr24_args=()
@@ -671,6 +694,7 @@ function usage() {
     info "  -rru  | --reset-with-ubuntu              reset the server with ubuntu, need -u to specify the username"
     info "  -r    | --reboot                         reboot the server"
     info "  -p    | --provision                      provision the server, need -u to specify the username"
+    info "  -hn   | --hostname <name>                set the system hostname"
     info ""
     info "User Options:"
     info "  -u    | --username                      specify the username when reseting or provisioning the server"
@@ -866,6 +890,11 @@ while [ $# -gt 0 ]; do
                 shift
             done
             ;;
+        -hn | --hostname)
+            _set_hostname=true
+            _hostname_value="$2"
+            shift 2
+            ;;
         *)
             POSITIONAL+=("$1")
             warn "unknown option $1"
@@ -950,6 +979,8 @@ action() {
         install_ddns "${ddns_args[@]}"
     elif [ "$_install_frp" == true ]; then
         install_frp "${frp_args[@]}"
+    elif [ "$_set_hostname" == true ]; then
+        set_hostname "$_hostname_value"
     elif [ "$_auto" == true ]; then
         do_all
     else
