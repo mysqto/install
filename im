@@ -308,7 +308,7 @@ function update_ss_obfs_host() {
 }
 
 function shadow_tls() {
-    bash <(curl ${CURL_OPTS} -sL "$base_url/Surge/Snell/install") --shadow-tls
+    bash <(curl ${CURL_OPTS} -sL "$base_url/Surge/Snell/install") --shadow-tls "$@"
 }
 
 function shadowsocks() {
@@ -614,6 +614,7 @@ v2ray_args=()
 fr24_args=()
 ddns_args=()
 frp_args=()
+shadow_tls_args=()
 wg_client=()
 username=""
 _host=""
@@ -680,7 +681,7 @@ function usage() {
     info "  -ss   | --shadowsocks                    install shadowsocks-rust"
     info "  -uss  | --update-shadowsocks             update shadowsocks-libev or shadowsocks-rust"
     info "  -usoh | --update-shadowsocks-obfs-host   update shadowsocks-libev or shadowsocks-rust obfs host"
-    info "  -stls | --shadow-tls                     enable snell and shadow-tls"
+    info "  -stls | --shadow-tls [options]           enable snell and shadow-tls (all args after -stls are forwarded)"
     info ""
     info "Testing & Monitoring:"
     info "  -st   | --speedtest                      run speedtest"
@@ -757,7 +758,12 @@ while [ $# -gt 0 ]; do
             ;;
         -stls | --shadow-tls)
             _shadow_tls=true
-            shift 1
+            shift
+            # Collect all remaining arguments for shadow-tls
+            while [[ $# -gt 0 ]]; do
+                shadow_tls_args+=("$1")
+                shift
+            done
             ;;
         -ro | --remove-old-kernels)
             _remove_old_kernels=true
@@ -924,7 +930,7 @@ action() {
     elif [ "$_update_ss_obfs_host" == true ]; then
         update_ss_obfs_host "$_ss_obfs_host"
     elif [ "$_shadow_tls" == true ]; then
-        shadow_tls
+        shadow_tls "${shadow_tls_args[@]}"
     elif [ "$_self_update" == true ]; then
         self_update
     elif [ "$_remove_old_kernels" == true ]; then
