@@ -316,6 +316,38 @@ UDP_BOTH = {"tcp_and_udp", "tcp,udp", "both", "any"}
 
 GEOSITE_BASE = "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set"
 GEOIP_BASE   = "https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set"
+
+
+def _resolve_obfs(ib: dict) -> str | None:
+    """Return the sing-box `plugin_opts` string for simple-obfs, or None.
+
+    Accepted forms on an inbound:
+      obfs: "microsoft.com"                       # shorthand: http + host
+      obfs: { mode: http|tls, host: <name> }
+    Falls back to SS_OBFS_HOST / SS_OBFS_MODE env vars when no inbound-level
+    spec is present (used by single-link mode).
+    """
+    spec = ib.get("obfs") if isinstance(ib, dict) else None
+    if spec is None:
+        host = os.environ.get("SS_OBFS_HOST", "").strip()
+        if not host:
+            return None
+        mode = (os.environ.get("SS_OBFS_MODE") or "http").strip().lower()
+    elif isinstance(spec, str):
+        host = spec.strip()
+        if not host:
+            return None
+        mode = "http"
+    elif isinstance(spec, dict):
+        host = (spec.get("host") or "").strip()
+        if not host:
+            sys.exit(f"inbound obfs spec is missing 'host': {spec!r}")
+        mode = (spec.get("mode") or "http").strip().lower()
+    else:
+        sys.exit(f"inbound 'obfs' must be a string or a mapping, got {type(spec).__name__}")
+    if mode not in ("http", "tls"):
+        sys.exit(f"obfs mode must be http or tls (got: {mode})")
+    return f"obfs={mode};obfs-host={host}"
 SPLIT_KINDS  = ("geosite", "geoip", "domain", "domain_suffix",
                 "domain_keyword", "domain_regex", "ip_cidr")
 
@@ -455,6 +487,10 @@ def cmd_generate(schema: dict) -> None:
         }
         if network not in UDP_BOTH:
             sb_in["network"] = network
+        obfs_opts = _resolve_obfs(ib)
+        if obfs_opts:
+            sb_in["plugin"] = "obfs-server"
+            sb_in["plugin_opts"] = obfs_opts
         inbounds_out.append(sb_in)
 
         route_name = ib.get("route")

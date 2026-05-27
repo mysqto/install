@@ -52,6 +52,9 @@ network="tcp"          # tcp | udp | tcp_and_udp
 link=""
 sing_box_version=""
 listen_addr="::"        # dual-stack by default
+obfs_host=""             # simple-obfs masquerade host (e.g. microsoft.com)
+obfs_mode="http"         # simple-obfs mode: http | tls
+force_obfs=false         # rebuild simple-obfs even if already installed
 bypass_geosite=""        # comma-separated SagerNet/sing-geosite names: cn,private
 bypass_geoip=""          # comma-separated SagerNet/sing-geoip names:   cn,private
 bypass_suffix=""         # comma-separated domain suffixes:             .lan,.internal
@@ -71,6 +74,9 @@ while [ $# -gt 0 ]; do
         -4|--ipv4)     CURL_OPTS="-4"; WGET_OPTS="-4"; shift ;;
         -6|--ipv6)     CURL_OPTS="-6"; WGET_OPTS="-6"; shift ;;
         --sing-box-version) sing_box_version="$2"; shift 2 ;;
+        --obfs-host)      obfs_host="$2"; shift 2 ;;
+        --obfs-mode)      obfs_mode="$2"; shift 2 ;;
+        --force-obfs)     force_obfs=true; shift ;;
         --bypass)         bypass_geosite="$2"; shift 2 ;;
         --bypass-geoip)   bypass_geoip="$2"; shift 2 ;;
         --bypass-suffix)  bypass_suffix="$2"; shift 2 ;;
@@ -92,6 +98,13 @@ Options:
   -s, --setup               Generate config + install/restart systemd unit
   -4 | -6                   Force IPv4/IPv6 for downloads
       --sing-box-version    Pin sing-box version (default: latest GitHub release)
+
+simple-obfs (SIP003 plugin on the SS inbound — same wire format as
+shadowsocks-libev's obfs-server, so existing SS+obfs clients connect):
+      --obfs-host <name>       Enable obfs with the given masquerade host.
+                                 Builds simple-obfs from source on first --setup.
+      --obfs-mode <http|tls>   default: http
+      --force-obfs             Rebuild simple-obfs even if already installed
 
 Split-routing (bypass proxy / block) — all values are comma-separated lists:
       --bypass <list>          Geosite categories to route DIRECT.
@@ -142,6 +155,43 @@ curl ${CURL_OPTS} -fsSL "$sb_url" -o "$tmpdir/sb.tgz" || error "Failed to downlo
 tar -xzf "$tmpdir/sb.tgz" -C "$tmpdir" --strip-components=1 || error "Failed to extract sing-box"
 install -m 0755 "$tmpdir/sing-box" /usr/local/bin/sing-box || error "Failed to install sing-box binary"
 info "sing-box installed: $(/usr/local/bin/sing-box version | head -n1)"
+
+# ---------- Build + install simple-obfs (only when --obfs-host given) ----------
+
+if [ -n "$obfs_host" ]; then
+    case "$obfs_mode" in
+        http|tls) ;;
+        *) error "--obfs-mode must be http or tls (got: $obfs_mode)" ;;
+    esac
+
+    if [ "$force_obfs" = "false" ] && installed obfs-server; then
+        info "simple-obfs already installed (use --force-obfs to rebuild)"
+    else
+        info "building simple-obfs from source (this takes ~30s)..."
+        if   installed apt-get; then DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+                                          git build-essential autoconf libtool libssl-dev libpcre2-dev libev-dev automake
+        elif installed yum;     then yum install -y git gcc make autoconf libtool openssl-devel pcre-devel libev-devel automake
+        elif installed dnf;     then dnf install -y git gcc make autoconf libtool openssl-devel pcre-devel libev-devel automake
+        elif installed zypper;  then zypper install -y git gcc make autoconf libtool openssl-devel pcre-devel libev-devel automake
+        elif installed apk;     then apk add --no-cache git build-base autoconf libtool openssl-dev pcre-dev libev-dev automake linux-headers
+        else warn "no known package manager — simple-obfs build may fail without dev libs"
+        fi
+
+        nproc=$(grep -c ^processor /proc/cpuinfo 2>/dev/null); [ -z "$nproc" ] && nproc=4
+        obfs_src="$tmpdir/simple-obfs"
+        git clone --depth 1 https://github.com/shadowsocks/simple-obfs.git "$obfs_src" \
+            || error "git clone simple-obfs failed"
+        ( cd "$obfs_src" \
+            && git submodule update --init --recursive \
+            && ./autogen.sh \
+            && ./configure --disable-documentation --prefix=/usr/local \
+            && make -j"$nproc" \
+            && make install ) \
+            || error "simple-obfs build failed"
+        installed obfs-server || error "obfs-server not in PATH after install"
+        info "simple-obfs installed"
+    fi
+fi
 
 # ---------- Install the URL parser ----------
 
@@ -343,6 +393,13 @@ def main():
                "method": method, "password": password}
     if network not in ("tcp_and_udp", "tcp,udp", "both", "any"):
         inbound["network"] = network
+    obfs_host = os.environ.get("SS_OBFS_HOST", "").strip()
+    if obfs_host:
+        obfs_mode = (os.environ.get("SS_OBFS_MODE") or "http").strip().lower()
+        if obfs_mode not in ("http", "tls"):
+            sys.exit(f"SS_OBFS_MODE must be http or tls (got: {obfs_mode})")
+        inbound["plugin"] = "obfs-server"
+        inbound["plugin_opts"] = f"obfs={obfs_mode};obfs-host={obfs_host}"
 
     rule_set_defs, split_rules, _ = build_split_section()
     # Split rules first (reject/direct), then catch-all to proxy.
@@ -439,6 +496,8 @@ SS_PASSWORD=$password
 SS_METHOD=$method
 SS_NETWORK=$network
 SS_LISTEN=$listen_addr
+SS_OBFS_HOST=$obfs_host
+SS_OBFS_MODE=$obfs_mode
 SPLIT_DIRECT_GEOSITE=$bypass_geosite
 SPLIT_DIRECT_GEOIP=$bypass_geoip
 SPLIT_DIRECT_DOMAIN_SUFFIX=$bypass_suffix
@@ -456,6 +515,8 @@ if ! PROXY_LINK="$link" \
      SS_METHOD="$method" \
      SS_NETWORK="$network" \
      SS_LISTEN="$listen_addr" \
+     SS_OBFS_HOST="$obfs_host" \
+     SS_OBFS_MODE="$obfs_mode" \
      SPLIT_DIRECT_GEOSITE="$bypass_geosite" \
      SPLIT_DIRECT_GEOIP="$bypass_geoip" \
      SPLIT_DIRECT_DOMAIN_SUFFIX="$bypass_suffix" \
@@ -477,6 +538,7 @@ info "  port       : $port"
 info "  password   : $password"
 info "  method     : $method"
 info "  network    : $network"
+[ -n "$obfs_host" ]      && info "  obfs       : mode=$obfs_mode host=$obfs_host"
 [ -n "$bypass_geosite" ] && info "  bypass     : geosite=$bypass_geosite"
 [ -n "$bypass_geoip" ]   && info "  bypass     : geoip=$bypass_geoip"
 [ -n "$bypass_suffix" ]  && info "  bypass     : suffix=$bypass_suffix"

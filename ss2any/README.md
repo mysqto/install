@@ -81,6 +81,8 @@ sudo ./install --link 'vless://...' --setup \
 | `SS_METHOD`       | `chacha20-ietf-poly1305`      | SS cipher                                   |
 | `SS_PASSWORD`     | *(generated)*                 | Auto-generated and logged if blank          |
 | `SS_NETWORK`      | `tcp`                         | `tcp` / `udp` / `tcp_and_udp`               |
+| `SS_OBFS_HOST`    | *(unset = no obfs)*           | simple-obfs masquerade host (e.g. `microsoft.com`) |
+| `SS_OBFS_MODE`    | `http`                        | `http` or `tls`                             |
 | `LOG_LEVEL`       | `info`                        | sing-box log level                          |
 | `SS2ANY_CONFIG`   | `/config/ss2any.yaml`         | Path inside container; ignored if absent    |
 

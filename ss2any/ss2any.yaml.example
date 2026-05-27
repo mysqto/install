@@ -10,17 +10,21 @@ inbounds:
     password: alice
     method: chacha20-ietf-poly1305
     network: tcp                # tcp | udp | tcp_and_udp
+    obfs:                       # optional simple-obfs (SIP003 plugin)
+      mode: http                #   http | tls (default: http)
+      host: microsoft.com       #   masquerade hostname
     route: chain-jp             # name of a chain (see below)
 
   - tag: ss-us
     port: 8389
     password: bob
+    obfs: "apple.com"           # shorthand: http mode + this host
     route: us_vless             # name of an upstream — treated as a 1-hop chain
 
   - tag: ss-stack
     port: 8390
     password: charlie
-    route: triple-hop
+    route: triple-hop           # no obfs
 
 # Named upstreams. Any URL scheme supported by generate-config.py.
 upstreams:
