@@ -390,16 +390,11 @@ def cmd_generate(schema: dict) -> None:
         )
 
     outbounds_out.append({"type": "direct", "tag": "direct"})
-    outbounds_out.append({"type": "block", "tag": "block"})
 
     cfg = {
         "log": {
             "level": os.environ.get("LOG_LEVEL", schema.get("log_level", "info")),
             "timestamp": True,
-        },
-        "dns": {
-            "servers": [{"tag": "local", "address": "local"}],
-            "strategy": "prefer_ipv4",
         },
         "inbounds": inbounds_out,
         "outbounds": outbounds_out,

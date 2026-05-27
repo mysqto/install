@@ -50,7 +50,6 @@ password=""
 method="chacha20-ietf-poly1305"
 network="tcp"          # tcp | udp | tcp_and_udp
 link=""
-dns_server=""
 sing_box_version=""
 listen_addr="::"        # dual-stack by default
 
@@ -62,7 +61,6 @@ while [ $# -gt 0 ]; do
         -m|--method)   method="$2"; shift 2 ;;
         -n|--network)  network="$2"; shift 2 ;;
         -l|--link)     link="$2"; shift 2 ;;
-        -d|--dns-server) dns_server="$2"; shift 2 ;;
         -L|--listen)   listen_addr="$2"; shift 2 ;;
         -s|--setup)    setup=true; shift ;;
         -4|--ipv4)     CURL_OPTS="-4"; WGET_OPTS="-4"; shift ;;
@@ -81,7 +79,6 @@ Options:
   -m, --method <method>     SS cipher (default: chacha20-ietf-poly1305)
   -n, --network <net>       tcp | udp | tcp_and_udp (default: tcp)
   -L, --listen <addr>       Bind address (default: ::)
-  -d, --dns-server <ip>     DNS server for sing-box (auto-detected if omitted)
   -s, --setup               Generate config + install/restart systemd unit
   -4 | -6                   Force IPv4/IPv6 for downloads
       --sing-box-version    Pin sing-box version (default: latest GitHub release)
@@ -275,7 +272,6 @@ def main():
     method   = os.environ.get("SS_METHOD", "chacha20-ietf-poly1305")
     network  = (os.environ.get("SS_NETWORK") or "tcp").lower()
     listen   = os.environ.get("SS_LISTEN", "::")
-    dns      = os.environ.get("DNS_SERVER", "1.1.1.1")
     inbound = {"type": "shadowsocks", "tag": "ss-in",
                "listen": listen, "listen_port": port,
                "method": method, "password": password}
@@ -283,13 +279,8 @@ def main():
         inbound["network"] = network
     cfg = {
         "log": {"level": os.environ.get("LOG_LEVEL", "info"), "timestamp": True},
-        "dns": {"servers": [{"tag": "remote", "address": dns, "detour": OUTBOUND_TAG},
-                            {"tag": "local",  "address": "local"}],
-                "rules": [{"outbound": ["any"], "server": "local"}],
-                "strategy": "prefer_ipv4"},
         "inbounds": [inbound],
-        "outbounds": [ob, {"type": "direct", "tag": "direct"},
-                          {"type": "block",  "tag": "block"}],
+        "outbounds": [ob, {"type": "direct", "tag": "direct"}],
         "route": {"final": OUTBOUND_TAG,
                   "rules": [{"inbound": ["ss-in"], "outbound": OUTBOUND_TAG}]}
     }
@@ -365,21 +356,6 @@ if [ -z "$password" ]; then
     password="$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 32)"
 fi
 
-if [ -z "$dns_server" ]; then
-    if installed ip; then
-        v4_route=$(ip -4 route 2>/dev/null)
-        v6_route=$(ip -6 route 2>/dev/null)
-        if [ -z "$v4_route" ] && [ -n "$v6_route" ]; then
-            warn "IPv6-only network detected, using Google's public DNS"
-            dns_server="2001:4860:4860::8888"
-        else
-            dns_server="1.1.1.1"
-        fi
-    else
-        dns_server="1.1.1.1"
-    fi
-fi
-
 # Persist env so re-running --setup is idempotent and the user can edit.
 defaults_file="/etc/default/ss2any"
 cat > "$defaults_file" <<EOF
@@ -392,7 +368,6 @@ SS_PASSWORD=$password
 SS_METHOD=$method
 SS_NETWORK=$network
 SS_LISTEN=$listen_addr
-DNS_SERVER=$dns_server
 EOF
 chmod 0600 "$defaults_file"
 
@@ -405,7 +380,6 @@ if ! PROXY_LINK="$link" \
      SS_METHOD="$method" \
      SS_NETWORK="$network" \
      SS_LISTEN="$listen_addr" \
-     DNS_SERVER="$dns_server" \
      python3 "$parser" generate >"$config_file.tmp" 2>"$tmpdir/parser.err"; then
     cat "$tmpdir/parser.err" >&2
     rm -f "$config_file.tmp"
@@ -422,7 +396,6 @@ info "  port       : $port"
 info "  password   : $password"
 info "  method     : $method"
 info "  network    : $network"
-info "  dns        : $dns_server"
 info "  config     : $config_file"
 info "  env-file   : $defaults_file"
 
