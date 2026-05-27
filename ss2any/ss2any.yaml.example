@@ -1,0 +1,48 @@
+# ss2any multi-inbound config.
+# Copy to ss2any.yaml, edit, then:  ./run --config ss2any.yaml
+
+# Each inbound publishes its own SS endpoint and routes to a different
+# upstream or chain. The `run` script reads `port`+`network` from here
+# to decide which docker -p flags to publish.
+inbounds:
+  - tag: ss-jp
+    port: 8388
+    password: alice
+    method: chacha20-ietf-poly1305
+    network: tcp                # tcp | udp | tcp_and_udp
+    route: chain-jp             # name of a chain (see below)
+
+  - tag: ss-us
+    port: 8389
+    password: bob
+    route: us_vless             # name of an upstream — treated as a 1-hop chain
+
+  - tag: ss-stack
+    port: 8390
+    password: charlie
+    route: triple-hop
+
+# Named upstreams. Any URL scheme supported by generate-config.py.
+upstreams:
+  jp_vless:
+    "vless://UUID@jp.example.com:443?security=reality&pbk=PUBKEY&sid=SHORTID&sni=www.cloudflare.com&fp=chrome&flow=xtls-rprx-vision#jp-node"
+
+  jp_trojan:
+    "trojan://password@jp-cdn.example.com:443?security=tls&sni=jp-cdn.example.com&type=ws&path=/ws&host=jp-cdn.example.com#jp-cdn"
+
+  us_vless:
+    "vless://UUID@us.example.com:443?security=tls&sni=us.example.com&type=ws&path=/p#us-node"
+
+  hop_relay:
+    "trojan://relaypw@relay.example.com:443?security=tls&sni=relay.example.com#relay"
+
+# Chains define proxy chains. Order: client -> first -> ... -> last -> internet.
+# Use sing-box's outbound `detour` under the hood — each hop dials the next via
+# the previous one.
+chains:
+  chain-jp:     [jp_trojan, jp_vless]            # client -> jp_trojan -> jp_vless -> internet
+  triple-hop:   [hop_relay, jp_trojan, jp_vless] # 3-hop stack
+
+# A `route:` value may be:
+#   - the name of a chain defined above (multi-hop), or
+#   - the name of an upstream defined above (1-hop shortcut — see ss-us).

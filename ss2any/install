@@ -1,0 +1,468 @@
+#!/bin/bash
+# ss2any installer — sing-box runtime that exposes a Shadowsocks inbound and
+# tunnels every connection to an arbitrary upstream (vless/trojan/vmess/ss/
+# hysteria2/tuic). Installs a single systemd unit.
+#
+# Mirrors install/ss-rust in spirit:
+#   - one self-contained bash script
+#   - package-manager-aware dependency install
+#   - downloads the upstream release binary
+#   - optional --setup provisions config + systemd service
+
+function warn()  { echo -e "\033[1;33m${*}\033[0m"; }
+function error() { echo -e "\033[1;31m${*}\033[0m"; exit 1; }
+function info()  { echo -e "\033[1;32m${*}\033[0m"; }
+function installed() { command -v "$1" >/dev/null 2>&1; }
+
+[ "$(id -u)" -ne 0 ] && error "Please run as root"
+
+[ -z "$CURL_OPTS" ] && CURL_OPTS=""
+[ -z "$WGET_OPTS" ] && WGET_OPTS=""
+
+# ---------- Dependency install ----------
+
+if ! installed curl; then
+    warn "curl is required, will try to install it"
+    if installed apt-get; then apt-get update && apt-get install -y curl
+    elif installed yum;     then yum install -y curl
+    elif installed dnf;     then dnf install -y curl
+    elif installed zypper;  then zypper install -y curl
+    elif installed apk;     then apk add --no-cache curl
+    else error "no package manager found, please install curl manually"
+    fi
+fi
+installed curl || error "curl is required, auto installation failed"
+
+# sing-box is a static Go binary — we only need curl, tar, python3, and iproute2 (`ss`).
+if   installed apt-get; then apt-get update && apt-get install -y --no-install-recommends ca-certificates curl tar python3 iproute2
+elif installed yum;     then yum install -y ca-certificates curl tar python3 iproute
+elif installed dnf;     then dnf install -y ca-certificates curl tar python3 iproute
+elif installed zypper;  then zypper install -y ca-certificates curl tar python3 iproute2
+elif installed apk;     then apk add --no-cache ca-certificates curl tar python3 iproute2
+else warn "no known package manager — assuming curl/tar/python3/ss already installed"
+fi
+
+# ---------- Args ----------
+
+setup=false
+port=""
+password=""
+method="chacha20-ietf-poly1305"
+network="tcp"          # tcp | udp | tcp_and_udp
+link=""
+dns_server=""
+sing_box_version=""
+listen_addr="::"        # dual-stack by default
+
+POSITIONAL=()
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -P|--port)     port="$2"; shift 2 ;;
+        -p|--password) password="$2"; shift 2 ;;
+        -m|--method)   method="$2"; shift 2 ;;
+        -n|--network)  network="$2"; shift 2 ;;
+        -l|--link)     link="$2"; shift 2 ;;
+        -d|--dns-server) dns_server="$2"; shift 2 ;;
+        -L|--listen)   listen_addr="$2"; shift 2 ;;
+        -s|--setup)    setup=true; shift ;;
+        -4|--ipv4)     CURL_OPTS="-4"; WGET_OPTS="-4"; shift ;;
+        -6|--ipv6)     CURL_OPTS="-6"; WGET_OPTS="-6"; shift ;;
+        --sing-box-version) sing_box_version="$2"; shift 2 ;;
+        -h|--help)
+            cat <<EOF
+Usage: $0 [options]
+
+Installer for ss2any (sing-box with SS inbound -> arbitrary outbound).
+
+Options:
+  -l, --link <url>          Upstream proxy URL (vless/trojan/vmess/ss/hy2/tuic) — required for --setup
+  -P, --port <port>         SS listen port (random unused port if omitted)
+  -p, --password <pw>       SS password (random 32-char string if omitted)
+  -m, --method <method>     SS cipher (default: chacha20-ietf-poly1305)
+  -n, --network <net>       tcp | udp | tcp_and_udp (default: tcp)
+  -L, --listen <addr>       Bind address (default: ::)
+  -d, --dns-server <ip>     DNS server for sing-box (auto-detected if omitted)
+  -s, --setup               Generate config + install/restart systemd unit
+  -4 | -6                   Force IPv4/IPv6 for downloads
+      --sing-box-version    Pin sing-box version (default: latest GitHub release)
+  -h, --help                Show this help
+EOF
+            exit 0 ;;
+        *) POSITIONAL+=("$1"); warn "unknown option $1"; shift ;;
+    esac
+done
+set -- "${POSITIONAL[@]}"
+
+# ---------- Detect arch + download sing-box ----------
+
+arch=$(uname -m)
+case $arch in
+    x86_64)         sb_arch=amd64 ;;
+    aarch64|arm64)  sb_arch=arm64 ;;
+    armv7l)         sb_arch=armv7 ;;
+    armv6l)         sb_arch=armv6 ;;
+    i*86)           sb_arch=386 ;;
+    *) error "Unsupported architecture: $arch" ;;
+esac
+
+if [ -z "$sing_box_version" ]; then
+    info "fetching latest sing-box release..."
+    sing_box_version=$(curl ${CURL_OPTS} -sL "https://api.github.com/repos/SagerNet/sing-box/releases/latest" 2>/dev/null \
+        | grep '"tag_name"' | head -n1 | cut -d'"' -f4 | sed 's/^v//')
+fi
+[ -z "$sing_box_version" ] && error "Failed to detect sing-box version (set --sing-box-version to override)"
+info "sing-box version: $sing_box_version"
+
+sb_url="https://github.com/SagerNet/sing-box/releases/download/v${sing_box_version}/sing-box-${sing_box_version}-linux-${sb_arch}.tar.gz"
+info "downloading: $sb_url"
+
+tmpdir=$(mktemp -d -t ss2any-XXXXXXXX) || error "mktemp failed"
+trap 'rm -rf "$tmpdir"' EXIT
+
+curl ${CURL_OPTS} -fsSL "$sb_url" -o "$tmpdir/sb.tgz" || error "Failed to download sing-box"
+tar -xzf "$tmpdir/sb.tgz" -C "$tmpdir" --strip-components=1 || error "Failed to extract sing-box"
+install -m 0755 "$tmpdir/sing-box" /usr/local/bin/sing-box || error "Failed to install sing-box binary"
+info "sing-box installed: $(/usr/local/bin/sing-box version | head -n1)"
+
+# ---------- Install the URL parser ----------
+
+ss2any_lib=/usr/local/lib/ss2any
+ss2any_conf=/etc/ss2any
+parser="$ss2any_lib/generate-config.py"
+mkdir -p "$ss2any_lib" "$ss2any_conf"
+
+script_dir="$(cd "$(dirname "$0")" 2>/dev/null && pwd)" || script_dir=""
+if [ -n "$script_dir" ] && [ -f "$script_dir/generate-config.py" ]; then
+    install -m 0755 "$script_dir/generate-config.py" "$parser"
+    info "parser installed from $script_dir/generate-config.py"
+else
+    info "writing embedded parser (no local generate-config.py found)"
+    cat > "$parser" <<'__PYEOF__'
+#!/usr/bin/env python3
+"""Embedded slim parser. Reads PROXY_LINK + SS_* env vars and emits a single-
+inbound sing-box JSON config on stdout. Mirrors the full repo parser but
+without YAML / multi-inbound / chains."""
+from __future__ import annotations
+import base64, json, os, sys
+from urllib.parse import parse_qs, unquote, urlparse
+
+OUTBOUND_TAG = "proxy-out"
+
+def _qs(p):
+    return {k: v[0] for k, v in parse_qs(p.query).items()}
+
+def _apply_tls(out, q, default_sni):
+    sec = q.get("security", "none")
+    if sec not in ("tls", "reality", "xtls"):
+        return
+    tls = {"enabled": True,
+           "server_name": q.get("sni") or q.get("peer") or q.get("host") or default_sni}
+    if q.get("alpn"): tls["alpn"] = [a for a in q["alpn"].split(",") if a]
+    if q.get("fp"):   tls["utls"] = {"enabled": True, "fingerprint": q["fp"]}
+    if q.get("allowInsecure") in ("1", "true"): tls["insecure"] = True
+    if sec == "reality":
+        tls["reality"] = {"enabled": True,
+                          "public_key": q.get("pbk", ""),
+                          "short_id":  q.get("sid", "")}
+    out["tls"] = tls
+
+def _apply_transport(out, q, default_host):
+    net = q.get("type", "tcp")
+    if net in ("tcp", "raw", ""): return
+    if net == "ws":
+        t = {"type": "ws", "path": q.get("path", "/")}
+        if q.get("host"): t["headers"] = {"Host": q["host"]}
+        out["transport"] = t
+    elif net == "grpc":
+        out["transport"] = {"type": "grpc", "service_name": q.get("serviceName", "")}
+    elif net in ("http", "h2"):
+        t = {"type": "http"}
+        if q.get("path"): t["path"] = q["path"]
+        if q.get("host"): t["host"] = [h for h in q["host"].split(",") if h]
+        out["transport"] = t
+    elif net == "httpupgrade":
+        out["transport"] = {"type": "httpupgrade",
+                            "path": q.get("path", "/"),
+                            "host": q.get("host", default_host)}
+    elif net == "quic":
+        out["transport"] = {"type": "quic"}
+
+def parse_vless(url):
+    p = urlparse(url); q = _qs(p)
+    o = {"type": "vless", "server": p.hostname, "server_port": p.port,
+         "uuid": unquote(p.username or "")}
+    if q.get("flow"): o["flow"] = q["flow"]
+    if q.get("encryption") and q["encryption"] != "none":
+        o["packet_encoding"] = q["encryption"]
+    _apply_tls(o, q, p.hostname or "")
+    _apply_transport(o, q, p.hostname or "")
+    return o
+
+def parse_trojan(url):
+    p = urlparse(url); q = _qs(p)
+    o = {"type": "trojan", "server": p.hostname, "server_port": p.port,
+         "password": unquote(p.username or "")}
+    if "security" not in q: q["security"] = "tls"
+    _apply_tls(o, q, p.hostname or "")
+    _apply_transport(o, q, p.hostname or "")
+    return o
+
+def parse_vmess(url):
+    pl = url[len("vmess://"):]
+    pl += "=" * (-len(pl) % 4)
+    d = json.loads(base64.urlsafe_b64decode(pl.encode()))
+    o = {"type": "vmess", "server": d.get("add"), "server_port": int(d.get("port", 0)),
+         "uuid": d.get("id"), "security": d.get("scy", "auto"),
+         "alter_id": int(d.get("aid", 0) or 0)}
+    q = {"type": d.get("net", "tcp"),
+         "security": "tls" if d.get("tls") == "tls" else "none",
+         "sni": d.get("sni") or d.get("host") or d.get("add"),
+         "host": d.get("host", ""), "path": d.get("path", "/"),
+         "alpn": d.get("alpn", ""), "fp": d.get("fp", ""),
+         "serviceName": d.get("path", "")}
+    _apply_tls(o, q, d.get("add", ""))
+    _apply_transport(o, q, d.get("add", ""))
+    return o
+
+def parse_ss(url):
+    p = urlparse(url)
+    userinfo = p.username or ""; password = p.password; method = userinfo
+    if password is None:
+        try:
+            pad = "=" * (-len(userinfo) % 4)
+            decoded = base64.urlsafe_b64decode((userinfo + pad).encode()).decode()
+            if ":" in decoded: method, password = decoded.split(":", 1)
+        except Exception: pass
+    return {"type": "shadowsocks", "server": p.hostname, "server_port": p.port,
+            "method": method, "password": unquote(password or "")}
+
+def parse_hysteria2(url):
+    p = urlparse(url); q = _qs(p)
+    o = {"type": "hysteria2", "server": p.hostname, "server_port": p.port,
+         "password": unquote(p.username or "")}
+    tls = {"enabled": True, "server_name": q.get("sni") or p.hostname or ""}
+    if q.get("insecure") in ("1", "true"): tls["insecure"] = True
+    if q.get("alpn"): tls["alpn"] = [a for a in q["alpn"].split(",") if a]
+    o["tls"] = tls
+    if q.get("obfs"):
+        o["obfs"] = {"type": q["obfs"], "password": q.get("obfs-password", "")}
+    return o
+
+def parse_tuic(url):
+    p = urlparse(url); q = _qs(p)
+    o = {"type": "tuic", "server": p.hostname, "server_port": p.port,
+         "uuid": unquote(p.username or ""), "password": unquote(p.password or ""),
+         "congestion_control": q.get("congestion_control", "bbr")}
+    tls = {"enabled": True, "server_name": q.get("sni") or p.hostname or ""}
+    if q.get("alpn"): tls["alpn"] = [a for a in q["alpn"].split(",") if a]
+    if q.get("allow_insecure") in ("1", "true"): tls["insecure"] = True
+    o["tls"] = tls
+    return o
+
+PARSERS = {"vless": parse_vless, "trojan": parse_trojan, "vmess": parse_vmess,
+           "ss": parse_ss, "hysteria2": parse_hysteria2, "hy2": parse_hysteria2,
+           "tuic": parse_tuic}
+
+def main():
+    link = os.environ.get("PROXY_LINK", "").strip()
+    if not link: sys.exit("PROXY_LINK not set")
+    scheme = link.split("://", 1)[0].lower()
+    if scheme not in PARSERS: sys.exit(f"unsupported scheme: {scheme}")
+    ob = PARSERS[scheme](link)
+    ob["tag"] = OUTBOUND_TAG
+    password = os.environ.get("SS_PASSWORD") or sys.exit("SS_PASSWORD not set")
+    port     = int(os.environ.get("SS_PORT", "8388"))
+    method   = os.environ.get("SS_METHOD", "chacha20-ietf-poly1305")
+    network  = (os.environ.get("SS_NETWORK") or "tcp").lower()
+    listen   = os.environ.get("SS_LISTEN", "::")
+    dns      = os.environ.get("DNS_SERVER", "1.1.1.1")
+    inbound = {"type": "shadowsocks", "tag": "ss-in",
+               "listen": listen, "listen_port": port,
+               "method": method, "password": password}
+    if network not in ("tcp_and_udp", "tcp,udp", "both", "any"):
+        inbound["network"] = network
+    cfg = {
+        "log": {"level": os.environ.get("LOG_LEVEL", "info"), "timestamp": True},
+        "dns": {"servers": [{"tag": "remote", "address": dns, "detour": OUTBOUND_TAG},
+                            {"tag": "local",  "address": "local"}],
+                "rules": [{"outbound": ["any"], "server": "local"}],
+                "strategy": "prefer_ipv4"},
+        "inbounds": [inbound],
+        "outbounds": [ob, {"type": "direct", "tag": "direct"},
+                          {"type": "block",  "tag": "block"}],
+        "route": {"final": OUTBOUND_TAG,
+                  "rules": [{"inbound": ["ss-in"], "outbound": OUTBOUND_TAG}]}
+    }
+    json.dump(cfg, sys.stdout, indent=2); sys.stdout.write("\n")
+
+if __name__ == "__main__":
+    main()
+__PYEOF__
+    chmod 0755 "$parser"
+fi
+
+# ---------- Stop here if not --setup ----------
+
+if [ "$setup" != "true" ]; then
+    info "sing-box and parser installed."
+    info "Run again with --setup --link <url> to provision the systemd unit."
+    exit 0
+fi
+
+# ---------- --setup: resolve port/password/dns, write config + unit ----------
+
+[ -z "$link" ] && error "--link <url> is required for --setup"
+
+# Random-but-unused-port picker. Returns 0 (true) when port is in use.
+port_in_use() {
+    local p=$1
+    if installed ss; then
+        ss -Hltun "sport = :$p" 2>/dev/null | grep -q . && return 0
+        return 1
+    fi
+    # Cross-platform fallback: try to bind both TCP and UDP via python.
+    # Exit 0 from python = bind succeeded (port free); we invert to bash convention.
+    if python3 - "$p" <<'PY'
+import socket, sys
+p = int(sys.argv[1])
+for fam in (socket.AF_INET6, socket.AF_INET):
+    for typ in (socket.SOCK_STREAM, socket.SOCK_DGRAM):
+        s = socket.socket(fam, typ)
+        try:
+            s.bind(("" if fam == socket.AF_INET else "::", p))
+        except OSError:
+            sys.exit(1)
+        finally:
+            s.close()
+sys.exit(0)
+PY
+    then
+        return 1   # bind succeeded → port free
+    else
+        return 0   # bind failed → port in use
+    fi
+}
+
+random_unused_port() {
+    local min=10000 max=65000 p
+    for _ in $(seq 1 100); do
+        p=$(shuf -i ${min}-${max} -n1 2>/dev/null) || return 1
+        if ! port_in_use "$p"; then
+            echo "$p"; return 0
+        fi
+    done
+    return 1
+}
+
+if [ -z "$port" ]; then
+    port=$(random_unused_port) || error "could not find an unused port after 100 tries"
+    info "selected random unused port: $port"
+else
+    port_in_use "$port" && error "port $port is already in use"
+fi
+
+if [ -z "$password" ]; then
+    password="$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 32)"
+fi
+
+if [ -z "$dns_server" ]; then
+    if installed ip; then
+        v4_route=$(ip -4 route 2>/dev/null)
+        v6_route=$(ip -6 route 2>/dev/null)
+        if [ -z "$v4_route" ] && [ -n "$v6_route" ]; then
+            warn "IPv6-only network detected, using Google's public DNS"
+            dns_server="2001:4860:4860::8888"
+        else
+            dns_server="1.1.1.1"
+        fi
+    else
+        dns_server="1.1.1.1"
+    fi
+fi
+
+# Persist env so re-running --setup is idempotent and the user can edit.
+defaults_file="/etc/default/ss2any"
+cat > "$defaults_file" <<EOF
+# ss2any environment (regenerated by /usr/local/lib/ss2any/generate-config.py
+# whenever the unit is reinstalled). Edit and re-run the installer with --setup
+# to apply.
+PROXY_LINK=$link
+SS_PORT=$port
+SS_PASSWORD=$password
+SS_METHOD=$method
+SS_NETWORK=$network
+SS_LISTEN=$listen_addr
+DNS_SERVER=$dns_server
+EOF
+chmod 0600 "$defaults_file"
+
+# Generate sing-box config. Both parsers accept `generate` as argv[1]: the
+# repo version uses it as a subcommand, the embedded version ignores it.
+config_file="$ss2any_conf/config.json"
+if ! PROXY_LINK="$link" \
+     SS_PORT="$port" \
+     SS_PASSWORD="$password" \
+     SS_METHOD="$method" \
+     SS_NETWORK="$network" \
+     SS_LISTEN="$listen_addr" \
+     DNS_SERVER="$dns_server" \
+     python3 "$parser" generate >"$config_file.tmp" 2>"$tmpdir/parser.err"; then
+    cat "$tmpdir/parser.err" >&2
+    rm -f "$config_file.tmp"
+    error "Failed to generate sing-box config from PROXY_LINK"
+fi
+mv "$config_file.tmp" "$config_file"
+chmod 0644 "$config_file"
+
+/usr/local/bin/sing-box check -c "$config_file" || error "sing-box config validation failed"
+
+info "ss2any settings:"
+info "  listen     : $listen_addr"
+info "  port       : $port"
+info "  password   : $password"
+info "  method     : $method"
+info "  network    : $network"
+info "  dns        : $dns_server"
+info "  config     : $config_file"
+info "  env-file   : $defaults_file"
+
+# Systemd unit
+unit_file="/lib/systemd/system/ss2any.service"
+cat > "$unit_file" <<UNIT
+[Unit]
+Description=ss2any (sing-box: Shadowsocks inbound -> arbitrary outbound)
+Documentation=https://sing-box.sagernet.org/
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=32768
+DynamicUser=true
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadOnlyPaths=$config_file
+EnvironmentFile=$defaults_file
+ExecStart=/usr/local/bin/sing-box run -c $config_file
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+systemctl daemon-reload
+systemctl enable ss2any.service >/dev/null 2>&1
+systemctl restart ss2any.service
+
+sleep 1
+if systemctl is-active --quiet ss2any.service; then
+    info "ss2any service is running (systemctl status ss2any)"
+else
+    warn "ss2any service failed to start — check: journalctl -u ss2any -e"
+    exit 1
+fi

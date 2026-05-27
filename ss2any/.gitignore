@@ -1,0 +1,5 @@
+.ss2any.env
+.ss2any.env.*
+!.ss2any.env.example
+*.tmp
+config/

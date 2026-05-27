@@ -1,0 +1,8 @@
+.git
+.gitignore
+.ss2any.env
+.ss2any.env.*
+!.ss2any.env.example
+README.md
+AGENTS.md
+config/

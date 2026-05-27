@@ -1,0 +1,147 @@
+#!/bin/bash
+# ss2any host-side launcher.
+#
+# Builds the image if missing, asks the image's own parser which ports to
+# publish, then starts a long-running container with the right -p flags.
+#
+# Two usage modes:
+#
+#   1. Multi-inbound (recommended): edit ss2any.yaml, then
+#        ./run --config ss2any.yaml
+#
+#   2. Single-link shortcut:
+#        ./run --link 'vless://...' --port 8388
+#        ./run --env-file .ss2any.env
+
+set -euo pipefail
+
+info()  { echo -e "\033[1;32m${*}\033[0m" >&2; }
+warn()  { echo -e "\033[1;33m${*}\033[0m" >&2; }
+error() { echo -e "\033[1;31m${*}\033[0m" >&2; exit 1; }
+
+script_dir="$(cd "$(dirname "$0")" && pwd)"
+image="ss2any"
+container="ss2any"
+config_file=""
+env_file=""
+link=""
+ss_port=""
+bind_ip="0.0.0.0"
+force_build=""
+
+usage() {
+    cat <<EOF
+Usage: $0 [options]
+
+Options:
+  --config <file>     ss2any.yaml (multi-inbound, multi-upstream, chains)
+  --link <url>        Single upstream URL shortcut (vless/trojan/vmess/ss/hy2/tuic)
+  --env-file <file>   KEY=VALUE env file (PROXY_LINK, SS_*, ...)
+  --port <port>       Override SS port in --link / env mode (default: 8388)
+  --bind <ip>         Host bind address for published ports (default: 0.0.0.0)
+  --name <name>       Container name (default: ss2any)
+  --build             Force rebuild of the image
+  --help              Show this help
+
+Mode resolution: --config wins; otherwise --link / --env-file / \$PROXY_LINK.
+
+Examples:
+  $0 --config ss2any.yaml
+  $0 --link 'vless://...' --port 8388
+  $0 --env-file .ss2any.env
+EOF
+    exit 1
+}
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --config)   shift; config_file=$1; shift ;;
+        --link)     shift; link=$1; shift ;;
+        --env-file) shift; env_file=$1; shift ;;
+        --port)     shift; ss_port=$1; shift ;;
+        --bind)     shift; bind_ip=$1; shift ;;
+        --name)     shift; container=$1; shift ;;
+        --build)    force_build="--build"; shift ;;
+        --help|-h)  usage ;;
+        *)          warn "unknown option: $1"; shift ;;
+    esac
+done
+
+# Validate inputs
+if [ -n "$config_file" ]; then
+    [ ! -f "$config_file" ] && error "config file not found: $config_file"
+    config_file="$(cd "$(dirname "$config_file")" && pwd)/$(basename "$config_file")"
+fi
+if [ -n "$env_file" ]; then
+    [ ! -f "$env_file" ] && error "env file not found: $env_file"
+fi
+if [ -z "$config_file" ] && [ -z "$link" ] && [ -z "$env_file" ] && [ -z "${PROXY_LINK:-}" ]; then
+    error "provide --config, --link, --env-file, or set PROXY_LINK"
+fi
+
+# Build image first (plan-ports needs it)
+cd "$script_dir"
+if [ -n "$force_build" ] || ! docker image inspect "$image" >/dev/null 2>&1; then
+    info "Building $image image..."
+    docker build -t "$image" .
+fi
+
+# Resolve which ports to expose.
+plan_args=(run --rm --entrypoint /usr/local/bin/generate-config.py)
+if [ -n "$config_file" ]; then
+    plan_args+=(-v "$config_file:/config/ss2any.yaml:ro" "$image" plan-ports /config/ss2any.yaml)
+else
+    # Single-link mode: pass env vars so plan-ports can synthesize a schema.
+    [ -n "$env_file" ] && plan_args+=(--env-file "$env_file")
+    [ -n "$link" ]              && plan_args+=(-e "PROXY_LINK=${link}")
+    [ -n "$ss_port" ]           && plan_args+=(-e "SS_PORT=${ss_port}")
+    [ -n "${PROXY_LINK:-}" ] && [ -z "$link" ] && plan_args+=(-e "PROXY_LINK=${PROXY_LINK}")
+    [ -n "${SS_PASSWORD:-}" ]   && plan_args+=(-e "SS_PASSWORD=${SS_PASSWORD}")
+    [ -n "${SS_METHOD:-}" ]     && plan_args+=(-e "SS_METHOD=${SS_METHOD}")
+    [ -n "${SS_NETWORK:-}" ]    && plan_args+=(-e "SS_NETWORK=${SS_NETWORK}")
+    plan_args+=("$image" plan-ports)
+fi
+
+info "Planning ports..."
+plan_output=$(docker "${plan_args[@]}") || error "plan-ports failed; check config / env"
+[ -z "$plan_output" ] && error "plan-ports returned nothing — empty inbounds?"
+
+# Build -p flags
+port_args=()
+echo "$plan_output" | sort -u | while IFS= read -r line; do
+    echo "  publish ${bind_ip}:${line}" >&2
+done
+while IFS= read -r entry; do
+    port="${entry%/*}"
+    proto="${entry#*/}"
+    port_args+=(-p "${bind_ip}:${port}:${port}/${proto}")
+done < <(echo "$plan_output" | sort -u)
+
+# Replace existing container with same name
+if docker ps -a --format '{{.Names}}' | grep -qx "$container"; then
+    info "Removing existing container: $container"
+    docker rm -f "$container" >/dev/null
+fi
+
+# Assemble runtime args
+run_args=(-d --name "$container" --restart unless-stopped)
+run_args+=("${port_args[@]}")
+
+if [ -n "$config_file" ]; then
+    run_args+=(-v "$config_file:/config/ss2any.yaml:ro")
+    run_args+=(-e "SS2ANY_CONFIG=/config/ss2any.yaml")
+else
+    [ -n "$env_file" ] && run_args+=(--env-file "$env_file")
+    [ -n "$link" ]              && run_args+=(-e "PROXY_LINK=${link}")
+    [ -n "$ss_port" ]           && run_args+=(-e "SS_PORT=${ss_port}")
+    [ -n "${PROXY_LINK:-}" ] && [ -z "$link" ] && run_args+=(-e "PROXY_LINK=${PROXY_LINK}")
+    [ -n "${SS_PASSWORD:-}" ]   && run_args+=(-e "SS_PASSWORD=${SS_PASSWORD}")
+    [ -n "${SS_METHOD:-}" ]     && run_args+=(-e "SS_METHOD=${SS_METHOD}")
+    [ -n "${SS_NETWORK:-}" ]    && run_args+=(-e "SS_NETWORK=${SS_NETWORK}")
+fi
+[ -n "${LOG_LEVEL:-}" ] && run_args+=(-e "LOG_LEVEL=${LOG_LEVEL}")
+
+info "Starting $container..."
+docker run "${run_args[@]}" "$image" >/dev/null
+
+info "Started. Tail logs with:  docker logs -f $container"
