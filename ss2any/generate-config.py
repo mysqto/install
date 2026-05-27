@@ -276,7 +276,7 @@ def load_schema(path: str | None) -> dict:
                         break
     if not link:
         sys.exit("no config file and no PROXY_LINK env var")
-    return {
+    schema = {
         "inbounds": [{
             "port": int(os.environ.get("SS_PORT", "8388")),
             "password": os.environ.get("SS_PASSWORD") or "",
@@ -287,11 +287,111 @@ def load_schema(path: str | None) -> dict:
         }],
         "upstreams": {"default": link},
     }
+    env_split = _synthesize_split_from_env()
+    if env_split:
+        schema["split"] = env_split
+    return schema
+
+
+def _synthesize_split_from_env() -> dict:
+    """Build a split section from SPLIT_* env vars (comma-separated lists)."""
+    def _list(name):
+        v = os.environ.get(name, "").strip()
+        return [x.strip() for x in v.split(",") if x.strip()] if v else []
+    spec = {}
+    for action in ("direct", "reject"):
+        sect = {}
+        for kind in ("geosite", "geoip", "domain_suffix", "domain_keyword", "ip_cidr"):
+            vals = _list(f"SPLIT_{action.upper()}_{kind.upper()}")
+            if vals:
+                sect[kind] = vals
+        if sect:
+            spec[action] = sect
+    return spec
 
 
 # ---------- Output builders ----------
 
 UDP_BOTH = {"tcp_and_udp", "tcp,udp", "both", "any"}
+
+GEOSITE_BASE = "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set"
+GEOIP_BASE   = "https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set"
+SPLIT_KINDS  = ("geosite", "geoip", "domain", "domain_suffix",
+                "domain_keyword", "domain_regex", "ip_cidr")
+
+
+def _normalize_split(split: dict | None) -> dict:
+    out = {"direct": {}, "reject": {}}
+    if not split:
+        return out
+    for action in ("direct", "reject"):
+        sect = (split.get(action) or {}) if isinstance(split, dict) else {}
+        for kind in SPLIT_KINDS:
+            v = sect.get(kind)
+            if v is None:
+                continue
+            if isinstance(v, str):
+                v = [s.strip() for s in v.split(",") if s.strip()]
+            if v:
+                out[action][kind] = list(v)
+    return out
+
+
+def _split_rule_set_tags(split: dict) -> list[tuple[str, str]]:
+    """Return list of (tag, kind, name) refs in this split. Used for emitting rule_set definitions."""
+    refs = []
+    for action in ("direct", "reject"):
+        for kind in ("geosite", "geoip"):
+            for name in split[action].get(kind, []):
+                refs.append((f"{kind}-{name}", kind, name))
+    return refs
+
+
+def _build_rule_set_defs(all_refs: list[tuple[str, str, str]]) -> list[dict]:
+    seen, out = set(), []
+    for tag, kind, name in all_refs:
+        if tag in seen:
+            continue
+        seen.add(tag)
+        base = GEOSITE_BASE if kind == "geosite" else GEOIP_BASE
+        out.append({
+            "type": "remote",
+            "tag": tag,
+            "format": "binary",
+            "url": f"{base}/{kind}-{name}.srs",
+            "download_detour": "direct",
+            "update_interval": "168h",
+        })
+    return out
+
+
+def _build_split_rules(split: dict, inbound_tag: str | None = None) -> list[dict]:
+    """Emit route.rules entries for a normalized split spec. Reject before direct."""
+    rules = []
+    for action in ("reject", "direct"):
+        sect = split[action]
+        if not sect:
+            continue
+        rule: dict = {}
+        if inbound_tag:
+            rule["inbound"] = [inbound_tag]
+        rs = []
+        for kind in ("geosite", "geoip"):
+            for name in sect.get(kind, []):
+                rs.append(f"{kind}-{name}")
+        if rs:
+            rule["rule_set"] = rs
+        for k in ("domain", "domain_suffix", "domain_keyword", "domain_regex", "ip_cidr"):
+            if sect.get(k):
+                rule[k] = sect[k]
+        if not any(k in rule for k in ("rule_set",) + SPLIT_KINDS[2:]):
+            continue
+        if action == "reject":
+            rule["action"] = "reject"
+        else:
+            rule["outbound"] = "direct"
+        rules.append(rule)
+    return rules
 
 
 def cmd_plan_ports(schema: dict) -> None:
@@ -329,6 +429,12 @@ def cmd_generate(schema: dict) -> None:
     raw_inbounds = schema.get("inbounds") or []
     if not raw_inbounds:
         sys.exit("'inbounds' must contain at least one entry")
+
+    global_split = _normalize_split(schema.get("split"))
+    all_rule_set_refs = list(_split_rule_set_tags(global_split))
+
+    # Emit global split rules FIRST so they apply across all inbounds.
+    rules.extend(_build_split_rules(global_split))
 
     for idx, ib in enumerate(raw_inbounds):
         port = int(ib["port"])
@@ -383,13 +489,27 @@ def cmd_generate(schema: dict) -> None:
             prev_tag = ob["tag"]
 
         assert prev_tag is not None
+        ib_split = _normalize_split(ib.get("split"))
+        all_rule_set_refs.extend(_split_rule_set_tags(ib_split))
+        # Per-inbound split rules must precede the catch-all per-inbound route.
+        rules.extend(_build_split_rules(ib_split, inbound_tag=ib_tag))
         rules.append({"inbound": [ib_tag], "outbound": prev_tag})
+
+        split_note = ""
+        if global_split["direct"] or global_split["reject"] or ib_split["direct"] or ib_split["reject"]:
+            split_note = "  [split-routing enabled]"
         summary.append(
             f"  {ib_tag} :{port}/{network}  ->  "
             + " -> ".join(chain)
+            + split_note
         )
 
     outbounds_out.append({"type": "direct", "tag": "direct"})
+
+    route_section: dict = {"rules": rules, "final": "direct"}
+    rule_set_defs = _build_rule_set_defs(all_rule_set_refs)
+    if rule_set_defs:
+        route_section["rule_set"] = rule_set_defs
 
     cfg = {
         "log": {
@@ -398,7 +518,7 @@ def cmd_generate(schema: dict) -> None:
         },
         "inbounds": inbounds_out,
         "outbounds": outbounds_out,
-        "route": {"rules": rules, "final": "direct"},
+        "route": route_section,
     }
 
     sys.stderr.write("ss2any routes:\n" + "\n".join(summary) + "\n")

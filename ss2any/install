@@ -52,6 +52,11 @@ network="tcp"          # tcp | udp | tcp_and_udp
 link=""
 sing_box_version=""
 listen_addr="::"        # dual-stack by default
+bypass_geosite=""        # comma-separated SagerNet/sing-geosite names: cn,private
+bypass_geoip=""          # comma-separated SagerNet/sing-geoip names:   cn,private
+bypass_suffix=""         # comma-separated domain suffixes:             .lan,.internal
+bypass_cidr=""           # comma-separated CIDRs:                       10.0.0.0/8,192.168.0.0/16
+reject_geosite=""        # comma-separated geosite names to block:      category-ads-all
 
 POSITIONAL=()
 while [ $# -gt 0 ]; do
@@ -66,6 +71,11 @@ while [ $# -gt 0 ]; do
         -4|--ipv4)     CURL_OPTS="-4"; WGET_OPTS="-4"; shift ;;
         -6|--ipv6)     CURL_OPTS="-6"; WGET_OPTS="-6"; shift ;;
         --sing-box-version) sing_box_version="$2"; shift 2 ;;
+        --bypass)         bypass_geosite="$2"; shift 2 ;;
+        --bypass-geoip)   bypass_geoip="$2"; shift 2 ;;
+        --bypass-suffix)  bypass_suffix="$2"; shift 2 ;;
+        --bypass-cidr)    bypass_cidr="$2"; shift 2 ;;
+        --reject)         reject_geosite="$2"; shift 2 ;;
         -h|--help)
             cat <<EOF
 Usage: $0 [options]
@@ -82,7 +92,19 @@ Options:
   -s, --setup               Generate config + install/restart systemd unit
   -4 | -6                   Force IPv4/IPv6 for downloads
       --sing-box-version    Pin sing-box version (default: latest GitHub release)
+
+Split-routing (bypass proxy / block) — all values are comma-separated lists:
+      --bypass <list>          Geosite categories to route DIRECT.
+                                 sing-geosite names: cn, private, geolocation-cn, ...
+      --bypass-geoip <list>    GeoIP categories to route DIRECT (cn, private, ...)
+      --bypass-suffix <list>   Domain suffixes to route DIRECT (.lan,.internal)
+      --bypass-cidr <list>     IP CIDR ranges to route DIRECT (10.0.0.0/8)
+      --reject <list>          Geosite categories to BLOCK (category-ads-all,...)
+
   -h, --help                Show this help
+
+Example:
+  $0 --setup --link 'vless://...' --bypass cn,private --reject category-ads-all
 EOF
             exit 0 ;;
         *) POSITIONAL+=("$1"); warn "unknown option $1"; shift ;;
@@ -260,6 +282,50 @@ PARSERS = {"vless": parse_vless, "trojan": parse_trojan, "vmess": parse_vmess,
            "ss": parse_ss, "hysteria2": parse_hysteria2, "hy2": parse_hysteria2,
            "tuic": parse_tuic}
 
+GEOSITE_BASE = "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set"
+GEOIP_BASE   = "https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set"
+
+def _list_env(name):
+    v = os.environ.get(name, "").strip()
+    return [x.strip() for x in v.split(",") if x.strip()] if v else []
+
+def build_split_section():
+    """Return (rule_set_defs, rules, has_split) from SPLIT_* env vars."""
+    direct_geosite = _list_env("SPLIT_DIRECT_GEOSITE")
+    direct_geoip   = _list_env("SPLIT_DIRECT_GEOIP")
+    direct_suffix  = _list_env("SPLIT_DIRECT_DOMAIN_SUFFIX")
+    direct_cidr    = _list_env("SPLIT_DIRECT_IP_CIDR")
+    reject_geosite = _list_env("SPLIT_REJECT_GEOSITE")
+
+    rule_set_defs, seen = [], set()
+    def _add_rs(tag, kind, name):
+        if tag in seen: return
+        seen.add(tag)
+        base = GEOSITE_BASE if kind == "geosite" else GEOIP_BASE
+        rule_set_defs.append({
+            "type": "remote", "tag": tag, "format": "binary",
+            "url": f"{base}/{kind}-{name}.srs",
+            "download_detour": "direct", "update_interval": "168h",
+        })
+    for n in direct_geosite + reject_geosite: _add_rs(f"geosite-{n}", "geosite", n)
+    for n in direct_geoip:                    _add_rs(f"geoip-{n}",   "geoip",   n)
+
+    rules = []
+    # Reject first so blocked domains can't fall through to direct/proxy.
+    if reject_geosite:
+        rules.append({"rule_set": [f"geosite-{n}" for n in reject_geosite],
+                      "action": "reject"})
+    direct_rule = {}
+    rs = [f"geosite-{n}" for n in direct_geosite] + [f"geoip-{n}" for n in direct_geoip]
+    if rs:             direct_rule["rule_set"] = rs
+    if direct_suffix:  direct_rule["domain_suffix"] = direct_suffix
+    if direct_cidr:    direct_rule["ip_cidr"] = direct_cidr
+    if direct_rule:
+        direct_rule["outbound"] = "direct"
+        rules.append(direct_rule)
+
+    return rule_set_defs, rules, bool(rule_set_defs or rules)
+
 def main():
     link = os.environ.get("PROXY_LINK", "").strip()
     if not link: sys.exit("PROXY_LINK not set")
@@ -277,12 +343,19 @@ def main():
                "method": method, "password": password}
     if network not in ("tcp_and_udp", "tcp,udp", "both", "any"):
         inbound["network"] = network
+
+    rule_set_defs, split_rules, _ = build_split_section()
+    # Split rules first (reject/direct), then catch-all to proxy.
+    rules = split_rules + [{"inbound": ["ss-in"], "outbound": OUTBOUND_TAG}]
+    route = {"rules": rules, "final": OUTBOUND_TAG}
+    if rule_set_defs:
+        route["rule_set"] = rule_set_defs
+
     cfg = {
         "log": {"level": os.environ.get("LOG_LEVEL", "info"), "timestamp": True},
         "inbounds": [inbound],
         "outbounds": [ob, {"type": "direct", "tag": "direct"}],
-        "route": {"final": OUTBOUND_TAG,
-                  "rules": [{"inbound": ["ss-in"], "outbound": OUTBOUND_TAG}]}
+        "route": route,
     }
     json.dump(cfg, sys.stdout, indent=2); sys.stdout.write("\n")
 
@@ -359,15 +432,18 @@ fi
 # Persist env so re-running --setup is idempotent and the user can edit.
 defaults_file="/etc/default/ss2any"
 cat > "$defaults_file" <<EOF
-# ss2any environment (regenerated by /usr/local/lib/ss2any/generate-config.py
-# whenever the unit is reinstalled). Edit and re-run the installer with --setup
-# to apply.
+# ss2any environment. Edit and re-run the installer with --setup to apply.
 PROXY_LINK=$link
 SS_PORT=$port
 SS_PASSWORD=$password
 SS_METHOD=$method
 SS_NETWORK=$network
 SS_LISTEN=$listen_addr
+SPLIT_DIRECT_GEOSITE=$bypass_geosite
+SPLIT_DIRECT_GEOIP=$bypass_geoip
+SPLIT_DIRECT_DOMAIN_SUFFIX=$bypass_suffix
+SPLIT_DIRECT_IP_CIDR=$bypass_cidr
+SPLIT_REJECT_GEOSITE=$reject_geosite
 EOF
 chmod 0600 "$defaults_file"
 
@@ -380,6 +456,11 @@ if ! PROXY_LINK="$link" \
      SS_METHOD="$method" \
      SS_NETWORK="$network" \
      SS_LISTEN="$listen_addr" \
+     SPLIT_DIRECT_GEOSITE="$bypass_geosite" \
+     SPLIT_DIRECT_GEOIP="$bypass_geoip" \
+     SPLIT_DIRECT_DOMAIN_SUFFIX="$bypass_suffix" \
+     SPLIT_DIRECT_IP_CIDR="$bypass_cidr" \
+     SPLIT_REJECT_GEOSITE="$reject_geosite" \
      python3 "$parser" generate >"$config_file.tmp" 2>"$tmpdir/parser.err"; then
     cat "$tmpdir/parser.err" >&2
     rm -f "$config_file.tmp"
@@ -396,6 +477,11 @@ info "  port       : $port"
 info "  password   : $password"
 info "  method     : $method"
 info "  network    : $network"
+[ -n "$bypass_geosite" ] && info "  bypass     : geosite=$bypass_geosite"
+[ -n "$bypass_geoip" ]   && info "  bypass     : geoip=$bypass_geoip"
+[ -n "$bypass_suffix" ]  && info "  bypass     : suffix=$bypass_suffix"
+[ -n "$bypass_cidr" ]    && info "  bypass     : cidr=$bypass_cidr"
+[ -n "$reject_geosite" ] && info "  reject     : geosite=$reject_geosite"
 info "  config     : $config_file"
 info "  env-file   : $defaults_file"
 

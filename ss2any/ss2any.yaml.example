@@ -46,3 +46,26 @@ chains:
 # A `route:` value may be:
 #   - the name of a chain defined above (multi-hop), or
 #   - the name of an upstream defined above (1-hop shortcut — see ss-us).
+
+# Optional split-routing. When present, sing-box auto-fetches the listed
+# rule sets from SagerNet/sing-geosite and SagerNet/sing-geoip and applies
+# them BEFORE the per-inbound proxy route. Top-level split applies to all
+# inbounds; per-inbound `split:` (see ss-jp below) is additive.
+#
+# split:
+#   direct:
+#     geosite: [cn, private]            # bypass proxy for these categories
+#     geoip:   [cn, private]
+#     domain_suffix: [".lan", ".internal"]
+#     ip_cidr: ["10.0.0.0/8", "192.168.0.0/16"]
+#   reject:
+#     geosite: [category-ads-all]       # blackhole these domains
+#
+# Per-inbound override example (add this under an inbound to scope split to it):
+#   - tag: ss-jp
+#     port: 8388
+#     password: alice
+#     route: chain-jp
+#     split:
+#       direct:
+#         geosite: [jp]                 # ss-jp also bypasses jp domains

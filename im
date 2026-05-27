@@ -679,6 +679,7 @@ function usage() {
     info "    im -s2a --link 'vless://UUID@h:443?security=reality&pbk=...&sid=...&sni=...&fp=chrome&flow=xtls-rprx-vision' --setup"
     info "    im -s2a --link 'trojan://pw@h:443?security=tls&sni=h' --port 23456 --setup    # explicit port"
     info "    im -s2a --link 'vmess://...' --network tcp_and_udp --setup                  # SS over TCP+UDP"
+    info "    im -s2a --link 'vless://...' --bypass cn,private --reject category-ads-all --setup  # split-routing"
     info "System Updates & Maintenance:"
     info "  -uu   | --update                         update the server"
     info "  -uuu  | --upgrade                        upgrade the server if needed"

@@ -47,6 +47,30 @@ Each inbound routes to either an upstream (1-hop) or a chain. Chains use
 sing-box's `detour` field, so a chain `[A, B, C]` dials
 client → A → B → C → internet.
 
+### Split-routing (optional)
+
+Drop a `split:` block at the top of `ss2any.yaml` to bypass certain
+destinations or block them. The generator emits matching rule-set
+definitions pointing at `SagerNet/sing-geosite` and `SagerNet/sing-geoip`
+(auto-fetched by sing-box, refreshed every 7 days).
+
+```yaml
+split:
+  direct:
+    geosite: [cn, private]            # bypass proxy for CN + RFC1918
+    domain_suffix: [".lan"]
+    ip_cidr: ["10.0.0.0/8"]
+  reject:
+    geosite: [category-ads-all]       # blackhole ads
+```
+
+In the systemd install path the same lists are flags:
+
+```bash
+sudo ./install --link 'vless://...' --setup \
+  --bypass cn,private --bypass-suffix .lan --reject category-ads-all
+```
+
 ## Environment variables (single-link mode only)
 
 | Variable          | Default                       | Notes                                       |
