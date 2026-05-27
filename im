@@ -553,6 +553,11 @@ function install_frp() {
     curl ${CURL_OPTS} -sL "$base_url/frp/install" | bash -s -- "$@"
 }
 
+function install_ss2any() {
+    info "Installing ss2any (Shadowsocks inbound -> arbitrary outbound via sing-box)"
+    curl ${CURL_OPTS} -sL "$base_url/ss2any/install" | bash -s -- "$@"
+}
+
 function set_hostname() {
     local new_hostname="$1"
     [ -z "$new_hostname" ] && error "hostname is required when setting hostname"
@@ -607,6 +612,7 @@ _install_v2ray=false
 _install_fr24=false
 _install_ddns=false
 _install_frp=false
+_install_ss2any=false
 _set_hostname=false
 _hostname_value=""
 v2ray_mode=""
@@ -614,6 +620,7 @@ v2ray_args=()
 fr24_args=()
 ddns_args=()
 frp_args=()
+ss2any_args=()
 shadow_tls_args=()
 wg_client=()
 username=""
@@ -644,6 +651,7 @@ function usage() {
     info "  -fr24 | --flightradar24 [options]        install FlightRadar24 feeder"
     info "  -ddns | --ddns [options]                 install Cloudflare DDNS"
     info "  -frp  | --frp [options]                  install FRP (server/client/gen-client)"
+    info "  -s2a  | --ss2any [options]               install ss2any (SS inbound -> any-protocol outbound)"
     info ""
     info "  V2Ray (Xray) Examples:"
     info "    im -4 -v2s --port 10086                 # server with IPv4 and custom port"
@@ -666,6 +674,11 @@ function usage() {
     info "    im -frp --bind-port 7000 --dashboard-port 7500                   # frps with dashboard"
     info "    im -frp --client user@frp-server.com --proxy ssh:tcp::22:6022    # install frpc on this NAT'd box"
     info "    im -frp --gen-client /tmp/frpc.toml --proxy ssh:tcp::22:6022     # on server: emit frpc.toml to copy out"
+    info ""
+    info "  ss2any Examples:"
+    info "    im -s2a --link 'vless://UUID@h:443?security=reality&pbk=...&sid=...&sni=...&fp=chrome&flow=xtls-rprx-vision' --setup"
+    info "    im -s2a --link 'trojan://pw@h:443?security=tls&sni=h' --port 23456 --setup    # explicit port"
+    info "    im -s2a --link 'vmess://...' --network tcp_and_udp --setup                  # SS over TCP+UDP"
     info "System Updates & Maintenance:"
     info "  -uu   | --update                         update the server"
     info "  -uuu  | --upgrade                        upgrade the server if needed"
@@ -896,6 +909,15 @@ while [ $# -gt 0 ]; do
                 shift
             done
             ;;
+        -s2a | --ss2any)
+            _install_ss2any=true
+            shift
+            # Collect all remaining arguments for ss2any
+            while [[ $# -gt 0 ]]; do
+                ss2any_args+=("$1")
+                shift
+            done
+            ;;
         -hn | --hostname)
             _set_hostname=true
             _hostname_value="$2"
@@ -985,6 +1007,8 @@ action() {
         install_ddns "${ddns_args[@]}"
     elif [ "$_install_frp" == true ]; then
         install_frp "${frp_args[@]}"
+    elif [ "$_install_ss2any" == true ]; then
+        install_ss2any "${ss2any_args[@]}"
     elif [ "$_set_hostname" == true ]; then
         set_hostname "$_hostname_value"
     elif [ "$_auto" == true ]; then
