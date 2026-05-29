@@ -55,6 +55,10 @@ listen_addr="::"        # dual-stack by default
 obfs_host=""             # simple-obfs masquerade host (e.g. microsoft.com)
 obfs_mode="http"         # simple-obfs mode: http | tls
 force_obfs=false         # rebuild simple-obfs even if already installed
+surge=false              # --surge: print a Surge [Proxy] config line (format matches Surge/gc)
+surge_name=""            # --surge-name: proxy name in the Surge line (default: hostname-SS)
+surge_host=""            # --surge-host: server address in the Surge line (default: public IP autodetect)
+surge_test_url=""        # --surge-test-url: Surge test-url (default: apple captive portal)
 bypass_geosite=""        # comma-separated SagerNet/sing-geosite names: cn,private
 bypass_geoip=""          # comma-separated SagerNet/sing-geoip names:   cn,private
 bypass_suffix=""         # comma-separated domain suffixes:             .lan,.internal
@@ -77,6 +81,10 @@ while [ $# -gt 0 ]; do
         --obfs-host)      obfs_host="$2"; shift 2 ;;
         --obfs-mode)      obfs_mode="$2"; shift 2 ;;
         --force-obfs)     force_obfs=true; shift ;;
+        --surge)          surge=true; shift ;;
+        --surge-name)     surge_name="$2"; shift 2 ;;
+        --surge-host)     surge_host="$2"; shift 2 ;;
+        --surge-test-url) surge_test_url="$2"; shift 2 ;;
         --bypass)         bypass_geosite="$2"; shift 2 ;;
         --bypass-geoip)   bypass_geoip="$2"; shift 2 ;;
         --bypass-suffix)  bypass_suffix="$2"; shift 2 ;;
@@ -106,6 +114,14 @@ shadowsocks-libev's obfs-server, so existing SS+obfs clients connect):
       --obfs-mode <http|tls>   default: http
       --force-obfs             Rebuild simple-obfs even if already installed
 
+Surge output (format matches Surge/gc):
+      --surge                  Emit a Surge [Proxy] line. With --setup, prints
+                                 after install. Without --setup, reads
+                                 /etc/default/ss2any and prints (no reinstall).
+      --surge-name <name>      Proxy name (default: <hostname>-SS).
+      --surge-host <addr>      Server address (default: public IP autodetect).
+      --surge-test-url <url>   default: http://captive.apple.com/hotspot-detect.html
+
 Split-routing (bypass proxy / block) — all values are comma-separated lists:
       --bypass <list>          Geosite categories to route DIRECT.
                                  sing-geosite names: cn, private, geolocation-cn, ...
@@ -124,6 +140,62 @@ EOF
     esac
 done
 set -- "${POSITIONAL[@]}"
+
+# ---------- Surge config line emitter (format mirrors Surge/gc) ----------
+
+detect_public_ip() {
+    local ip
+    for url in https://api.ipify.org https://ifconfig.me https://ipinfo.io/ip; do
+        ip=$(curl ${CURL_OPTS} -fsS --max-time 5 "$url" 2>/dev/null | tr -d '[:space:]')
+        if [ -n "$ip" ] && [[ "$ip" =~ ^[0-9a-fA-F.:]+$ ]]; then
+            echo "$ip"
+            return 0
+        fi
+    done
+    return 1
+}
+
+default_surge_name() {
+    local n
+    n=$(hostname -s 2>/dev/null) || n=""
+    # Sanitize for Surge name (alnum + a few separators).
+    n=$(echo "$n" | tr -dc 'A-Za-z0-9._-')
+    [ -z "$n" ] && n="ss2any"
+    echo "${n}-SS"
+}
+
+# Args: name host port method password obfs_mode obfs_host network test_url
+emit_surge_line() {
+    local _name=$1 _host=$2 _port=$3 _method=$4 _password=$5
+    local _obfs_mode=$6 _obfs_host=$7 _network=$8 _test_url=$9
+    local line="${_name} = ss, ${_host}, ${_port}, encrypt-method=${_method}, password=${_password}"
+    line+=", tfo=true"
+    [ -n "$_test_url" ] && line+=", test-url=${_test_url}"
+    line+=", block-quic=off"
+    case "$_network" in
+        tcp_and_udp|udp|both|any) line+=", udp-relay=true" ;;
+    esac
+    [ -n "$_obfs_host" ] && [ -n "$_obfs_mode" ] && \
+        line+=", obfs=${_obfs_mode}, obfs-host=${_obfs_host}"
+    echo "$line"
+}
+
+# ---------- --surge without --setup: read /etc/default/ss2any, print, exit ----------
+
+if [ "$surge" = "true" ] && [ "$setup" != "true" ]; then
+    [ -f /etc/default/ss2any ] || \
+        error "--surge without --setup needs /etc/default/ss2any — run --setup first"
+    # shellcheck source=/dev/null
+    . /etc/default/ss2any
+    name="${surge_name:-$(default_surge_name)}"
+    host="${surge_host:-$(detect_public_ip || echo YOUR_SERVER_HOST)}"
+    test_url="${surge_test_url:-http://captive.apple.com/hotspot-detect.html}"
+    emit_surge_line "$name" "$host" \
+                    "${SS_PORT}" "${SS_METHOD:-chacha20-ietf-poly1305}" "${SS_PASSWORD}" \
+                    "${SS_OBFS_MODE:-http}" "${SS_OBFS_HOST}" "${SS_NETWORK:-tcp}" \
+                    "$test_url"
+    exit 0
+fi
 
 # ---------- Detect arch + download sing-box ----------
 
@@ -665,3 +737,17 @@ fi
 [ "$fail" = "true" ] && exit 1
 info "ss2any service is running (systemctl status ss2any)"
 [ -n "$obfs_host" ] && info "ss2any-obfs service is running (systemctl status ss2any-obfs)"
+
+# ---------- --setup + --surge: emit Surge proxy line ----------
+
+if [ "$surge" = "true" ]; then
+    surge_name_final="${surge_name:-$(default_surge_name)}"
+    surge_host_final="${surge_host:-$(detect_public_ip || echo YOUR_SERVER_HOST)}"
+    surge_test_url_final="${surge_test_url:-http://captive.apple.com/hotspot-detect.html}"
+    info ""
+    info "Surge proxy line (paste under [Proxy] in your Surge profile):"
+    emit_surge_line "$surge_name_final" "$surge_host_final" \
+                    "$port" "$method" "$password" \
+                    "$obfs_mode" "$obfs_host" "$network" \
+                    "$surge_test_url_final"
+fi

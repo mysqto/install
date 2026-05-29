@@ -681,6 +681,8 @@ function usage() {
     info "    im -s2a --link 'vmess://...' --network tcp_and_udp --setup                  # SS over TCP+UDP"
     info "    im -s2a --link 'vless://...' --bypass cn,private --reject category-ads-all --setup  # split-routing"
     info "    im -s2a --link 'vless://...' --obfs-host microsoft.com --setup                       # simple-obfs (http)"
+    info "    im -s2a --link 'vless://...' --obfs-host microsoft.com --setup --surge               # also print Surge line"
+    info "    im -s2a --surge                                                                       # just print Surge line from /etc/default/ss2any"
     info "System Updates & Maintenance:"
     info "  -uu   | --update                         update the server"
     info "  -uuu  | --upgrade                        upgrade the server if needed"
