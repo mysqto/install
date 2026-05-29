@@ -64,11 +64,15 @@ if [ ! -f "$SS2ANY_CONFIG" ] && [ -n "${SS_OBFS_HOST:-}" ]; then
     fi
     obfs_mode="${SS_OBFS_MODE:-http}"
     obfs_port="${SS_PORT:-8388}"
-    info "Starting obfs-server :${obfs_port} (mode=${obfs_mode} host=${SS_OBFS_HOST}) -> 127.0.0.1:${SS_OBFS_INTERNAL_PORT}"
+    # NOTE: simple-obfs's server has no --obfs-host flag — the masquerade
+    # Host header is a CLIENT-side setting. SS_OBFS_HOST is the value your
+    # SS+obfs clients should configure (it's logged for that reason).
+    info "Starting obfs-server :${obfs_port} (mode=${obfs_mode}) -> 127.0.0.1:${SS_OBFS_INTERNAL_PORT}"
+    info "Tell your SS clients to set plugin_opts: obfs=${obfs_mode};obfs-host=${SS_OBFS_HOST}"
     obfs-server -s :: -p "$obfs_port" \
                 -r "127.0.0.1:${SS_OBFS_INTERNAL_PORT}" \
-                --obfs "$obfs_mode" --obfs-host "$SS_OBFS_HOST" \
-                -t 300 -u &
+                --obfs "$obfs_mode" \
+                -t 300 &
     OBFS_PID=$!
 fi
 

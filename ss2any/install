@@ -568,7 +568,10 @@ info "  port       : $port"
 info "  password   : $password"
 info "  method     : $method"
 info "  network    : $network"
-[ -n "$obfs_host" ]      && info "  obfs       : mode=$obfs_mode host=$obfs_host (internal port $obfs_internal_port)"
+if [ -n "$obfs_host" ]; then
+    info "  obfs       : mode=$obfs_mode  (clients connect with obfs-host=$obfs_host)"
+    info "                 sing-box <- 127.0.0.1:$obfs_internal_port <- obfs-server :$port <- clients"
+fi
 [ -n "$bypass_geosite" ] && info "  bypass     : geosite=$bypass_geosite"
 [ -n "$bypass_geoip" ]   && info "  bypass     : geoip=$bypass_geoip"
 [ -n "$bypass_suffix" ]  && info "  bypass     : suffix=$bypass_suffix"
@@ -629,7 +632,7 @@ ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
 EnvironmentFile=$defaults_file
-ExecStart=/usr/local/bin/obfs-server -s :: -p \${SS_PORT} -r 127.0.0.1:\${SS_OBFS_INTERNAL_PORT} --obfs \${SS_OBFS_MODE} --obfs-host \${SS_OBFS_HOST} -t 300 -u
+ExecStart=/usr/local/bin/obfs-server -s :: -p \${SS_PORT} -r 127.0.0.1:\${SS_OBFS_INTERNAL_PORT} --obfs \${SS_OBFS_MODE} -t 300
 
 [Install]
 WantedBy=multi-user.target
