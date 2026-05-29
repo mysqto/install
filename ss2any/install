@@ -54,6 +54,8 @@ sing_box_version=""
 listen_addr="::"        # dual-stack by default
 obfs_host=""             # simple-obfs masquerade host (e.g. microsoft.com)
 obfs_mode="http"         # simple-obfs mode: http | tls
+obfs_listen="0.0.0.0"    # obfs-server public-side bind address (simple-obfs doesn't
+                         # clear IPV6_V6ONLY, so "::" is IPv6-only on many kernels)
 force_obfs=false         # rebuild simple-obfs even if already installed
 surge=false              # --surge: print a Surge [Proxy] config line (format matches Surge/gc)
 surge_name=""            # --surge-name: proxy name in the Surge line (default: hostname-SS)
@@ -80,6 +82,7 @@ while [ $# -gt 0 ]; do
         --sing-box-version) sing_box_version="$2"; shift 2 ;;
         --obfs-host)      obfs_host="$2"; shift 2 ;;
         --obfs-mode)      obfs_mode="$2"; shift 2 ;;
+        --obfs-listen)    obfs_listen="$2"; shift 2 ;;
         --force-obfs)     force_obfs=true; shift ;;
         --surge)          surge=true; shift ;;
         --surge-name)     surge_name="$2"; shift 2 ;;
@@ -112,6 +115,10 @@ shadowsocks-libev's obfs-server, so existing SS+obfs clients connect):
       --obfs-host <name>       Enable obfs with the given masquerade host.
                                  Builds simple-obfs from source on first --setup.
       --obfs-mode <http|tls>   default: http
+      --obfs-listen <addr>     Public-side bind for obfs-server (default: 0.0.0.0).
+                                 simple-obfs does not clear IPV6_V6ONLY, so '::'
+                                 is IPv6-only on most kernels — keep the default
+                                 unless your clients connect over IPv6.
       --force-obfs             Rebuild simple-obfs even if already installed
 
 Surge output (format matches Surge/gc):
@@ -598,6 +605,7 @@ SS_NETWORK=$network
 SS_LISTEN=$listen_addr
 SS_OBFS_HOST=$obfs_host
 SS_OBFS_MODE=$obfs_mode
+SS_OBFS_LISTEN=$obfs_listen
 SS_OBFS_INTERNAL_PORT=$obfs_internal_port
 SPLIT_DIRECT_GEOSITE=$bypass_geosite
 SPLIT_DIRECT_GEOIP=$bypass_geoip
@@ -642,7 +650,7 @@ info "  method     : $method"
 info "  network    : $network"
 if [ -n "$obfs_host" ]; then
     info "  obfs       : mode=$obfs_mode  (clients connect with obfs-host=$obfs_host)"
-    info "                 sing-box <- 127.0.0.1:$obfs_internal_port <- obfs-server :$port <- clients"
+    info "                 sing-box <- 127.0.0.1:$obfs_internal_port <- obfs-server $obfs_listen:$port <- clients"
 fi
 [ -n "$bypass_geosite" ] && info "  bypass     : geosite=$bypass_geosite"
 [ -n "$bypass_geoip" ]   && info "  bypass     : geoip=$bypass_geoip"
@@ -704,7 +712,7 @@ ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
 EnvironmentFile=$defaults_file
-ExecStart=/usr/local/bin/obfs-server -s :: -p \${SS_PORT} -r 127.0.0.1:\${SS_OBFS_INTERNAL_PORT} --obfs \${SS_OBFS_MODE} -t 300
+ExecStart=/usr/local/bin/obfs-server -s \${SS_OBFS_LISTEN} -p \${SS_PORT} -r 127.0.0.1:\${SS_OBFS_INTERNAL_PORT} --obfs \${SS_OBFS_MODE} -t 300
 
 [Install]
 WantedBy=multi-user.target

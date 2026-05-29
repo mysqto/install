@@ -67,9 +67,14 @@ if [ ! -f "$SS2ANY_CONFIG" ] && [ -n "${SS_OBFS_HOST:-}" ]; then
     # NOTE: simple-obfs's server has no --obfs-host flag — the masquerade
     # Host header is a CLIENT-side setting. SS_OBFS_HOST is the value your
     # SS+obfs clients should configure (it's logged for that reason).
-    info "Starting obfs-server :${obfs_port} (mode=${obfs_mode}) -> 127.0.0.1:${SS_OBFS_INTERNAL_PORT}"
+    #
+    # simple-obfs does not clear IPV6_V6ONLY, so "-s ::" is IPv6-only on
+    # most kernels. Default to 0.0.0.0 so IPv4 clients work; users wanting
+    # IPv6 can set SS_OBFS_LISTEN=::.
+    obfs_listen="${SS_OBFS_LISTEN:-0.0.0.0}"
+    info "Starting obfs-server ${obfs_listen}:${obfs_port} (mode=${obfs_mode}) -> 127.0.0.1:${SS_OBFS_INTERNAL_PORT}"
     info "Tell your SS clients to set plugin_opts: obfs=${obfs_mode};obfs-host=${SS_OBFS_HOST}"
-    obfs-server -s :: -p "$obfs_port" \
+    obfs-server -s "$obfs_listen" -p "$obfs_port" \
                 -r "127.0.0.1:${SS_OBFS_INTERNAL_PORT}" \
                 --obfs "$obfs_mode" \
                 -t 300 &

@@ -64,6 +64,7 @@ ENV SS_PORT=8388 \
     SS_NETWORK=tcp \
     SS_OBFS_HOST= \
     SS_OBFS_MODE=http \
+    SS_OBFS_LISTEN=0.0.0.0 \
     PROXY_LINK= \
     PROXY_LINK_FILE=/config/proxy.link \
     LOG_LEVEL=info
