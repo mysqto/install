@@ -388,18 +388,27 @@ def main():
     method   = os.environ.get("SS_METHOD", "chacha20-ietf-poly1305")
     network  = (os.environ.get("SS_NETWORK") or "tcp").lower()
     listen   = os.environ.get("SS_LISTEN", "::")
-    inbound = {"type": "shadowsocks", "tag": "ss-in",
-               "listen": listen, "listen_port": port,
-               "method": method, "password": password}
-    if network not in ("tcp_and_udp", "tcp,udp", "both", "any"):
-        inbound["network"] = network
+    # When obfs is enabled the SS inbound binds to 127.0.0.1:<internal_port>;
+    # an external obfs-server owns the public-facing port. sing-box's SS
+    # inbound has no plugin field, so this layering is the only way.
     obfs_host = os.environ.get("SS_OBFS_HOST", "").strip()
     if obfs_host:
         obfs_mode = (os.environ.get("SS_OBFS_MODE") or "http").strip().lower()
         if obfs_mode not in ("http", "tls"):
             sys.exit(f"SS_OBFS_MODE must be http or tls (got: {obfs_mode})")
-        inbound["plugin"] = "obfs-server"
-        inbound["plugin_opts"] = f"obfs={obfs_mode};obfs-host={obfs_host}"
+        ip_env = os.environ.get("SS_OBFS_INTERNAL_PORT", "").strip()
+        if not ip_env:
+            sys.exit("SS_OBFS_INTERNAL_PORT must be set when SS_OBFS_HOST is set")
+        bind_listen = "127.0.0.1"
+        bind_port = int(ip_env)
+    else:
+        bind_listen = listen
+        bind_port = port
+    inbound = {"type": "shadowsocks", "tag": "ss-in",
+               "listen": bind_listen, "listen_port": bind_port,
+               "method": method, "password": password}
+    if network not in ("tcp_and_udp", "tcp,udp", "both", "any"):
+        inbound["network"] = network
 
     rule_set_defs, split_rules, _ = build_split_section()
     # Split rules first (reject/direct), then catch-all to proxy.
@@ -486,6 +495,25 @@ if [ -z "$password" ]; then
     password="$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 32)"
 fi
 
+# When obfs is enabled, sing-box binds to 127.0.0.1:<internal_port> and an
+# external obfs-server listens on the public-facing port. Pick a free
+# loopback port that's different from the public one.
+obfs_internal_port=""
+if [ -n "$obfs_host" ]; then
+    case "$obfs_mode" in
+        http|tls) ;;
+        *) error "--obfs-mode must be http or tls (got: $obfs_mode)" ;;
+    esac
+    for _ in $(seq 1 50); do
+        candidate=$(random_unused_port) || break
+        [ "$candidate" = "$port" ] && continue
+        obfs_internal_port="$candidate"
+        break
+    done
+    [ -z "$obfs_internal_port" ] && error "could not find an unused port for the obfs loopback hop"
+    info "obfs loopback port: 127.0.0.1:$obfs_internal_port (sing-box <- obfs-server <- clients on :$port)"
+fi
+
 # Persist env so re-running --setup is idempotent and the user can edit.
 defaults_file="/etc/default/ss2any"
 cat > "$defaults_file" <<EOF
@@ -498,6 +526,7 @@ SS_NETWORK=$network
 SS_LISTEN=$listen_addr
 SS_OBFS_HOST=$obfs_host
 SS_OBFS_MODE=$obfs_mode
+SS_OBFS_INTERNAL_PORT=$obfs_internal_port
 SPLIT_DIRECT_GEOSITE=$bypass_geosite
 SPLIT_DIRECT_GEOIP=$bypass_geoip
 SPLIT_DIRECT_DOMAIN_SUFFIX=$bypass_suffix
@@ -517,6 +546,7 @@ if ! PROXY_LINK="$link" \
      SS_LISTEN="$listen_addr" \
      SS_OBFS_HOST="$obfs_host" \
      SS_OBFS_MODE="$obfs_mode" \
+     SS_OBFS_INTERNAL_PORT="$obfs_internal_port" \
      SPLIT_DIRECT_GEOSITE="$bypass_geosite" \
      SPLIT_DIRECT_GEOIP="$bypass_geoip" \
      SPLIT_DIRECT_DOMAIN_SUFFIX="$bypass_suffix" \
@@ -538,7 +568,7 @@ info "  port       : $port"
 info "  password   : $password"
 info "  method     : $method"
 info "  network    : $network"
-[ -n "$obfs_host" ]      && info "  obfs       : mode=$obfs_mode host=$obfs_host"
+[ -n "$obfs_host" ]      && info "  obfs       : mode=$obfs_mode host=$obfs_host (internal port $obfs_internal_port)"
 [ -n "$bypass_geosite" ] && info "  bypass     : geosite=$bypass_geosite"
 [ -n "$bypass_geoip" ]   && info "  bypass     : geoip=$bypass_geoip"
 [ -n "$bypass_suffix" ]  && info "  bypass     : suffix=$bypass_suffix"
@@ -547,7 +577,7 @@ info "  network    : $network"
 info "  config     : $config_file"
 info "  env-file   : $defaults_file"
 
-# Systemd unit
+# Systemd unit — sing-box
 unit_file="/lib/systemd/system/ss2any.service"
 cat > "$unit_file" <<UNIT
 [Unit]
@@ -576,14 +606,59 @@ ExecStart=/usr/local/bin/sing-box run -c $config_file
 WantedBy=multi-user.target
 UNIT
 
+# Systemd unit — obfs-server (only when obfs is enabled).
+obfs_unit_file="/lib/systemd/system/ss2any-obfs.service"
+if [ -n "$obfs_host" ]; then
+    cat > "$obfs_unit_file" <<UNIT
+[Unit]
+Description=ss2any simple-obfs front-end (clients -> obfs-server -> sing-box)
+After=network-online.target
+Wants=network-online.target
+PartOf=ss2any.service
+
+[Service]
+Type=simple
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=32768
+DynamicUser=true
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+EnvironmentFile=$defaults_file
+ExecStart=/usr/local/bin/obfs-server -s :: -p \${SS_PORT} -r 127.0.0.1:\${SS_OBFS_INTERNAL_PORT} --obfs \${SS_OBFS_MODE} --obfs-host \${SS_OBFS_HOST} -t 300 -u
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+elif [ -f "$obfs_unit_file" ]; then
+    info "removing previously-installed ss2any-obfs.service (obfs disabled this run)"
+    systemctl disable --now ss2any-obfs.service >/dev/null 2>&1 || true
+    rm -f "$obfs_unit_file"
+fi
+
 systemctl daemon-reload
 systemctl enable ss2any.service >/dev/null 2>&1
 systemctl restart ss2any.service
 
-sleep 1
-if systemctl is-active --quiet ss2any.service; then
-    info "ss2any service is running (systemctl status ss2any)"
-else
-    warn "ss2any service failed to start — check: journalctl -u ss2any -e"
-    exit 1
+if [ -n "$obfs_host" ]; then
+    systemctl enable ss2any-obfs.service >/dev/null 2>&1
+    systemctl restart ss2any-obfs.service
 fi
+
+sleep 1
+fail=false
+if ! systemctl is-active --quiet ss2any.service; then
+    warn "ss2any service failed to start — check: journalctl -u ss2any -e"
+    fail=true
+fi
+if [ -n "$obfs_host" ] && ! systemctl is-active --quiet ss2any-obfs.service; then
+    warn "ss2any-obfs service failed to start — check: journalctl -u ss2any-obfs -e"
+    fail=true
+fi
+[ "$fail" = "true" ] && exit 1
+info "ss2any service is running (systemctl status ss2any)"
+[ -n "$obfs_host" ] && info "ss2any-obfs service is running (systemctl status ss2any-obfs)"

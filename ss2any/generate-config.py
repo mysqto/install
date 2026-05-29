@@ -318,14 +318,19 @@ GEOSITE_BASE = "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set
 GEOIP_BASE   = "https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set"
 
 
-def _resolve_obfs(ib: dict) -> str | None:
-    """Return the sing-box `plugin_opts` string for simple-obfs, or None.
+def _resolve_obfs(ib: dict) -> dict | None:
+    """Return {mode, host, internal_port} for the inbound's simple-obfs, or None.
+
+    sing-box's SS inbound has no SIP003 plugin support, so when obfs is
+    enabled the inbound is bound to 127.0.0.1:<internal_port> and an
+    external obfs-server (started by the runtime — see docker-entrypoint.sh
+    or the ss2any-obfs systemd unit) handles the public-facing port.
 
     Accepted forms on an inbound:
-      obfs: "microsoft.com"                       # shorthand: http + host
-      obfs: { mode: http|tls, host: <name> }
-    Falls back to SS_OBFS_HOST / SS_OBFS_MODE env vars when no inbound-level
-    spec is present (used by single-link mode).
+      obfs: "microsoft.com"                          # shorthand: http + host
+      obfs: { mode: http|tls, host: <name>, internal_port: <int> }
+    For single-link mode, falls back to SS_OBFS_HOST / SS_OBFS_MODE /
+    SS_OBFS_INTERNAL_PORT env vars.
     """
     spec = ib.get("obfs") if isinstance(ib, dict) else None
     if spec is None:
@@ -333,21 +338,33 @@ def _resolve_obfs(ib: dict) -> str | None:
         if not host:
             return None
         mode = (os.environ.get("SS_OBFS_MODE") or "http").strip().lower()
+        internal_port_env = os.environ.get("SS_OBFS_INTERNAL_PORT", "").strip()
+        if not internal_port_env:
+            sys.exit("SS_OBFS_INTERNAL_PORT must be set when SS_OBFS_HOST is set")
+        internal_port = int(internal_port_env)
     elif isinstance(spec, str):
         host = spec.strip()
         if not host:
             return None
         mode = "http"
+        ip_env = os.environ.get("SS_OBFS_INTERNAL_PORT", "").strip()
+        if not ip_env:
+            sys.exit("obfs shorthand requires SS_OBFS_INTERNAL_PORT env var")
+        internal_port = int(ip_env)
     elif isinstance(spec, dict):
         host = (spec.get("host") or "").strip()
         if not host:
             sys.exit(f"inbound obfs spec is missing 'host': {spec!r}")
         mode = (spec.get("mode") or "http").strip().lower()
+        ip = spec.get("internal_port")
+        if ip is None:
+            sys.exit(f"inbound obfs spec is missing 'internal_port': {spec!r}")
+        internal_port = int(ip)
     else:
         sys.exit(f"inbound 'obfs' must be a string or a mapping, got {type(spec).__name__}")
     if mode not in ("http", "tls"):
         sys.exit(f"obfs mode must be http or tls (got: {mode})")
-    return f"obfs={mode};obfs-host={host}"
+    return {"mode": mode, "host": host, "internal_port": internal_port}
 SPLIT_KINDS  = ("geosite", "geoip", "domain", "domain_suffix",
                 "domain_keyword", "domain_regex", "ip_cidr")
 
@@ -477,20 +494,26 @@ def cmd_generate(schema: dict) -> None:
         method = ib.get("method", "chacha20-ietf-poly1305")
         network = (ib.get("network") or "tcp").lower()
 
+        obfs_opts = _resolve_obfs(ib)
+        if obfs_opts:
+            # sing-box has no SIP003 plugin field — bind to loopback and let
+            # an external obfs-server own the public port.
+            bind_listen = "127.0.0.1"
+            bind_port = obfs_opts["internal_port"]
+        else:
+            bind_listen = ib.get("listen", "::")
+            bind_port = port
+
         sb_in = {
             "type": "shadowsocks",
             "tag": ib_tag,
-            "listen": ib.get("listen", "::"),
-            "listen_port": port,
+            "listen": bind_listen,
+            "listen_port": bind_port,
             "method": method,
             "password": password,
         }
         if network not in UDP_BOTH:
             sb_in["network"] = network
-        obfs_opts = _resolve_obfs(ib)
-        if obfs_opts:
-            sb_in["plugin"] = "obfs-server"
-            sb_in["plugin_opts"] = obfs_opts
         inbounds_out.append(sb_in)
 
         route_name = ib.get("route")

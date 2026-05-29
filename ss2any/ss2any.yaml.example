@@ -10,15 +10,22 @@ inbounds:
     password: alice
     method: chacha20-ietf-poly1305
     network: tcp                # tcp | udp | tcp_and_udp
-    obfs:                       # optional simple-obfs (SIP003 plugin)
+    obfs:                       # optional simple-obfs front-end (external)
       mode: http                #   http | tls (default: http)
       host: microsoft.com       #   masquerade hostname
+      internal_port: 18388      #   loopback port for sing-box <- obfs-server
+                                #   You MUST start an obfs-server yourself,
+                                #   binding the public port and forwarding
+                                #   plain SS to 127.0.0.1:<internal_port>.
+                                #   sing-box has no SIP003 plugin field.
     route: chain-jp             # name of a chain (see below)
 
   - tag: ss-us
     port: 8389
     password: bob
-    obfs: "apple.com"           # shorthand: http mode + this host
+    # shorthand is not enough for YAML obfs — internal_port is required, so
+    # use the dict form. (Shorthand is only useful in single-link env mode
+    # where SS_OBFS_INTERNAL_PORT supplies the missing field.)
     route: us_vless             # name of an upstream — treated as a 1-hop chain
 
   - tag: ss-stack

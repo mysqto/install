@@ -23,6 +23,13 @@ if [ ! -f "$SS2ANY_CONFIG" ]; then
         warn "SS_PASSWORD not set, generated one: $SS_PASSWORD"
         export SS_PASSWORD
     fi
+    # When obfs is requested, sing-box binds to a loopback port and an external
+    # obfs-server owns the public port. Pick a default internal port if unset.
+    if [ -n "${SS_OBFS_HOST:-}" ] && [ -z "${SS_OBFS_INTERNAL_PORT:-}" ]; then
+        SS_OBFS_INTERNAL_PORT=18388
+        export SS_OBFS_INTERNAL_PORT
+        info "SS_OBFS_INTERNAL_PORT not set, defaulting to $SS_OBFS_INTERNAL_PORT"
+    fi
 fi
 
 info "Generating sing-box config..."
@@ -38,4 +45,38 @@ if ! sing-box check -c "$SB_CONFIG"; then
     error "sing-box config validation failed; see $SB_CONFIG"
 fi
 
-exec sing-box run -c "$SB_CONFIG"
+OBFS_PID=""
+SB_PID=""
+
+shutdown() {
+    [ -n "$SB_PID" ]   && kill -TERM "$SB_PID"   2>/dev/null || true
+    [ -n "$OBFS_PID" ] && kill -TERM "$OBFS_PID" 2>/dev/null || true
+}
+trap shutdown TERM INT HUP
+
+# Single-link obfs: start obfs-server in front of sing-box's loopback inbound.
+# For YAML mode we don't auto-spawn obfs-server (each inbound needs its own
+# args and there's no clean way to discover them from the env); the YAML
+# author owns the obfs front-end in that case.
+if [ ! -f "$SS2ANY_CONFIG" ] && [ -n "${SS_OBFS_HOST:-}" ]; then
+    if ! command -v obfs-server >/dev/null 2>&1; then
+        error "SS_OBFS_HOST=$SS_OBFS_HOST but obfs-server not in PATH"
+    fi
+    obfs_mode="${SS_OBFS_MODE:-http}"
+    obfs_port="${SS_PORT:-8388}"
+    info "Starting obfs-server :${obfs_port} (mode=${obfs_mode} host=${SS_OBFS_HOST}) -> 127.0.0.1:${SS_OBFS_INTERNAL_PORT}"
+    obfs-server -s :: -p "$obfs_port" \
+                -r "127.0.0.1:${SS_OBFS_INTERNAL_PORT}" \
+                --obfs "$obfs_mode" --obfs-host "$SS_OBFS_HOST" \
+                -t 300 -u &
+    OBFS_PID=$!
+fi
+
+sing-box run -c "$SB_CONFIG" &
+SB_PID=$!
+
+wait "$SB_PID"
+sb_exit=$?
+shutdown
+wait 2>/dev/null || true
+exit "$sb_exit"
