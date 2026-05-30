@@ -45,18 +45,22 @@ fi
 # ---------- Args ----------
 
 setup=false
+# All settings start empty; defaults are filled after the env-file merge so
+# /etc/default/ss2any can preserve port/password/obfs_internal_port etc
+# across re-runs (re-running with the same --link keeps the same setup).
 port=""
 password=""
-method="chacha20-ietf-poly1305"
-network="tcp"          # tcp | udp | tcp_and_udp
+method=""
+network=""             # tcp | udp | tcp_and_udp  (default: tcp)
 link=""
 sing_box_version=""
-listen_addr="::"        # dual-stack by default
-obfs_host=""             # simple-obfs masquerade host (e.g. microsoft.com)
-obfs_mode="http"         # simple-obfs mode: http | tls
-obfs_listen="0.0.0.0"    # obfs-server public-side bind address (simple-obfs doesn't
-                         # clear IPV6_V6ONLY, so "::" is IPv6-only on many kernels)
-force_obfs=false         # rebuild simple-obfs even if already installed
+listen_addr=""         # dual-stack by default (::)
+obfs_host=""           # simple-obfs masquerade host (e.g. microsoft.com)
+obfs_mode=""           # simple-obfs mode: http | tls
+obfs_listen=""         # obfs-server public-side bind address (default: 0.0.0.0
+                       # — simple-obfs doesn't clear IPV6_V6ONLY so '::' is v6-only)
+obfs_internal_port=""  # loopback port between obfs-server and sing-box
+force_obfs=false       # rebuild simple-obfs even if already installed
 surge=false              # --surge: print a Surge [Proxy] config line (format matches Surge/gc)
 surge_name=""            # --surge-name: proxy name in the Surge line (default: hostname-SS)
 surge_host=""            # --surge-host: server address in the Surge line (default: public IP autodetect)
@@ -147,6 +151,44 @@ EOF
     esac
 done
 set -- "${POSITIONAL[@]}"
+
+# ---------- Idempotency: layer in prior settings, then baked-in defaults ----------
+#
+# Resolution order for any setting (highest priority first):
+#   1. CLI flag passed on this run            (already set by the parser above)
+#   2. /etc/default/ss2any from a prior run   (preserves port/password/etc.)
+#   3. Baked-in default                       (e.g. method=chacha20-ietf-poly1305)
+#
+# So running `./install --link <same> --setup` repeatedly keeps the same port,
+# password, and obfs internal port. To rotate them, delete /etc/default/ss2any
+# (or pass --port / --password explicitly).
+
+if [ -f /etc/default/ss2any ]; then
+    # shellcheck source=/dev/null
+    . /etc/default/ss2any
+    : "${link:=${PROXY_LINK:-}}"
+    : "${port:=${SS_PORT:-}}"
+    : "${password:=${SS_PASSWORD:-}}"
+    : "${method:=${SS_METHOD:-}}"
+    : "${network:=${SS_NETWORK:-}}"
+    : "${listen_addr:=${SS_LISTEN:-}}"
+    : "${obfs_host:=${SS_OBFS_HOST:-}}"
+    : "${obfs_mode:=${SS_OBFS_MODE:-}}"
+    : "${obfs_listen:=${SS_OBFS_LISTEN:-}}"
+    : "${obfs_internal_port:=${SS_OBFS_INTERNAL_PORT:-}}"
+    : "${bypass_geosite:=${SPLIT_DIRECT_GEOSITE:-}}"
+    : "${bypass_geoip:=${SPLIT_DIRECT_GEOIP:-}}"
+    : "${bypass_suffix:=${SPLIT_DIRECT_DOMAIN_SUFFIX:-}}"
+    : "${bypass_cidr:=${SPLIT_DIRECT_IP_CIDR:-}}"
+    : "${reject_geosite:=${SPLIT_REJECT_GEOSITE:-}}"
+fi
+
+# Baked-in defaults for anything still unset.
+: "${method:=chacha20-ietf-poly1305}"
+: "${network:=tcp}"
+: "${listen_addr:=::}"
+: "${obfs_mode:=http}"
+: "${obfs_listen:=0.0.0.0}"
 
 # ---------- Surge config line emitter (format mirrors Surge/gc) ----------
 
@@ -563,11 +605,18 @@ random_unused_port() {
     return 1
 }
 
+# Stop our own services first — otherwise port_in_use trips on the
+# previous run's listener when we're trying to re-use the same ports.
+if systemctl list-unit-files ss2any.service >/dev/null 2>&1; then
+    systemctl stop ss2any-obfs.service 2>/dev/null || true
+    systemctl stop ss2any.service      2>/dev/null || true
+fi
+
 if [ -z "$port" ]; then
     port=$(random_unused_port) || error "could not find an unused port after 100 tries"
     info "selected random unused port: $port"
-else
-    port_in_use "$port" && error "port $port is already in use"
+elif port_in_use "$port"; then
+    error "port $port is already in use (by some other service)"
 fi
 
 if [ -z "$password" ]; then
@@ -575,44 +624,66 @@ if [ -z "$password" ]; then
 fi
 
 # When obfs is enabled, sing-box binds to 127.0.0.1:<internal_port> and an
-# external obfs-server listens on the public-facing port. Pick a free
-# loopback port that's different from the public one.
-obfs_internal_port=""
+# external obfs-server listens on the public-facing port. Re-use the prior
+# loopback port if /etc/default/ss2any had one (idempotent re-runs); only
+# pick a fresh one when we don't already have one and we don't conflict.
 if [ -n "$obfs_host" ]; then
     case "$obfs_mode" in
         http|tls) ;;
         *) error "--obfs-mode must be http or tls (got: $obfs_mode)" ;;
     esac
-    for _ in $(seq 1 50); do
-        candidate=$(random_unused_port) || break
-        [ "$candidate" = "$port" ] && continue
-        obfs_internal_port="$candidate"
-        break
-    done
-    [ -z "$obfs_internal_port" ] && error "could not find an unused port for the obfs loopback hop"
+    if [ -n "$obfs_internal_port" ]; then
+        if [ "$obfs_internal_port" = "$port" ]; then
+            warn "stored obfs internal port $obfs_internal_port collides with SS_PORT — picking a new one"
+            obfs_internal_port=""
+        elif port_in_use "$obfs_internal_port"; then
+            warn "stored obfs internal port $obfs_internal_port is in use — picking a new one"
+            obfs_internal_port=""
+        fi
+    fi
+    if [ -z "$obfs_internal_port" ]; then
+        for _ in $(seq 1 50); do
+            candidate=$(random_unused_port) || break
+            [ "$candidate" = "$port" ] && continue
+            obfs_internal_port="$candidate"
+            break
+        done
+        [ -z "$obfs_internal_port" ] && error "could not find an unused port for the obfs loopback hop"
+    fi
     info "obfs loopback port: 127.0.0.1:$obfs_internal_port (sing-box <- obfs-server <- clients on :$port)"
+else
+    obfs_internal_port=""
 fi
 
 # Persist env so re-running --setup is idempotent and the user can edit.
+# Single-quote everything so values that contain & / ; / | etc — notably the
+# vless:// link's query string — survive when we re-source this file via
+# `. /etc/default/ss2any`. systemd's EnvironmentFile parser also accepts
+# single-quoted values, so the systemd unit's ${VAR} expansions are
+# unaffected.
+sh_quote() {
+    local s=${1//\'/\'\\\'\'}
+    printf "'%s'" "$s"
+}
 defaults_file="/etc/default/ss2any"
-cat > "$defaults_file" <<EOF
-# ss2any environment. Edit and re-run the installer with --setup to apply.
-PROXY_LINK=$link
-SS_PORT=$port
-SS_PASSWORD=$password
-SS_METHOD=$method
-SS_NETWORK=$network
-SS_LISTEN=$listen_addr
-SS_OBFS_HOST=$obfs_host
-SS_OBFS_MODE=$obfs_mode
-SS_OBFS_LISTEN=$obfs_listen
-SS_OBFS_INTERNAL_PORT=$obfs_internal_port
-SPLIT_DIRECT_GEOSITE=$bypass_geosite
-SPLIT_DIRECT_GEOIP=$bypass_geoip
-SPLIT_DIRECT_DOMAIN_SUFFIX=$bypass_suffix
-SPLIT_DIRECT_IP_CIDR=$bypass_cidr
-SPLIT_REJECT_GEOSITE=$reject_geosite
-EOF
+{
+    echo "# ss2any environment. Edit and re-run the installer with --setup to apply."
+    echo "PROXY_LINK=$(sh_quote "$link")"
+    echo "SS_PORT=$(sh_quote "$port")"
+    echo "SS_PASSWORD=$(sh_quote "$password")"
+    echo "SS_METHOD=$(sh_quote "$method")"
+    echo "SS_NETWORK=$(sh_quote "$network")"
+    echo "SS_LISTEN=$(sh_quote "$listen_addr")"
+    echo "SS_OBFS_HOST=$(sh_quote "$obfs_host")"
+    echo "SS_OBFS_MODE=$(sh_quote "$obfs_mode")"
+    echo "SS_OBFS_LISTEN=$(sh_quote "$obfs_listen")"
+    echo "SS_OBFS_INTERNAL_PORT=$(sh_quote "$obfs_internal_port")"
+    echo "SPLIT_DIRECT_GEOSITE=$(sh_quote "$bypass_geosite")"
+    echo "SPLIT_DIRECT_GEOIP=$(sh_quote "$bypass_geoip")"
+    echo "SPLIT_DIRECT_DOMAIN_SUFFIX=$(sh_quote "$bypass_suffix")"
+    echo "SPLIT_DIRECT_IP_CIDR=$(sh_quote "$bypass_cidr")"
+    echo "SPLIT_REJECT_GEOSITE=$(sh_quote "$reject_geosite")"
+} > "$defaults_file"
 chmod 0600 "$defaults_file"
 
 # Generate sing-box config. Both parsers accept `generate` as argv[1]: the
