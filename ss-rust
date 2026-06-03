@@ -320,6 +320,54 @@ gen_password() {
         || tr -dc 'a-zA-Z0-9' </dev/urandom | head -c 32
 }
 
+# pick_best_dns [top=2] [family=v4|v6] [sep=,]
+# Pings well-known public resolvers and prints the fastest <top> joined by <sep>.
+pick_best_dns() {
+    local top=${1:-2}
+    local family=${2:-v4}
+    local sep=${3:-,}
+    local candidates results=() d t
+
+    if [ "$family" = "v6" ]; then
+        candidates=(
+            "2606:4700:4700::1111"
+            "2606:4700:4700::1001"
+            "2001:4860:4860::8888"
+            "2001:4860:4860::8844"
+            "2620:fe::fe"
+            "2400:3200::1"
+            "2402:4e00::"
+        )
+    else
+        candidates=(
+            "1.1.1.1"
+            "1.0.0.1"
+            "8.8.8.8"
+            "8.8.4.4"
+            "9.9.9.9"
+            "208.67.222.222"
+            "223.5.5.5"
+            "119.29.29.29"
+            "114.114.114.114"
+            "180.76.76.76"
+        )
+    fi
+
+    info "Probing latency for well-known $family DNS servers..." >&2
+    for d in "${candidates[@]}"; do
+        t=$(ping -c 3 -W 2 -q "$d" 2>/dev/null | awk -F'/' '/min\/avg\/max/ {print $5; exit}')
+        if [ -n "$t" ]; then
+            results+=("$t $d")
+            info "  $d: ${t}ms" >&2
+        else
+            warn "  $d: unreachable" >&2
+        fi
+    done
+
+    [ "${#results[@]}" -eq 0 ] && return 1
+    printf '%s\n' "${results[@]}" | sort -n | head -n "$top" | awk '{print $2}' | paste -sd "$sep" -
+}
+
 # ---------- --setup: resolve missing settings ----------
 
 shadowsocks_config_file="/etc/shadowsocks/config.json"
@@ -341,7 +389,7 @@ if [ -n "$existing_config" ]; then
     [ -z "$password" ]  && password=$(grep   -Eo "\"password\"\s*:\s*\"[^\"]+\""   "$existing_config" 2>/dev/null | cut -d'"' -f4)
     [ -z "$port" ]      && port=$(grep       -Eo "\"server_port\"\s*:\s*[0-9]+"   "$existing_config" 2>/dev/null | grep -Eo '[0-9]+')
     [ -z "$obfs_host" ] && obfs_host=$(grep  -Eo 'obfs-host=[^;"]+'                "$existing_config" 2>/dev/null | cut -d'=' -f2)
-    [ -z "$dns_server" ] && dns_server=$(grep -Eo "\"dns_server\"\s*:\s*\"[^\"]+\"" "$existing_config" 2>/dev/null | cut -d'"' -f4)
+    [ -z "$dns_server" ] && dns_server=$(grep -Eo "\"dns\"\s*:\s*\"[^\"]+\"" "$existing_config" 2>/dev/null | cut -d'"' -f4)
 fi
 
 if [ -z "$port" ]; then
@@ -358,9 +406,17 @@ if [ -z "$dns_server" ]; then
     v4_route=$(ip -4 route 2>/dev/null)
     v6_route=$(ip -6 route 2>/dev/null)
     if [ -z "$v4_route" ] && [ -n "$v6_route" ]; then
-        dns_server="2001:4860:4860::8888"
+        dns_server=$(pick_best_dns 2 v6 ,)
+        [ -z "$dns_server" ] && {
+            warn "DNS probing failed, falling back to Google IPv6"
+            dns_server="2001:4860:4860::8888"
+        }
     else
-        dns_server="1.1.1.1"
+        dns_server=$(pick_best_dns 2 v4 ,)
+        [ -z "$dns_server" ] && {
+            warn "DNS probing failed, falling back to Cloudflare"
+            dns_server="1.1.1.1"
+        }
     fi
 fi
 
@@ -379,6 +435,7 @@ if [ "$plugin" = "simple-obfs" ]; then
         "method"      : "${method}",
         "mode"        : "${network}",
         "fast_open"   : true,
+        "dns"         : "${dns_server}",
         "plugin"      : "obfs-server",
         "plugin_opts" : "obfs=http;obfs-host=${obfs_host}"
 }
@@ -392,7 +449,8 @@ else
         "timeout"     : 300,
         "method"      : "${method}",
         "mode"        : "${network}",
-        "fast_open"   : true
+        "fast_open"   : true,
+        "dns"         : "${dns_server}"
 }
 EOF
 fi
