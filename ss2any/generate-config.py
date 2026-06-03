@@ -580,6 +580,17 @@ def cmd_generate(schema: dict) -> None:
         "route": route_section,
     }
 
+    dns_env = os.environ.get("SS_DNS", "").strip()
+    if dns_env:
+        servers = []
+        for i, s in enumerate(
+            (x.strip() for x in dns_env.split(",")), 1
+        ):
+            if s:
+                servers.append({"tag": f"dns{i}", "address": s, "detour": "direct"})
+        if servers:
+            cfg["dns"] = {"servers": servers, "strategy": "prefer_ipv4"}
+
     sys.stderr.write("ss2any routes:\n" + "\n".join(summary) + "\n")
     json.dump(cfg, sys.stdout, indent=2)
     sys.stdout.write("\n")

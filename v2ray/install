@@ -17,6 +17,7 @@ tls=false
 ws_path="/v2ray"
 tun_mode=false
 connection_link=""
+dns=""
 
 # Use CURL_OPTS and WGET_OPTS from environment if set, otherwise allow local override
 [ -z "$CURL_OPTS" ] && CURL_OPTS=""
@@ -59,6 +60,99 @@ function is_port_in_use() {
     else
         # Can't check, assume not in use
         return 1
+    fi
+}
+
+# pick_best_dns [top=2] [family=v4|v6] [sep=,]
+# Pings well-known public resolvers and prints the fastest <top> joined by <sep>.
+function pick_best_dns() {
+    local top=${1:-2}
+    local family=${2:-v4}
+    local sep=${3:-,}
+    local candidates results=() d t
+
+    if [ "$family" = "v6" ]; then
+        candidates=(
+            "2606:4700:4700::1111"
+            "2606:4700:4700::1001"
+            "2001:4860:4860::8888"
+            "2001:4860:4860::8844"
+            "2620:fe::fe"
+            "2400:3200::1"
+            "2402:4e00::"
+        )
+    else
+        candidates=(
+            "1.1.1.1"
+            "1.0.0.1"
+            "8.8.8.8"
+            "8.8.4.4"
+            "9.9.9.9"
+            "208.67.222.222"
+            "223.5.5.5"
+            "119.29.29.29"
+            "114.114.114.114"
+            "180.76.76.76"
+        )
+    fi
+
+    info "Probing latency for well-known $family DNS servers..." >&2
+    for d in "${candidates[@]}"; do
+        t=$(ping -c 3 -W 2 -q "$d" 2>/dev/null | awk -F'/' '/min\/avg\/max/ {print $5; exit}')
+        if [ -n "$t" ]; then
+            results+=("$t $d")
+            info "  $d: ${t}ms" >&2
+        else
+            warn "  $d: unreachable" >&2
+        fi
+    done
+
+    [ "${#results[@]}" -eq 0 ] && return 1
+    printf '%s\n' "${results[@]}" | sort -n | head -n "$top" | awk '{print $2}' | paste -sd "$sep" -
+}
+
+# csv_to_json_array "1.1.1.1,8.8.8.8" -> "1.1.1.1", "8.8.8.8"
+function csv_to_json_array() {
+    local csv="$1"
+    local out="" item
+    local -a items
+    IFS=',' read -ra items <<<"$csv"
+    for item in "${items[@]}"; do
+        item="${item#"${item%%[![:space:]]*}"}"
+        item="${item%"${item##*[![:space:]]}"}"
+        [ -z "$item" ] && continue
+        [ -n "$out" ] && out="$out, "
+        out="$out\"$item\""
+    done
+    printf '%s' "$out"
+}
+
+# resolve_dns: pulls from $dns -> existing config -> latency probe.
+function resolve_dns() {
+    if [ -z "$dns" ] && [ -f "$v2ray_config_file" ]; then
+        dns=$(grep -oE '"servers":\s*\[[^]]+\]' "$v2ray_config_file" 2>/dev/null \
+            | head -1 \
+            | grep -oE '"[0-9a-fA-F][0-9a-fA-F:.]*"' \
+            | tr -d '"' \
+            | paste -sd ',' -)
+    fi
+    if [ -z "$dns" ]; then
+        local v4_route v6_route
+        v4_route=$(ip -4 route 2>/dev/null)
+        v6_route=$(ip -6 route 2>/dev/null)
+        if [ -z "$v4_route" ] && [ -n "$v6_route" ]; then
+            dns=$(pick_best_dns 2 v6 ,)
+            [ -z "$dns" ] && {
+                warn "DNS probing failed, falling back to Cloudflare/Google IPv6"
+                dns="2606:4700:4700::1111,2001:4860:4860::8888"
+            }
+        else
+            dns=$(pick_best_dns 2 v4 ,)
+            [ -z "$dns" ] && {
+                warn "DNS probing failed, falling back to Cloudflare/Google"
+                dns="1.1.1.1,8.8.8.8"
+            }
+        fi
     fi
 }
 
@@ -335,10 +429,17 @@ function create_server_config() {
     }'
     fi
     
+    resolve_dns
+    local dns_json
+    dns_json=$(csv_to_json_array "$dns")
+
     cat > "$v2ray_config_file" <<EOF
 {
   "log": {
     "loglevel": "warning"
+  },
+  "dns": {
+    "servers": [$dns_json]
   },
   "inbounds": [
     $inbound_config
@@ -351,9 +452,10 @@ function create_server_config() {
   ]
 }
 EOF
-    
+
     chmod 644 "$v2ray_config_file"
     info "Server configuration created: $v2ray_config_file"
+    info "DNS servers: $dns"
     
     # Validate config
     if [ -f "$v2ray_bin" ] && [ -x "$v2ray_bin" ]; then
@@ -500,10 +602,17 @@ function create_client_config() {
   }'
     fi
     
+    resolve_dns
+    local dns_json
+    dns_json=$(csv_to_json_array "$dns")
+
     cat > "$v2ray_config_file" <<EOF
 {
   "log": {
     "loglevel": "warning"
+  },
+  "dns": {
+    "servers": [$dns_json]
   },
   "inbounds": [
     $inbound_config
@@ -518,9 +627,10 @@ function create_client_config() {
   ]$routing_config
 }
 EOF
-    
+
     chmod 644 "$v2ray_config_file"
     info "Client configuration created: $v2ray_config_file"
+    info "DNS servers: $dns"
     
     # Validate config
     if [ -f "$v2ray_bin" ] && [ -x "$v2ray_bin" ]; then
@@ -773,6 +883,10 @@ while [ $# -gt 0 ]; do
             ;;
         --link)
             connection_link="$2"
+            shift 2
+            ;;
+        --dns)
+            dns="$2"
             shift 2
             ;;
         *)
