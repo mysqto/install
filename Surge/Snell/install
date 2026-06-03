@@ -39,6 +39,39 @@ service_exists() {
     fi
 }
 
+function pick_best_dns() {
+    local candidates=(
+        "1.1.1.1"
+        "1.0.0.1"
+        "8.8.8.8"
+        "8.8.4.4"
+        "9.9.9.9"
+        "208.67.222.222"
+        "223.5.5.5"
+        "119.29.29.29"
+        "114.114.114.114"
+        "180.76.76.76"
+    )
+    local top=${1:-2}
+    local results=()
+    local d t
+
+    info "Probing latency for well-known DNS servers..." >&2
+    for d in "${candidates[@]}"; do
+        t=$(ping -c 3 -W 2 -q "$d" 2>/dev/null | awk -F'/' '/min\/avg\/max/ {print $5; exit}')
+        if [ -n "$t" ]; then
+            results+=("$t $d")
+            info "  $d: ${t}ms" >&2
+        else
+            warn "  $d: unreachable" >&2
+        fi
+    done
+
+    [ "${#results[@]}" -eq 0 ] && return 1
+
+    printf '%s\n' "${results[@]}" | sort -n | head -n "$top" | awk '{print $2}' | paste -sd ',' -
+}
+
 function download() {
     local url="$1"
     local target="$2"
@@ -127,6 +160,7 @@ obfs = ${obfs}
 obfs-host = ${obfs_host}
 tfo = ${tfo}
 version = ${snell_version}
+dns = ${dns}
 [snell-server.metrics]
 enable = true # enable metrics
 EOF
@@ -249,6 +283,7 @@ tfo=true
 snell_version=
 shadow_tls=
 shadow_tls_password=
+dns=
 
 POSITIONAL=()
 
@@ -293,6 +328,10 @@ while [ $# -gt 0 ]; do
             ;;
         -spw | --shadow-tls-password)
             shadow_tls_password="$2"
+            shift 2
+            ;;
+        -d | --dns)
+            dns="$2"
             shift 2
             ;;
         *)
@@ -341,6 +380,10 @@ set -- "${POSITIONAL[@]}" # restore positional parameters
         warn "Failed to get version from $snell_config_file, use 4 as default"
         snell_version="5"
     }
+}
+
+[ -z "$dns" ] && {
+    dns="$(grep 2>/dev/null <"$snell_config_file" -oE "^dns = .*" | awk -F '=' '{print $NF}' | sed 's/^ *//;s/ *$//')"
 }
 
 [ -z "$shadow_tls" ] && {
@@ -404,15 +447,24 @@ wd=$(mktemp -t "snell.XXXXXXXXXXXXXXXX" -d 2>/dev/null)
 
 if installed apt || installed apt-get; then
     apt update
-    DEBIAN_FRONTEND=noninteractive UCF_FORCE_CONFFOLD=1 apt install -y wget curl unzip
+    DEBIAN_FRONTEND=noninteractive UCF_FORCE_CONFFOLD=1 apt install -y wget curl unzip iputils-ping
 elif installed yum; then
-    yum install -y wget curl unzip
+    yum install -y wget curl unzip iputils
 elif installed pacman; then
-    pacman -Sy --noconfirm wget curl unzip
+    pacman -Sy --noconfirm wget curl unzip iputils
 elif installed apk; then
     apk update
-    apk add --no-cache -y wget curl unzip
+    apk add --no-cache -y wget curl unzip iputils
 fi
+
+[ -z "$dns" ] && {
+    info "No DNS specified, auto-picking fastest from well-known DNS servers..."
+    dns="$(pick_best_dns 2)"
+    [ -z "$dns" ] && {
+        warn "Failed to auto-pick DNS, falling back to Cloudflare + Google"
+        dns="1.1.1.1,8.8.8.8"
+    }
+}
 
 pushd "$wd" >>/dev/null 2>&1 || exit
 warn "####################################################################"
@@ -422,6 +474,7 @@ warn "Snell port:                                ${snell_port}"
 warn "Snell PSK:                                 ${snell_psk}"
 warn "Snell obfs:                                ${obfs}"
 warn "Snell obfs-host:                           ${obfs_host}"
+warn "Snell DNS:                                 ${dns}"
 warn "Shadow-TLS is enabled:                     ${shadow_tls}"
 [ "$shadow_tls" = true ] && {
     warn "Shadow-TLS port:                           ${shadow_tls_port}"
