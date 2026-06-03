@@ -1,0 +1,431 @@
+#!/usr/bin/env bash
+
+# Shadowsocks Rust Client Installation Script
+# Simple and focused client installer with SOCKS5 proxy
+
+set -euo pipefail
+
+# Color output functions
+function warn() {
+    echo -e "\033[33m$1\033[0m"
+}
+
+function error() {
+    echo -e "\033[31m$1\033[0m"
+    exit 1
+}
+
+function info() {
+    echo -e "\033[32m$1\033[0m"
+}
+
+# Check if command exists
+function installed() {
+    command -v "$1" >/dev/null 2>&1
+}
+
+# Function to check root (called after argument parsing)
+function check_root() {
+    [ "$(id -u)" -ne 0 ] && error "This script requires root privileges. Please run with sudo."
+}
+
+# Install dependencies using proven ss-rust pattern
+function install_dependencies() {
+    info "Installing dependencies..."
+    
+    if installed apt; then
+        apt-get update && apt-get install --no-install-recommends build-essential autoconf libtool libssl-dev libpcre2-dev libev-dev automake asciidoc xmlto git curl jq -y
+    elif installed yum; then
+        yum update && yum install -y git gcc make autoconf libtool openssl-devel pcre-devel libev-devel asciidoc xmlto automake curl jq
+    elif installed dnf; then
+        dnf update && dnf install -y git gcc make autoconf libtool openssl-devel pcre-devel libev-devel asciidoc xmlto automake curl jq
+    elif installed zypper; then
+        zypper refresh && zypper install -y git gcc make autoconf libtool openssl-devel pcre-devel libev-devel asciidoc xmlto automake curl jq
+    elif installed apk; then
+        apk upgrade && apk add --no-cache git build-base autoconf libtool openssl-dev pcre-dev libev-dev asciidoc xmlto automake curl jq
+    else
+        error "No package manager found, please install dependencies manually"
+    fi
+    
+    info "✅ Dependencies installed successfully"
+}
+
+# Install shadowsocks-rust client
+function install_shadowsocks_rust() {
+    info "Installing Shadowsocks Rust..."
+    
+    # Get latest version and download URL
+    local releases_url="https://api.github.com/repos/shadowsocks/shadowsocks-rust/releases"
+    local version=$(curl -sL "$releases_url" | jq -r '.[0].tag_name' | sed 's/^v//')
+    [ -z "$version" ] || [ "$version" = "null" ] && error "Failed to get shadowsocks-rust version"
+    
+    info "Installing version: $version"
+    
+    # Detect system info
+    local os=$(uname -s | tr '[:upper:]' '[:lower:]')
+    local arch=$(uname -m)
+    
+    case $arch in
+        x86_64) arch="x86_64" ;;
+        aarch64|arm64) arch="aarch64" ;;  
+        i*86) arch="i686" ;;
+        *) error "Unsupported architecture: $arch" ;;
+    esac
+    
+    local libc=$(ldd "$(readlink -f /bin/sh)" 2>/dev/null | grep -q 'musl' && echo 'musl' || echo 'gnu')
+    
+    # Construct package name
+    local package_name
+    if [ "$os" = "darwin" ]; then
+        package_name="shadowsocks-v${version}.${arch}-apple-darwin.tar.xz"
+    else
+        package_name="shadowsocks-v${version}.${arch}-unknown-linux-${libc}.tar.xz"
+    fi
+    
+    # Download and install
+    local temp_dir=$(mktemp -d)
+    local download_url="https://github.com/shadowsocks/shadowsocks-rust/releases/download/v${version}/${package_name}"
+    
+    info "Downloading from: $download_url"
+    curl -sL "$download_url" -o "$temp_dir/$package_name" || error "Failed to download shadowsocks-rust"
+    
+    # Extract and install
+    tar -xJf "$temp_dir/$package_name" -C "$temp_dir" || error "Failed to extract shadowsocks-rust"
+    
+    for binary in "$temp_dir"/*; do
+        if [ -x "$binary" ] && [ -f "$binary" ]; then
+            local binary_name=$(basename "$binary")
+            cp "$binary" "/usr/local/bin/$binary_name" || error "Failed to install $binary_name"
+            chmod +x "/usr/local/bin/$binary_name"
+            info "Installed: $binary_name"
+        fi
+    done
+    
+    rm -rf "$temp_dir"
+    
+    # Verify installation
+    if ! installed ss-local; then
+        error "ss-local binary not found after installation"
+    fi
+    
+    info "✅ Shadowsocks Rust installed successfully"
+    ss-local --version || true
+}
+
+# Install obfs-local plugin
+function install_obfs_plugin() {
+    info "Installing obfs-local plugin..."
+    
+    # Check if already installed
+    if command -v obfs-local >/dev/null 2>&1; then
+        info "✅ obfs-local plugin already installed"
+        return 0
+    fi
+    
+    # Create temp directory and clone
+    local obfs_dir=$(mktemp -d)
+    git clone https://github.com/shadowsocks/simple-obfs.git "$obfs_dir" || error "Failed to clone simple-obfs"
+    
+    pushd "$obfs_dir" >/dev/null
+    
+    # Build and install using proven pattern from ss-rust
+    git submodule update --init --recursive
+    ./autogen.sh || error "Failed to run autogen.sh"
+    ./configure --disable-documentation --prefix=/usr/local || error "Failed to configure"
+    make -j$(nproc) || error "Failed to compile"
+    make install || error "Failed to install"
+    
+    popd >/dev/null
+    rm -rf "$obfs_dir"
+    
+    # Verify installation  
+    if command -v obfs-local >/dev/null 2>&1; then
+        info "✅ obfs-local plugin installed successfully"
+    else
+        error "obfs-local installation failed"
+    fi
+}
+
+# Generate client configuration
+function generate_client_config() {
+    local config_file="$1"
+    local server_host="$2" 
+    local server_port="$3"
+    local password="$4"
+    local method="$5"
+    local local_address="$6"
+    local local_port="$7"
+    local plugin="$8"
+    local plugin_opts="$9"
+    
+    info "Generating client configuration..."
+    
+    # Create config directory
+    mkdir -p "$(dirname "$config_file")"
+    
+    # Generate config
+    local config="{
+    \"server\": \"$server_host\",
+    \"server_port\": $server_port,
+    \"local_address\": \"$local_address\",
+    \"local_port\": $local_port,
+    \"password\": \"$password\",
+    \"method\": \"$method\",
+    \"timeout\": 300"
+    
+    if [ -n "$plugin" ]; then
+        config="$config,
+    \"plugin\": \"$plugin\""
+        
+        if [ -n "$plugin_opts" ]; then
+            config="$config,
+    \"plugin_opts\": \"$plugin_opts\""
+        fi
+    fi
+    
+    config="$config
+}"
+    
+    # Write config with service-readable permissions
+    echo "$config" > "$config_file"
+    chmod 644 "$config_file"  # Readable by systemd DynamicUser
+    
+    info "✅ Configuration created: $config_file"
+}
+
+# Create systemd service
+function create_service() {
+    local config_file="$1"
+    local service_name="${2:-ss-client}"
+    
+    info "Creating systemd service: $service_name"
+    
+    cat > "/etc/systemd/system/${service_name}.service" << EOF
+[Unit]
+Description=Shadowsocks Rust Client
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Restart=on-failure
+RestartSec=5s
+ExecStart=/usr/local/bin/ss-local -c $config_file
+DynamicUser=true
+ReadOnlyPaths=/etc/shadowsocks
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+LimitNOFILE=32768
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    systemctl daemon-reload
+    systemctl enable "$service_name.service"
+    
+    info "✅ Systemd service created: $service_name"
+}
+
+# Start and test service
+function start_service() {
+    local service_name="${1:-ss-client}"
+    local local_port="${2:-1080}"
+    
+    info "Starting $service_name service..."
+    systemctl start "$service_name.service" || error "Failed to start service"
+    
+    # Wait for service to start
+    sleep 2
+    
+    # Test SOCKS5 proxy
+    if ss -tln 2>/dev/null | grep -q ":$local_port"; then
+        info "✅ SOCKS5 proxy is listening on port $local_port"
+        
+        # Test connectivity if curl is available
+        if installed curl; then
+            local proxy_ip=$(curl --socks5-hostname "127.0.0.1:$local_port" -s --connect-timeout 10 "https://httpbin.org/ip" 2>/dev/null | jq -r '.origin' 2>/dev/null || echo "test failed")
+            if [ "$proxy_ip" != "test failed" ]; then
+                info "✅ SOCKS5 proxy is working! Proxy IP: $proxy_ip"
+            else
+                warn "SOCKS5 proxy is running but connectivity test failed"
+            fi
+        fi
+    else
+        warn "SOCKS5 proxy port not detected, check service status"
+    fi
+}
+
+# Show usage
+function usage() {
+    info "Shadowsocks Rust Client Installer"
+    info ""
+    info "Usage: $(basename "$0") [options]"
+    info ""
+    info "Required options:"
+    info "  -s, --server HOST       Server hostname or IP address"
+    info "  -p, --server-port PORT  Server port number"
+    info "  -k, --password PASS     Server password"
+    info ""
+    info "Optional options:"
+    info "  -h, --help              Show this help message"
+    info "  -m, --method METHOD     Encryption method (default: chacha20-ietf-poly1305)"
+    info "  -l, --local-addr ADDR   Local bind address (default: 127.0.0.1)"
+    info "  -P, --local-port PORT   Local SOCKS5 port (default: 1080)"
+    info "  --plugin PLUGIN         Plugin name (obfs-local for obfuscation)"
+    info "  --plugin-opts OPTS      Plugin options"
+    info "  -c, --config FILE       Config file path (default: /etc/shadowsocks/client.json)"
+    info "  --service-name NAME     Service name (default: ss-client)"
+    info "  --no-start              Don't start the service"
+    info ""
+    info "Examples:"
+    info ""
+    info "  # Basic installation"
+    info "  $(basename "$0") -s server.com -p 8388 -k 'password'"
+    info ""
+    info "  # With HTTP obfuscation"
+    info "  $(basename "$0") -s server.com -p 8388 -k 'password' \\"
+    info "    --plugin obfs-local --plugin-opts 'obfs=http;obfs-host=www.bing.com'"
+}
+
+# Parse command line arguments
+server_host=""
+server_port=""
+password=""
+method="chacha20-ietf-poly1305"
+local_address="127.0.0.1"
+local_port="1080"
+plugin=""
+plugin_opts=""
+config_file="/etc/shadowsocks/client.json"
+service_name="ss-client"
+start_service_flag=true
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        -s|--server)
+            server_host="$2"
+            shift 2
+            ;;
+        -p|--server-port)
+            server_port="$2"
+            shift 2
+            ;;
+        -k|--password)
+            password="$2"
+            shift 2
+            ;;
+        -m|--method)
+            method="$2"
+            shift 2
+            ;;
+        -l|--local-addr)
+            local_address="$2"
+            shift 2
+            ;;
+        -P|--local-port)
+            local_port="$2"
+            shift 2
+            ;;
+        --plugin)
+            plugin="$2"
+            shift 2
+            ;;
+        --plugin-opts)
+            plugin_opts="$2"
+            shift 2
+            ;;
+        -c|--config)
+            config_file="$2"
+            shift 2
+            ;;
+        --service-name)
+            service_name="$2"
+            shift 2
+            ;;
+        --no-start)
+            start_service_flag=false
+            shift
+            ;;
+        *)
+            error "Unknown option: $1. Use --help for usage information."
+            ;;
+    esac
+done
+
+# Check root privileges after parsing help option
+check_root
+
+# Validate required parameters
+[ -z "$server_host" ] && error "Server hostname is required. Use -s or --server"
+[ -z "$server_port" ] && error "Server port is required. Use -p or --server-port"  
+[ -z "$password" ] && error "Password is required. Use -k or --password"
+
+# Validate port numbers
+if ! [[ "$server_port" =~ ^[0-9]+$ ]] || [ "$server_port" -lt 1 ] || [ "$server_port" -gt 65535 ]; then
+    error "Invalid server port: $server_port"
+fi
+
+if ! [[ "$local_port" =~ ^[0-9]+$ ]] || [ "$local_port" -lt 1 ] || [ "$local_port" -gt 65535 ]; then
+    error "Invalid local port: $local_port"
+fi
+
+info "Shadowsocks Rust Client Installer"
+info "=================================="
+info ""
+info "Configuration:"
+info "  Server: $server_host:$server_port"
+info "  Method: $method"
+info "  Local SOCKS5: $local_address:$local_port"
+info "  Config file: $config_file"
+[ -n "$plugin" ] && info "  Plugin: $plugin"
+[ -n "$plugin_opts" ] && info "  Plugin options: $plugin_opts"
+info ""
+
+# Install dependencies
+install_dependencies
+
+# Install shadowsocks-rust
+install_shadowsocks_rust
+
+# Install plugin if specified
+if [ -n "$plugin" ]; then
+    case "$plugin" in
+        obfs-local)
+            install_obfs_plugin
+            ;;
+        *)
+            warn "Unknown plugin: $plugin. Supported: obfs-local"
+            warn "Please install manually if needed"
+            ;;
+    esac
+fi
+
+# Generate configuration
+generate_client_config "$config_file" "$server_host" "$server_port" "$password" "$method" "$local_address" "$local_port" "$plugin" "$plugin_opts"
+
+# Create systemd service
+create_service "$config_file" "$service_name"
+
+# Start service if requested
+if [ "$start_service_flag" = true ]; then
+    start_service "$service_name" "$local_port"
+fi
+
+info ""
+info "✅ Installation completed successfully!"
+info ""
+info "🔧 Service management:"
+info "  systemctl start $service_name"
+info "  systemctl stop $service_name"
+info "  systemctl status $service_name"
+info "  journalctl -u $service_name -f"
+info ""
+info "🌐 SOCKS5 Proxy: $local_address:$local_port"
+info "📋 Configuration: $config_file"

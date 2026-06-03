@@ -1,0 +1,77 @@
+services:
+  # WireGuard Server Container
+  wg-server:
+    build: .
+    container_name: wg-server
+    hostname: wg-server
+    privileged: true  # Required for WireGuard and iptables
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    sysctls:
+      - net.ipv4.ip_forward=1
+      - net.ipv6.conf.all.forwarding=1
+    volumes:
+      - .:/app
+      - wg-server-config:/etc/wireguard
+      - /lib/modules:/lib/modules:ro
+    networks:
+      wg-test-net:
+        ipv4_address: 172.20.0.10
+    environment:
+      - CONTAINER_ROLE=server
+      - PUBLIC_IP=172.20.0.10
+    command: /bin/bash -c "tail -f /dev/null"
+    
+  # WireGuard Client Container
+  wg-client-test:
+    build: .
+    container_name: wg-client-test
+    hostname: wg-client-test
+    privileged: true  # Required for WireGuard
+    cap_add:
+      - NET_ADMIN  
+      - SYS_MODULE
+    sysctls:
+      - net.ipv4.ip_forward=1
+    volumes:
+      - .:/app
+      - wg-client-config:/etc/wireguard
+      - /lib/modules:/lib/modules:ro
+    networks:
+      wg-test-net:
+        ipv4_address: 172.20.0.20
+    environment:
+      - CONTAINER_ROLE=client
+      - SERVER_IP=172.20.0.10
+    depends_on:
+      - wg-server
+    command: /bin/bash -c "tail -f /dev/null"
+
+  # Test Target Server (simulates external server)
+  test-target:
+    build: .
+    container_name: test-target
+    hostname: test-target
+    volumes:
+      - .:/app
+    networks:
+      wg-test-net:
+        ipv4_address: 172.20.0.30
+    environment:
+      - CONTAINER_ROLE=target
+    command: /bin/bash -c "
+      echo 'Test target server ready' > /var/log/target.log &&
+      python3 -m http.server 8080 --bind 0.0.0.0 2>&1 | tee -a /var/log/target.log"
+
+networks:
+  wg-test-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/24
+          gateway: 172.20.0.1
+
+volumes:
+  wg-server-config:
+  wg-client-config:

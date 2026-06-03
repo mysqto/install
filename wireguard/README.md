@@ -229,6 +229,44 @@ qrencode -t ansiutf8 < /etc/wireguard/clients/client1.conf
 3. **Verify IP forwarding**: `cat /proc/sys/net/ipv4/ip_forward`
 4. **Check iptables rules**: `sudo iptables -L -n -v`
 
+## Advanced Client Generator
+
+For advanced client configuration with GeoIP-based split tunneling, use the `wg-client` script:
+
+```bash
+# Basic client config (all traffic via VPN)
+./wg-client --client-ip 10.0.0.2 --server-ip YOUR_SERVER --server-key "SERVER_KEY" -o client.conf
+
+# Split tunneling (US traffic local, others via VPN)  
+./wg-client --client-ip 10.0.0.2 --server-ip YOUR_SERVER --server-key "SERVER_KEY" --local-country US -o client.conf
+```
+
+See `CLIENT-README.md` for complete documentation.
+
+## Docker Testing Environment
+
+Test all functionality in isolated Docker containers:
+
+```bash
+# Run comprehensive test suite
+./test-docker.sh
+
+# Setup containers for manual testing
+./test-docker.sh --setup-only
+
+# Clean up test environment
+./test-docker.sh --cleanup
+```
+
+The Docker test environment validates:
+- ✅ Server installation across distributions
+- ✅ Client generation with split tunneling  
+- ✅ GeoIP-based routing functionality
+- ✅ DNS optimization by country
+- ✅ Network connectivity and performance
+
+See `DOCKER-TEST-README.md` for complete testing documentation.
+
 ## Security Notes
 
 - All private keys are set to 600 permissions (owner read/write only)

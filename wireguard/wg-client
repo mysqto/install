@@ -1,0 +1,600 @@
+#!/usr/bin/env bash
+
+# WireGuard Client Configuration Generator with GeoIP Routing
+# Advanced client script for WireGuard with split-tunneling support
+
+set -euo pipefail
+
+# Color output functions
+function warn() {
+    echo -e "\033[33m$1\033[0m"
+}
+
+function error() {
+    echo -e "\033[31m$1\033[0m"
+    exit 1
+}
+
+function info() {
+    echo -e "\033[32m$1\033[0m"
+}
+
+function debug() {
+    if [ "${DEBUG:-0}" = "1" ]; then
+        echo -e "\033[36m[DEBUG] $1\033[0m"
+    fi
+}
+
+# Check if command exists
+function installed() {
+    command -v "$1" >/dev/null 2>&1
+}
+
+# Ensure required tools are installed
+function ensure_tools() {
+    local tools=(curl wg)
+    info "Ensuring required tools: ${tools[*]}"
+    
+    # Check for WireGuard
+    if ! installed wg; then
+        error "WireGuard (wg) is not installed. Please install WireGuard first."
+    fi
+    
+    # Check for curl
+    if ! installed curl; then
+        warn "curl not found. Installing..."
+        if installed apt-get; then
+            apt-get update && apt-get install -y curl
+        elif installed dnf; then
+            dnf install -y curl
+        elif installed yum; then
+            yum install -y curl
+        elif installed pacman; then
+            pacman -Sy --noconfirm curl
+        elif installed apk; then
+            apk add --no-cache curl
+        else
+            error "Cannot install curl. Please install it manually."
+        fi
+    fi
+}
+
+# Generate WireGuard key pair
+function generate_keypair() {
+    local private_key
+    local public_key
+    
+    private_key=$(wg genkey)
+    public_key=$(echo "$private_key" | wg pubkey)
+    
+    echo "$private_key|$public_key"
+}
+
+# Validate IP address format
+function validate_ip() {
+    local ip="$1"
+    if [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+# Validate port number
+function validate_port() {
+    local port="$1"
+    if [[ "$port" =~ ^[0-9]+$ ]] && [ "$port" -ge 1 ] && [ "$port" -le 65535 ]; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+# Get country IP ranges from reliable source
+function get_country_ips() {
+    local country_code="$1"
+    local temp_file="/tmp/country_ips_${country_code}.txt"
+    
+    country_code=$(echo "$country_code" | tr '[:lower:]' '[:upper:]')
+    
+    # Send status messages to stderr to avoid mixing with output
+    info "Downloading IP ranges for country: $country_code" >&2
+    
+    # Try multiple sources for country IP ranges
+    local sources=(
+        "https://www.ipdeny.com/ipblocks/data/aggregated/${country_code,,}-aggregated.zone"
+        "https://www.ipdeny.com/ipblocks/data/countries/${country_code,,}.zone"
+    )
+    
+    for source in "${sources[@]}"; do
+        debug "Trying source: $source" >&2
+        if curl -s --connect-timeout 10 --max-time 30 "$source" -o "$temp_file" 2>/dev/null; then
+            if [ -s "$temp_file" ]; then
+                info "Successfully downloaded IP ranges from: $source" >&2
+                # Validate the file contains IP ranges
+                if head -n1 "$temp_file" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+$' >/dev/null; then
+                    cat "$temp_file"  # Only IP ranges go to stdout
+                    rm -f "$temp_file"
+                    return 0
+                fi
+            fi
+        fi
+    done
+    
+    rm -f "$temp_file"
+    warn "Could not download IP ranges for country $country_code" >&2
+    warn "Split tunneling will not work properly. Consider:" >&2
+    warn "  1. Check your internet connection" >&2
+    warn "  2. Verify country code is valid (e.g., US, GB, CN, DE)" >&2
+    warn "  3. Try running with DEBUG=1 for more details" >&2
+    return 1
+}
+
+# Generate routing scripts for split tunneling
+function generate_routing_scripts() {
+    local local_country="$1"
+    local output_dir="$(dirname "$2")"
+    local config_name="$(basename "$2" .conf)"
+    
+    if [ -z "$local_country" ]; then
+        return 0
+    fi
+    
+    local country_ips
+    if ! country_ips=$(get_country_ips "$local_country"); then
+        return 1
+    fi
+    
+    # Create PostUp script for adding local routes
+    local post_up_script="$output_dir/${config_name}-post-up.sh"
+    cat > "$post_up_script" << 'EOF'
+#!/bin/bash
+# WireGuard PostUp script for split tunneling
+# Routes local country traffic directly, others through VPN
+
+COUNTRY_ROUTES=(
+EOF
+    
+    # Add country IP ranges to the script
+    while IFS= read -r ip_range; do
+        [ -n "$ip_range" ] && echo "    \"$ip_range\"" >> "$post_up_script"
+    done <<< "$country_ips"
+    
+    cat >> "$post_up_script" << 'EOF'
+)
+
+# Get the default gateway and interface
+DEFAULT_GW=$(ip route show default | awk '/default/ {print $3}' | head -n1)
+DEFAULT_IF=$(ip route show default | awk '/default/ {print $5}' | head -n1)
+
+if [ -n "$DEFAULT_GW" ] && [ -n "$DEFAULT_IF" ]; then
+    echo "Setting up split tunneling routes..."
+    echo "Default gateway: $DEFAULT_GW via $DEFAULT_IF"
+    
+    # Add routes for local country IPs to go through default gateway
+    for route in "${COUNTRY_ROUTES[@]}"; do
+        echo "Adding local route: $route via $DEFAULT_GW"
+        ip route add "$route" via "$DEFAULT_GW" dev "$DEFAULT_IF" 2>/dev/null || true
+    done
+    
+    echo "Split tunneling routes added successfully"
+else
+    echo "Warning: Could not detect default gateway for split tunneling"
+fi
+EOF
+    
+    # Create PostDown script for removing local routes  
+    local post_down_script="$output_dir/${config_name}-post-down.sh"
+    cat > "$post_down_script" << 'EOF'
+#!/bin/bash
+# WireGuard PostDown script for split tunneling
+# Removes local country routes
+
+COUNTRY_ROUTES=(
+EOF
+    
+    # Add country IP ranges to the script
+    while IFS= read -r ip_range; do
+        [ -n "$ip_range" ] && echo "    \"$ip_range\"" >> "$post_down_script"
+    done <<< "$country_ips"
+    
+    cat >> "$post_down_script" << 'EOF'
+)
+
+echo "Removing split tunneling routes..."
+
+# Remove routes for local country IPs
+for route in "${COUNTRY_ROUTES[@]}"; do
+    echo "Removing local route: $route"
+    ip route del "$route" 2>/dev/null || true
+done
+
+echo "Split tunneling routes removed"
+EOF
+    
+    chmod +x "$post_up_script" "$post_down_script"
+    
+    # Send info to stderr to avoid mixing with return value
+    info "Created routing scripts:" >&2
+    info "  PostUp: $post_up_script" >&2 
+    info "  PostDown: $post_down_script" >&2
+    
+    # Return script paths for inclusion in config (stdout only)
+    echo "$post_up_script|$post_down_script"
+}
+
+# Calculate IP ranges to exclude from VPN (for AllowedIPs)
+function calculate_vpn_routes() {
+    local local_country="$1"
+    
+    if [ -z "$local_country" ]; then
+        # No split tunneling - route everything through VPN
+        echo "0.0.0.0/0"
+        return 0
+    fi
+    
+    # For split tunneling, we route everything EXCEPT private ranges
+    # The PostUp script will handle local country routing
+    echo "0.0.0.0/5, 8.0.0.0/7, 11.0.0.0/8, 12.0.0.0/6, 16.0.0.0/4, 32.0.0.0/3, 64.0.0.0/2, 128.0.0.0/3, 160.0.0.0/5, 168.0.0.0/6, 172.0.0.0/12, 172.32.0.0/11, 172.64.0.0/10, 172.128.0.0/9, 173.0.0.0/8, 174.0.0.0/7, 176.0.0.0/4, 192.0.0.0/9, 192.128.0.0/11, 192.160.0.0/13, 192.169.0.0/16, 192.170.0.0/15, 192.172.0.0/14, 192.176.0.0/12, 192.192.0.0/10, 193.0.0.0/8, 194.0.0.0/7, 196.0.0.0/6, 200.0.0.0/5, 208.0.0.0/4"
+}
+
+# Generate optimal DNS servers based on country
+function get_optimal_dns() {
+    local custom_dns="$1"
+    local local_country="$2"
+    
+    # If custom DNS specified, use it
+    if [ -n "$custom_dns" ]; then
+        echo "$custom_dns"
+        return 0
+    fi
+    
+    # Auto-select DNS based on local country
+    local country_code=$(echo "$local_country" | tr '[:lower:]' '[:upper:]')
+    
+    case "$country_code" in
+        "CN"|"CHINA")
+            # China - use local DNS providers
+            echo "223.5.5.5, 119.29.29.29"
+            ;;
+        "RU"|"RUSSIA") 
+            # Russia - use Yandex DNS
+            echo "77.88.8.8, 77.88.8.1"
+            ;;
+        "DE"|"GERMANY")
+            # Germany - use Quad9
+            echo "9.9.9.9, 149.112.112.112" 
+            ;;
+        "US"|"UNITED STATES")
+            # US - use Cloudflare and Quad9
+            echo "1.1.1.1, 9.9.9.9"
+            ;;
+        *)
+            # Default - use Cloudflare and Google DNS
+            echo "1.1.1.1, 8.8.8.8"
+            ;;
+    esac
+}
+
+# Generate client configuration
+function generate_client_config() {
+    local output_file="$1"
+    
+    info "Generating WireGuard client configuration..."
+    
+    # Generate keys if not provided
+    if [ -z "$client_private_key" ]; then
+        info "Generating client keypair..."
+        local keypair
+        keypair=$(generate_keypair)
+        client_private_key=$(echo "$keypair" | cut -d'|' -f1)
+        local client_public_key_generated
+        client_public_key_generated=$(echo "$keypair" | cut -d'|' -f2)
+        info "Generated client public key: $client_public_key_generated"
+    fi
+    
+    # Get optimal DNS
+    local dns_servers
+    dns_servers=$(get_optimal_dns "$dns" "$local_country")
+    
+    # Generate routing scripts and AllowedIPs
+    local routing_scripts=""
+    local allowed_ips
+    
+    if [ -n "$local_country" ]; then
+        info "Configuring split tunneling for country: $local_country"
+        
+        # Generate routing scripts
+        routing_scripts=$(generate_routing_scripts "$local_country" "$output_file")
+        if [ $? -eq 0 ] && [ -n "$routing_scripts" ]; then
+            local post_up_script=$(echo "$routing_scripts" | cut -d'|' -f1)
+            local post_down_script=$(echo "$routing_scripts" | cut -d'|' -f2)
+            
+            # Use broad routing through VPN, scripts will handle local country exceptions
+            allowed_ips=$(calculate_vpn_routes "$local_country")
+            
+            # Create enhanced configuration with routing scripts
+            cat > "$output_file" << EOF
+[Interface]
+# Client private key
+PrivateKey = $client_private_key
+# Client VPN IP address  
+Address = $client_ip/32
+# DNS servers (optimized for local country: $local_country)
+DNS = $dns_servers
+# Split tunneling scripts (route local country traffic directly)
+PostUp = $post_up_script
+PostDown = $post_down_script
+
+[Peer]
+# Server public key
+PublicKey = $server_public_key
+# Server endpoint (IP:Port)
+Endpoint = $server_endpoint:$server_port
+# Traffic to route through VPN (excludes local country)
+AllowedIPs = $allowed_ips
+# Keep connection alive
+PersistentKeepalive = 25
+EOF
+        else
+            warn "Failed to setup split tunneling, using full tunnel mode"
+            allowed_ips="0.0.0.0/0"
+            # Create basic configuration
+            cat > "$output_file" << EOF
+[Interface]
+# Client private key
+PrivateKey = $client_private_key
+# Client VPN IP address
+Address = $client_ip/32
+# DNS servers
+DNS = $dns_servers
+
+[Peer]
+# Server public key
+PublicKey = $server_public_key
+# Server endpoint (IP:Port)
+Endpoint = $server_endpoint:$server_port
+# Traffic to route through VPN (all traffic)
+AllowedIPs = $allowed_ips
+# Keep connection alive
+PersistentKeepalive = 25
+EOF
+        fi
+    else
+        # Full tunnel mode
+        allowed_ips="0.0.0.0/0"
+        info "Configuring full tunnel mode (all traffic through VPN)"
+        
+        cat > "$output_file" << EOF
+[Interface]
+# Client private key
+PrivateKey = $client_private_key
+# Client VPN IP address
+Address = $client_ip/32
+# DNS servers (global optimization)
+DNS = $dns_servers
+
+[Peer]
+# Server public key
+PublicKey = $server_public_key
+# Server endpoint (IP:Port) 
+Endpoint = $server_endpoint:$server_port
+# Traffic to route through VPN (all traffic)
+AllowedIPs = $allowed_ips
+# Keep connection alive
+PersistentKeepalive = 25
+EOF
+    fi
+
+    chmod 600 "$output_file"
+    
+    info "✅ Client configuration created: $output_file"
+    info "Configuration details:"
+    info "  Client IP: $client_ip"
+    info "  Server endpoint: $server_endpoint:$server_port"
+    info "  DNS servers: $dns_servers"
+    
+    if [ -n "$local_country" ] && [ -n "$routing_scripts" ]; then
+        info "  🌍 Split tunneling: $local_country traffic → Direct routing"
+        info "  🌐 International traffic → VPN tunnel"
+        info "  📜 Routing scripts: Created for automatic setup"
+    elif [ -n "$local_country" ]; then
+        warn "  ⚠️  Split tunneling failed, using full tunnel mode"
+    else
+        info "  🌐 Routing mode: Full tunnel (all traffic through VPN)"
+    fi
+    
+    # Generate QR code if available  
+    if installed qrencode; then
+        info ""
+        info "📱 QR Code for mobile import:"
+        qrencode -t ansiutf8 < "$output_file"
+    else
+        info ""
+        info "📱 To generate QR code for mobile:"
+        info "  Install qrencode: apt install qrencode"
+        info "  Then run: qrencode -t ansiutf8 < $output_file"
+    fi
+    
+    info ""
+    info "🔑 Client public key (add this to server config):"
+    if [ -n "$client_private_key" ]; then
+        echo "$client_private_key" | wg pubkey
+    else
+        info "  (Generate keypair first to get public key)"
+    fi
+}
+
+# Usage information
+function usage() {
+    info "WireGuard Client Configuration Generator with GeoIP Routing"
+    info ""
+    info "Usage: $(basename "$0") [options]"
+    info ""
+    info "Required options:"
+    info "  --client-ip IP          Client VPN IP address"
+    info "  --server-ip IP          Server public IP address" 
+    info "  --server-key KEY        Server public key"
+    info "  -o, --output FILE       Output configuration file"
+    info ""
+    info "Optional options:"
+    info "  -h, --help              Show this help message"
+    info "  --client-key KEY        Client private key (auto-generated if not provided)"
+    info "  --port PORT             Server port (default: 51820)"
+    info "  --dns SERVERS           DNS servers (auto-selected if not provided)"
+    info "  --local-country CODE    Country code for split tunneling (e.g., US, CN, DE)"
+    info "  --debug                 Enable debug output"
+    info ""
+    info "Split Tunneling:"
+    info "  --local-country US      Route US traffic locally, others through VPN"
+    info "  --local-country CN      Route China traffic locally, others through VPN"
+    info "  --local-country DE      Route Germany traffic locally, others through VPN"
+    info "  (omit for full tunnel mode)"
+    info ""
+    info "Examples:"
+    info ""
+    info "  # Basic client config (full tunnel)"
+    info "  $(basename "$0") --client-ip 10.0.0.2 --server-ip 203.0.113.1 \\"
+    info "    --server-key 'SERVER_PUBLIC_KEY_HERE' -o client.conf"
+    info ""
+    info "  # Split tunneling (US traffic local, others via VPN)"
+    info "  $(basename "$0") --client-ip 10.0.0.2 --server-ip 203.0.113.1 \\"
+    info "    --server-key 'SERVER_PUBLIC_KEY_HERE' --local-country US -o client.conf"
+    info ""
+    info "  # Custom DNS and port"
+    info "  $(basename "$0") --client-ip 10.0.0.2 --server-ip 203.0.113.1 \\"
+    info "    --server-key 'SERVER_PUBLIC_KEY_HERE' --port 51821 \\"
+    info "    --dns '1.1.1.1,8.8.8.8' -o client.conf"
+    info ""
+    info "  # With existing client key"
+    info "  $(basename "$0") --client-ip 10.0.0.2 --server-ip 203.0.113.1 \\"
+    info "    --server-key 'SERVER_PUBLIC_KEY_HERE' \\"
+    info "    --client-key 'CLIENT_PRIVATE_KEY_HERE' -o client.conf"
+}
+
+# Default values
+client_ip=""
+server_endpoint=""
+server_public_key=""
+client_private_key=""
+server_port="51820"
+dns=""
+local_country=""
+output_file=""
+debug_mode=0
+
+# Parse command line arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        --client-ip)
+            client_ip="$2"
+            shift 2
+            ;;
+        --server-ip)
+            server_endpoint="$2"
+            shift 2
+            ;;
+        --server-key)
+            server_public_key="$2"
+            shift 2
+            ;;
+        --client-key)
+            client_private_key="$2"
+            shift 2
+            ;;
+        --port)
+            server_port="$2"
+            shift 2
+            ;;
+        --dns)
+            dns="$2"
+            shift 2
+            ;;
+        --local-country)
+            local_country="$2"
+            shift 2
+            ;;
+        -o|--output)
+            output_file="$2"
+            shift 2
+            ;;
+        --debug)
+            debug_mode=1
+            export DEBUG=1
+            shift
+            ;;
+        *)
+            error "Unknown option: $1. Use --help for usage information."
+            ;;
+    esac
+done
+
+# Validate required parameters
+if [ -z "$client_ip" ]; then
+    error "Client IP is required. Use --client-ip IP"
+fi
+
+if [ -z "$server_endpoint" ]; then
+    error "Server IP is required. Use --server-ip IP"
+fi
+
+if [ -z "$server_public_key" ]; then
+    error "Server public key is required. Use --server-key KEY"
+fi
+
+if [ -z "$output_file" ]; then
+    error "Output file is required. Use -o FILE or --output FILE"
+fi
+
+# Validate IP addresses
+if ! validate_ip "$client_ip"; then
+    error "Invalid client IP address: $client_ip"
+fi
+
+if ! validate_ip "$server_endpoint"; then
+    error "Invalid server IP address: $server_endpoint"
+fi
+
+# Validate port
+if ! validate_port "$server_port"; then
+    error "Invalid port number: $server_port (must be 1-65535)"
+fi
+
+# Validate country code if provided
+if [ -n "$local_country" ]; then
+    if [ ${#local_country} -ne 2 ]; then
+        error "Country code must be 2 characters (e.g., US, CN, DE, GB)"
+    fi
+fi
+
+info "WireGuard Client Configuration Generator"
+info "======================================"
+
+# Ensure required tools
+ensure_tools
+
+# Generate configuration
+generate_client_config "$output_file"
+
+info ""
+info "✅ Configuration complete!"
+info ""
+info "Next steps:"
+info "1. Copy the configuration to your client device: $output_file"
+info "2. Import into WireGuard client application"
+if [ -n "$local_country" ]; then
+    info "3. Verify split tunneling: Local traffic should go direct, international via VPN"
+else
+    info "3. All traffic will be routed through the VPN"
+fi
+info ""
+info "🔑 Share this public key with your server administrator:"
+if [ -n "$client_private_key" ]; then
+    echo "$client_private_key" | wg pubkey
+else
+    info "  (Key will be shown after generation)"
+fi
