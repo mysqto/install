@@ -6,6 +6,8 @@
 #   --client user@host:    install frpc on this machine, fetching server bindPort/token via SSH
 #   --gen-client PATH:     on the server, emit an frpc.toml to PATH (no install, no SSH)
 #   --from-config PATH:    install frpc on this machine using a pre-generated frpc.toml
+#   --add-proxy SPEC:      append SPEC to the existing frpc.toml and reload the service
+#                          (purely additive — preserves serverAddr/token/other proxies)
 
 function warn()  { echo -e "\033[1;33m${*}\033[0m"; }
 function error() { echo -e "\033[1;31m${*}\033[0m"; exit 1; }
@@ -144,6 +146,68 @@ function parse_frps_field() {
     echo "$1" \
         | grep -E "^[[:space:]]*($2)[[:space:]]*=" \
         | head -n1 | sed 's/.*=[[:space:]]*//' | tr -d '"' | tr -d "'" | tr -d ' '
+}
+
+function delete_proxies_by_name() {
+    # Strip any [[proxies]] block whose name= value matches one of $2..$N from $1.
+    # Used by --add-proxy so re-adding a proxy with the same name replaces (instead of duplicates).
+    local config="$1"; shift
+    [ ! -f "$config" ] && return 0
+    [ $# -eq 0 ] && return 0
+
+    local names_re
+    names_re=$(printf '%s|' "$@"); names_re="${names_re%|}"
+
+    local tmp
+    tmp=$(mktemp -t frpc-XXXXXX) || error "failed to create temp file"
+
+    awk -v re="^(${names_re})$" '
+        function flush() {
+            if (in_p) {
+                if (name !~ re) printf "%s", buf
+            }
+            buf = ""; in_p = 0; name = ""
+        }
+        /^[[:space:]]*\[\[proxies\]\]/ { flush(); in_p = 1; buf = $0 ORS; next }
+        /^[[:space:]]*\[/              { flush(); print; next }
+        in_p {
+            buf = buf $0 ORS
+            if ($0 ~ /^[[:space:]]*name[[:space:]]*=/) {
+                v = $0
+                sub(/.*=[[:space:]]*"?/, "", v)
+                sub(/"?[[:space:]]*$/, "", v)
+                name = v
+            }
+            next
+        }
+        { print }
+        END { flush() }
+    ' "$config" > "$tmp" && mv "$tmp" "$config"
+}
+
+function reload_service() {
+    # Restart frps/frpc without re-rendering the unit file.
+    local name="$1"
+    case "$(uname -s)" in
+        Linux)
+            installed systemctl || return 0
+            if systemctl restart "${name}.service" 2>/dev/null; then
+                info "${name}.service restarted"
+            else
+                warn "could not restart ${name}.service (is it installed?)"
+            fi
+            ;;
+        Darwin)
+            installed launchctl || return 0
+            local label="com.fatedier.${name}" domain
+            if [ "$user_mode" = true ]; then domain="gui/$(id -u)"; else domain="system"; fi
+            if launchctl kickstart -k "${domain}/${label}" >/dev/null 2>&1; then
+                info "${label} restarted via launchd"
+            else
+                warn "could not kickstart ${domain}/${label} (is the LaunchAgent/Daemon loaded?)"
+            fi
+            ;;
+    esac
 }
 
 function emit_ssh_hint() {
@@ -522,6 +586,42 @@ function install_client_from_config() {
     emit_ssh_hint "$config_dir/frpc.toml" "${SUDO_USER:-$USER}"
 }
 
+function install_add_proxy() {
+    [ ${#proxies[@]} -eq 0 ] && error "--add-proxy requires at least one proxy spec"
+
+    local config="$config_dir/frpc.toml"
+    [ ! -f "$config" ] && error "no frpc config at $config — install the client first"
+
+    [ -z "$client_name" ] && client_name="$(hostname -s 2>/dev/null || echo client)"
+
+    info "adding ${#proxies[@]} proxy/proxies to $config (client_name=$client_name)"
+
+    # Validate specs up front and collect the full names that write_proxies_to will produce,
+    # so we can delete any existing blocks with the same names (replace semantics).
+    local -a new_names=()
+    local proxy p_name p_type p_lip p_lport p_rport
+    for proxy in "${proxies[@]}"; do
+        IFS=: read -r p_name p_type p_lip p_lport p_rport <<< "$proxy"
+        [ -z "$p_name" ]  && error "invalid --add-proxy spec '$proxy' (need NAME:TYPE:LIP:LPORT:RPORT)"
+        [ -z "$p_type" ]  && error "invalid --add-proxy spec '$proxy' (missing type)"
+        [ -z "$p_lport" ] && error "invalid --add-proxy spec '$proxy' (missing local port)"
+        [ -z "$p_rport" ] && error "invalid --add-proxy spec '$proxy' (missing remote port)"
+        new_names+=("${client_name}-${p_name}")
+    done
+
+    delete_proxies_by_name "$config" "${new_names[@]}"
+    write_proxies_to "$config"
+    chmod 644 "$config"
+
+    reload_service "frpc"
+
+    info ""
+    info "FRP client config updated:"
+    info "  config      : $config"
+
+    emit_ssh_hint "$config" "${SUDO_USER:-$USER}"
+}
+
 function gen_client_config() {
     [ -z "$gen_client_path" ] && error "--gen-client requires output path"
 
@@ -609,6 +709,15 @@ From-config mode (run on the NAT'd box with a pre-generated frpc.toml):
                           (PATH is copied to <config-dir>/frpc.toml unless it
                           already lives there)
 
+Add-proxy mode (run on the NAT'd box; preserves existing config):
+  --add-proxy SPEC        append SPEC to <config-dir>/frpc.toml and restart the
+                          service. SPEC = NAME:TYPE:LIP:LPORT:RPORT (same as
+                          --proxy). Repeatable. Replaces any existing proxy
+                          with the same computed name (<client-name>-NAME).
+                          Does not touch the binary, the unit file, or the
+                          serverAddr/token header.
+  --name NAME             override client name prefix (default: hostname -s)
+
 Common:
   --prefix DIR            install prefix for the binary
                           (default: /usr/local as root, \$HOME/.local in user-mode)
@@ -661,6 +770,7 @@ while [ $# -gt 0 ]; do
         --client)          mode="client"; ssh_target="$2"; shift 2 ;;
         --gen-client)      mode="gen-client"; gen_client_path="$2"; shift 2 ;;
         --from-config)     mode="from-config"; from_config_path="$2"; shift 2 ;;
+        --add-proxy)       mode="add-proxy"; proxies+=("$2"); shift 2 ;;
         --ssh-port)        ssh_port="$2"; shift 2 ;;
         --ssh-key)         ssh_key="$2"; shift 2 ;;
         --ssh-pass)        ssh_pass="$2"; shift 2 ;;
@@ -705,5 +815,6 @@ case "$mode" in
     client)      install_client ;;
     gen-client)  gen_client_config ;;
     from-config) install_client_from_config ;;
+    add-proxy)   install_add_proxy ;;
     *) error "unknown mode: $mode" ;;
 esac
