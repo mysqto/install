@@ -78,8 +78,8 @@ RUN mkdir -p /var/lib/tailscale /var/run/tailscale /etc/shadowsocks
 VOLUME /var/lib/tailscale
 
 # --- Tailscale ---
-ENV TS_AUTHKEY= \
-    TS_HOSTNAME= \
+# Secrets (TS_AUTHKEY) are supplied at runtime with -e, never declared here.
+ENV TS_HOSTNAME= \
     TS_ROUTES= \
     TS_ACCEPT_ROUTES=true \
     TS_ACCEPT_DNS=false \
@@ -92,8 +92,8 @@ ENV TS_AUTHKEY= \
     TS_PORT=41641
 
 # --- Shadowsocks (entry point for external clients) ---
+# Secrets (SS_PASSWORD) are supplied at runtime with -e, never declared here.
 ENV SS_PORT=8388 \
-    SS_PASSWORD= \
     SS_METHOD=chacha20-ietf-poly1305 \
     SS_MODE=tcp_and_udp \
     SS_OBFS=http \

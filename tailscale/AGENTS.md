@@ -57,7 +57,7 @@ port published TCP+UDP. Explicit CLI flags override values from `--env-file`.
 | `SS_PORT` | `8388` | Shadowsocks port |
 | `SS_PASSWORD` | auto | SS password (generated + logged if blank) |
 | `SS_METHOD` | `chacha20-ietf-poly1305` | AEAD cipher |
-| `SS_MODE` | `tcp_and_udp` | `tcp` / `udp` / `tcp_and_udp` |
+| `SS_MODE` | `tcp_and_udp` | `tcp_only` / `udp_only` / `tcp_and_udp` |
 | `SS_OBFS` | `http` | `http` / `tls` / `none` |
 | `SS_OBFS_HOST` | — | Client-side masquerade host (logged only) |
 
@@ -89,3 +89,9 @@ docker exec tailscale-ss tailscale --socket=/var/run/tailscale/tailscaled.sock s
   setting; the entrypoint only logs it.
 - Auth key is only needed for the first login; the `tailscale-ss-state` volume
   persists the node identity afterwards.
+- `docker --env-file` does NOT strip inline `#` comments — everything after `=`
+  is literal. The entrypoint `_clean()`s the constrained SS fields (method,
+  mode, obfs, obfs-host) defensively, but `.tailscale.env` must still keep
+  comments on their own lines.
+- Secrets (`TS_AUTHKEY`, `SS_PASSWORD`) are runtime `-e` only, never `ENV` in
+  the Dockerfile (avoids the buildkit `SecretsUsedInArgOrEnv` warning).

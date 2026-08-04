@@ -112,13 +112,24 @@ tailscale_up() {
 # ---------------------------------------------------------------------------
 # shadowsocks-rust (external entry point)
 # ---------------------------------------------------------------------------
+# Strip an inline "# comment" and surrounding whitespace. docker --env-file does
+# NOT honor inline comments, so a value like "tcp_and_udp   # note" arrives
+# literally; sanitize the constrained fields so a stray comment can't corrupt
+# the generated config. (Not applied to SS_PASSWORD, which may contain '#'.)
+_clean() {
+    local v="${1%%#*}"                 # drop inline comment
+    v="${v#"${v%%[![:space:]]*}"}"     # ltrim
+    v="${v%"${v##*[![:space:]]}"}"     # rtrim
+    printf '%s' "$v"
+}
+
 start_shadowsocks() {
-    local port="${SS_PORT:-8388}"
-    local method="${SS_METHOD:-chacha20-ietf-poly1305}"
-    local mode="${SS_MODE:-tcp_and_udp}"
+    local port;   port="$(_clean "${SS_PORT:-8388}")"
+    local method; method="$(_clean "${SS_METHOD:-chacha20-ietf-poly1305}")"
+    local mode;   mode="$(_clean "${SS_MODE:-tcp_and_udp}")"
+    local obfs;   obfs="$(_clean "${SS_OBFS:-http}")"
+    local obfs_host; obfs_host="$(_clean "${SS_OBFS_HOST:-}")"
     local password="${SS_PASSWORD:-}"
-    local obfs="${SS_OBFS:-http}"
-    local obfs_host="${SS_OBFS_HOST:-}"
 
     [ -z "$password" ] && {
         password="$(pwgen -ns 32 1 2>/dev/null || tr -dc 'A-Za-z0-9' </dev/urandom | head -c 32)"
