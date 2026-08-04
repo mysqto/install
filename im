@@ -696,6 +696,7 @@ function usage() {
     info "    im -ts --authkey tskey-auth-xxxx --hostname ss-gw --ss-port 8388   # join tailnet + SS entry point"
     info "    im -ts --authkey tskey-auth-xxxx --routes 192.168.1.0/24           # also act as subnet router"
     info "    im -ts --env-file /path/.tailscale.env                             # all TS_*/SS_* from an env file"
+    info "    im -ts --rebuild --env-file /path/.tailscale.env                   # force image rebuild (pick up updated Dockerfile/entrypoint)"
     info "System Updates & Maintenance:"
     info "  -uu   | --update                         update the server"
     info "  -uuu  | --upgrade                        upgrade the server if needed"

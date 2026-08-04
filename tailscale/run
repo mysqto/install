@@ -57,7 +57,7 @@ Runtime options:
   --env-file <file>    KEY=VALUE file (TS_*, SS_*) passed to the container
   --name <name>        Container name (default: $container)
   --state-volume <v>   Named volume for tailscaled state (default: $state_volume)
-  --build              Force rebuild of the image
+  --build, --rebuild   Force rebuild of the image (otherwise a cached image is reused)
   --help               Show this help
 
 Examples:
@@ -87,7 +87,7 @@ while [ $# -gt 0 ]; do
         --env-file)             shift; env_file=$1; shift ;;
         --name)                 shift; container=$1; shift ;;
         --state-volume)         shift; state_volume=$1; shift ;;
-        --build)                force_build="1"; shift ;;
+        --build|--rebuild)      force_build="1"; shift ;;
         --help|-h)              usage ;;
         *)                      warn "unknown option: $1"; shift ;;
     esac
