@@ -558,6 +558,11 @@ function install_ss2any() {
     curl ${CURL_OPTS} -sL "$base_url/ss2any/install" | bash -s -- "$@"
 }
 
+function install_tailscale() {
+    info "Installing tailscale node + Shadowsocks entry point (Docker)"
+    curl ${CURL_OPTS} -sL "$base_url/tailscale/install" | bash -s -- "$@"
+}
+
 function set_hostname() {
     local new_hostname="$1"
     [ -z "$new_hostname" ] && error "hostname is required when setting hostname"
@@ -613,6 +618,7 @@ _install_fr24=false
 _install_ddns=false
 _install_frp=false
 _install_ss2any=false
+_install_tailscale=false
 _set_hostname=false
 _hostname_value=""
 v2ray_mode=""
@@ -621,6 +627,7 @@ fr24_args=()
 ddns_args=()
 frp_args=()
 ss2any_args=()
+tailscale_args=()
 shadow_tls_args=()
 wg_client=()
 username=""
@@ -652,6 +659,7 @@ function usage() {
     info "  -ddns | --ddns [options]                 install Cloudflare DDNS"
     info "  -frp  | --frp [options]                  install FRP (server/client/gen-client)"
     info "  -s2a  | --ss2any [options]               install ss2any (SS inbound -> any-protocol outbound)"
+    info "  -ts   | --tailscale [options]            install tailscale node + SS entry point (Docker)"
     info ""
     info "  V2Ray (Xray) Examples:"
     info "    im -4 -v2s --port 10086                 # server with IPv4 and custom port"
@@ -683,6 +691,11 @@ function usage() {
     info "    im -s2a --link 'vless://...' --obfs-host microsoft.com --setup                       # simple-obfs (http)"
     info "    im -s2a --link 'vless://...' --obfs-host microsoft.com --setup --surge               # also print Surge line"
     info "    im -s2a --surge                                                                       # just print Surge line from /etc/default/ss2any"
+    info ""
+    info "  Tailscale Examples (Docker; runs as the invoking user):"
+    info "    im -ts --authkey tskey-auth-xxxx --hostname ss-gw --ss-port 8388   # join tailnet + SS entry point"
+    info "    im -ts --authkey tskey-auth-xxxx --routes 192.168.1.0/24           # also act as subnet router"
+    info "    im -ts --env-file /path/.tailscale.env                             # all TS_*/SS_* from an env file"
     info "System Updates & Maintenance:"
     info "  -uu   | --update                         update the server"
     info "  -uuu  | --upgrade                        upgrade the server if needed"
@@ -922,6 +935,15 @@ while [ $# -gt 0 ]; do
                 shift
             done
             ;;
+        -ts | --tailscale)
+            _install_tailscale=true
+            shift
+            # Collect all remaining arguments for tailscale
+            while [[ $# -gt 0 ]]; do
+                tailscale_args+=("$1")
+                shift
+            done
+            ;;
         -hn | --hostname)
             _set_hostname=true
             _hostname_value="$2"
@@ -1013,6 +1035,8 @@ action() {
         install_frp "${frp_args[@]}"
     elif [ "$_install_ss2any" == true ]; then
         install_ss2any "${ss2any_args[@]}"
+    elif [ "$_install_tailscale" == true ]; then
+        install_tailscale "${tailscale_args[@]}"
     elif [ "$_set_hostname" == true ]; then
         set_hostname "$_hostname_value"
     elif [ "$_auto" == true ]; then

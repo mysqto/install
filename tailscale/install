@@ -1,0 +1,202 @@
+#!/bin/bash
+# tailscale installer — Docker setup for a Tailscale node + Shadowsocks entry
+# point. Meant to be curl-piped from im:
+#
+#   curl -sL https://debian.lol/tailscale/install | bash -s -- --authkey tskey-... --ss-port 8388
+#
+# Unlike the systemd installers in this repo, this one is Docker-based: it
+# fetches the Dockerfile + entrypoint from base_url, builds the image, and runs
+# the container. Docker is installed (as root) only if missing; the image build
+# and container run happen as the INVOKING user (the docker-group member),
+# never as root — so the container is owned by that user.
+set -euo pipefail
+
+function info()  { echo -e "\033[1;32m${*}\033[0m"; }
+function warn()  { echo -e "\033[1;33m${*}\033[0m" >&2; }
+function error() { echo -e "\033[1;31m${*}\033[0m" >&2; exit 1; }
+function installed() { command -v "$1" >/dev/null 2>&1; }
+
+[ -z "${CURL_OPTS:-}" ] && CURL_OPTS=""
+
+# ---------------------------------------------------------------------------
+# base_url resolution (debian.lol, github raw fallback) — mirrors im.
+# ---------------------------------------------------------------------------
+base_url="https://debian.lol"
+github_base="https://raw.githubusercontent.com/mysqto/install/gh-pages"
+if ! curl ${CURL_OPTS} -sL --connect-timeout 5 "$base_url" >/dev/null 2>&1; then
+    warn "Failed to connect to $base_url, trying $github_base"
+    base_url="$github_base"
+    curl ${CURL_OPTS} -sL --connect-timeout 5 "$base_url" >/dev/null 2>&1 \
+        || error "Failed to connect to $base_url"
+fi
+
+# ---------------------------------------------------------------------------
+# Who runs docker? The invoking (non-root) user, via the docker group.
+# When called through im (already root) SUDO_USER holds the original user.
+# ---------------------------------------------------------------------------
+target_user="${SUDO_USER:-$(id -un)}"
+[ "$target_user" = "root" ] && target_user=""   # logged in as root directly: no drop-down possible
+
+# Run a command as the invoking user when we have one and we're currently root;
+# otherwise run it directly.
+as_user() {
+    if [ -n "$target_user" ] && [ "$(id -u)" -eq 0 ]; then
+        sudo -u "$target_user" "$@"
+    else
+        "$@"
+    fi
+}
+
+image="tailscale-ss"
+container="tailscale-ss"
+state_volume="tailscale-ss-state"
+
+authkey="${TS_AUTHKEY:-}"
+hostname=""
+routes=""
+exit_node=""
+advertise_exit_node=""
+ss_port=""
+ss_password="${SS_PASSWORD:-}"
+obfs_host=""
+bind_ip="0.0.0.0"
+env_file=""
+force_build=""
+
+usage() {
+    cat <<EOF
+Usage: tailscale/install [options]
+
+Tailnet options:
+  --authkey <key>       Tailnet auth key (or TS_AUTHKEY). Required on first login.
+  --hostname <name>     Node hostname in the tailnet
+  --routes <cidrs>      Advertise subnet routes (comma-separated; subnet router)
+  --exit-node <ip>      Egress through this tailnet exit node
+  --advertise-exit-node Offer this node as an exit node
+
+Shadowsocks options:
+  --ss-port <port>      SS server port (default 8388)
+  --ss-password <pw>    SS password (auto-generated + logged if omitted)
+  --obfs-host <host>    obfs masquerade host (client-side hint)
+
+Runtime options:
+  --bind <ip>           Host bind for the published SS port (default 0.0.0.0)
+  --env-file <file>     KEY=VALUE file (TS_*, SS_*) passed to the container
+  --name <name>         Container name (default: $container)
+  --state-volume <v>    tailscaled state volume (default: $state_volume)
+  --build               Force image rebuild
+  --help                Show this help
+EOF
+    exit 1
+}
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --authkey)              shift; authkey="${1:-}"; shift ;;
+        --hostname)             shift; hostname="${1:-}"; shift ;;
+        --routes)               shift; routes="${1:-}"; shift ;;
+        --exit-node)            shift; exit_node="${1:-}"; shift ;;
+        --advertise-exit-node)  advertise_exit_node="true"; shift ;;
+        --ss-port)              shift; ss_port="${1:-}"; shift ;;
+        --ss-password)          shift; ss_password="${1:-}"; shift ;;
+        --obfs-host)            shift; obfs_host="${1:-}"; shift ;;
+        --bind)                 shift; bind_ip="${1:-}"; shift ;;
+        --env-file)             shift; env_file="${1:-}"; shift ;;
+        --name)                 shift; container="${1:-}"; shift ;;
+        --state-volume)         shift; state_volume="${1:-}"; shift ;;
+        --build)                force_build="1"; shift ;;
+        --help|-h)              usage ;;
+        *)                      warn "unknown option: $1"; shift ;;
+    esac
+done
+
+[ -n "$env_file" ] && [ ! -f "$env_file" ] && error "env file not found: $env_file"
+
+# ---------------------------------------------------------------------------
+# Ensure docker is available; install it (root) + add the user to the docker
+# group only if it's missing.
+# ---------------------------------------------------------------------------
+if ! installed docker; then
+    warn "docker not found, installing it..."
+    if [ "$(id -u)" -ne 0 ]; then
+        error "docker is not installed and this is not root — re-run via 'sudo im --docker' or install docker first"
+    fi
+    curl ${CURL_OPTS} -sL "$base_url/docker" | bash || error "docker installation failed"
+    installed docker || error "docker installation failed"
+    if [ -n "$target_user" ]; then
+        usermod -aG docker "$target_user" || warn "failed to add $target_user to docker group"
+        info "added $target_user to the docker group"
+    fi
+fi
+
+# Verify the invoking user can actually reach the docker daemon. sudo -u runs
+# initgroups(), so a freshly-added docker group is already effective here.
+if ! as_user docker version >/dev/null 2>&1; then
+    if [ -n "$target_user" ]; then
+        error "user '$target_user' cannot access the docker daemon (not in the docker group?). Add with: usermod -aG docker $target_user"
+    fi
+    error "cannot access the docker daemon"
+fi
+info "running docker as: ${target_user:-$(id -un)}"
+
+# ---------------------------------------------------------------------------
+# Fetch the build context (Dockerfile + entrypoint) and build the image.
+# ---------------------------------------------------------------------------
+build_dir="$(mktemp -d -t tailscale-ss-XXXXXXXX)"
+trap 'rm -rf "$build_dir"' EXIT
+
+info "fetching build context from $base_url/tailscale ..."
+curl ${CURL_OPTS} -fsSL "$base_url/tailscale/Dockerfile"            -o "$build_dir/Dockerfile" \
+    || error "failed to fetch Dockerfile"
+curl ${CURL_OPTS} -fsSL "$base_url/tailscale/docker-entrypoint.sh"  -o "$build_dir/docker-entrypoint.sh" \
+    || error "failed to fetch docker-entrypoint.sh"
+# The build context must be readable by the invoking user.
+[ -n "$target_user" ] && [ "$(id -u)" -eq 0 ] && chown -R "$target_user" "$build_dir"
+
+if [ -n "$force_build" ] || ! as_user docker image inspect "$image" >/dev/null 2>&1; then
+    info "building $image image..."
+    as_user docker build -t "$image" "$build_dir" || error "docker build failed"
+fi
+
+# ---------------------------------------------------------------------------
+# Run the container (as the invoking user).
+# ---------------------------------------------------------------------------
+port="${ss_port:-8388}"
+
+if as_user docker ps -a --format '{{.Names}}' | grep -qx "$container"; then
+    info "removing existing container: $container"
+    as_user docker rm -f "$container" >/dev/null
+fi
+
+run_args=(
+    -d
+    --name "$container"
+    --hostname "${hostname:-$container}"
+    --restart unless-stopped
+    --cap-add NET_ADMIN
+    --device /dev/net/tun
+    -v "${state_volume}:/var/lib/tailscale"
+    -p "${bind_ip}:${port}:${port}/tcp"
+    -p "${bind_ip}:${port}:${port}/udp"
+)
+
+if [ -n "$routes" ] || [ -n "$advertise_exit_node" ]; then
+    run_args+=(--sysctl net.ipv4.ip_forward=1 --sysctl net.ipv6.conf.all.forwarding=1)
+fi
+
+[ -n "$env_file" ] && run_args+=(--env-file "$env_file")
+
+[ -n "$authkey" ]             && run_args+=(-e "TS_AUTHKEY=${authkey}")
+[ -n "$hostname" ]           && run_args+=(-e "TS_HOSTNAME=${hostname}")
+[ -n "$routes" ]             && run_args+=(-e "TS_ROUTES=${routes}")
+[ -n "$exit_node" ]          && run_args+=(-e "TS_EXIT_NODE=${exit_node}")
+[ -n "$advertise_exit_node" ] && run_args+=(-e "TS_ADVERTISE_EXIT_NODE=true")
+run_args+=(-e "SS_PORT=${port}")
+[ -n "$ss_password" ]        && run_args+=(-e "SS_PASSWORD=${ss_password}")
+[ -n "$obfs_host" ]          && run_args+=(-e "SS_OBFS_HOST=${obfs_host}")
+
+info "starting $container (SS on ${bind_ip}:${port} tcp+udp)..."
+as_user docker run "${run_args[@]}" "$image" >/dev/null || error "failed to start $container"
+
+info "started. follow logs with:  docker logs -f $container"
+info "the SS password (if auto-generated) is printed in those logs."

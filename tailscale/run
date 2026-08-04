@@ -1,0 +1,149 @@
+#!/bin/bash
+# tailscale host-side launcher.
+#
+# Builds the image if missing, then runs a long-lived container that joins your
+# tailnet (kernel-mode tailscaled over /dev/net/tun) and publishes a
+# shadowsocks-rust server. External SS clients tunnel through it to reach the
+# container, tailnet IPs (100.64.0.0/10), and any advertised subnet routes.
+#
+# Credentials (the tailnet auth key) are provided externally — via --authkey,
+# an --env-file, or the TS_AUTHKEY environment variable — never baked into the
+# image.
+set -euo pipefail
+
+info()  { echo -e "\033[1;32m${*}\033[0m" >&2; }
+warn()  { echo -e "\033[1;33m${*}\033[0m" >&2; }
+error() { echo -e "\033[1;31m${*}\033[0m" >&2; exit 1; }
+
+script_dir="$(cd "$(dirname "$0")" && pwd)"
+image="tailscale-ss"
+container="tailscale-ss"
+state_volume="tailscale-ss-state"
+
+authkey="${TS_AUTHKEY:-}"
+hostname=""
+routes=""
+exit_node=""
+advertise_exit_node=""
+ss_port=""
+ss_password="${SS_PASSWORD:-}"
+obfs_host=""
+bind_ip="0.0.0.0"
+env_file=""
+force_build=""
+
+usage() {
+    cat <<EOF
+Usage: $0 [options]
+
+Tailnet options:
+  --authkey <key>      Tailnet auth key (or set TS_AUTHKEY / put it in --env-file).
+                       Required on first login; reused from state afterwards.
+  --hostname <name>    Node hostname shown in the tailnet (default: container id)
+  --routes <cidrs>     Advertise these subnet routes (comma-separated). Makes the
+                       node a subnet router; needs approval in the admin console.
+  --exit-node <ip>     Route egress through this tailnet exit node
+  --advertise-exit-node
+                       Offer this node as an exit node (needs admin approval)
+
+Shadowsocks options:
+  --ss-port <port>     SS server port (default: 8388)
+  --ss-password <pw>   SS password (auto-generated + logged if omitted)
+  --obfs-host <host>   obfs-host clients should masquerade as (e.g. microsoft.com).
+                       Logged for client config; simple-obfs server ignores it.
+
+Runtime options:
+  --bind <ip>          Host bind address for the published SS port (default: 0.0.0.0)
+  --env-file <file>    KEY=VALUE file (TS_*, SS_*) passed to the container
+  --name <name>        Container name (default: $container)
+  --state-volume <v>   Named volume for tailscaled state (default: $state_volume)
+  --build              Force rebuild of the image
+  --help               Show this help
+
+Examples:
+  # First run — join tailnet and expose SS on 8388
+  $0 --authkey tskey-auth-xxxx --hostname ss-gateway --ss-port 8388
+
+  # Also pull in subnet routes so SS clients reach a private LAN
+  $0 --authkey tskey-auth-xxxx --routes 192.168.1.0/24
+
+  # Everything from an env file
+  $0 --env-file .tailscale.env
+EOF
+    exit 1
+}
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --authkey)              shift; authkey=$1; shift ;;
+        --hostname)             shift; hostname=$1; shift ;;
+        --routes)               shift; routes=$1; shift ;;
+        --exit-node)            shift; exit_node=$1; shift ;;
+        --advertise-exit-node)  advertise_exit_node="true"; shift ;;
+        --ss-port)              shift; ss_port=$1; shift ;;
+        --ss-password)          shift; ss_password=$1; shift ;;
+        --obfs-host)            shift; obfs_host=$1; shift ;;
+        --bind)                 shift; bind_ip=$1; shift ;;
+        --env-file)             shift; env_file=$1; shift ;;
+        --name)                 shift; container=$1; shift ;;
+        --state-volume)         shift; state_volume=$1; shift ;;
+        --build)                force_build="1"; shift ;;
+        --help|-h)              usage ;;
+        *)                      warn "unknown option: $1"; shift ;;
+    esac
+done
+
+if [ -n "$env_file" ]; then
+    [ ! -f "$env_file" ] && error "env file not found: $env_file"
+fi
+
+# Build the image if missing (or forced).
+cd "$script_dir"
+if [ -n "$force_build" ] || ! docker image inspect "$image" >/dev/null 2>&1; then
+    info "Building $image image..."
+    docker build -t "$image" .
+fi
+
+# SS port must be known on the host to publish it.
+port="${ss_port:-8388}"
+
+# Replace an existing container of the same name.
+if docker ps -a --format '{{.Names}}' | grep -qx "$container"; then
+    info "Removing existing container: $container"
+    docker rm -f "$container" >/dev/null
+fi
+
+run_args=(
+    -d
+    --name "$container"
+    --hostname "${hostname:-$container}"
+    --restart unless-stopped
+    --cap-add NET_ADMIN
+    --device /dev/net/tun
+    -v "${state_volume}:/var/lib/tailscale"
+    -p "${bind_ip}:${port}:${port}/tcp"
+    -p "${bind_ip}:${port}:${port}/udp"
+)
+
+# Enable forwarding sysctls when this node will route for others.
+if [ -n "$routes" ] || [ -n "$advertise_exit_node" ]; then
+    run_args+=(--sysctl net.ipv4.ip_forward=1 --sysctl net.ipv6.conf.all.forwarding=1)
+fi
+
+[ -n "$env_file" ] && run_args+=(--env-file "$env_file")
+
+# Explicit flags override anything in the env file.
+[ -n "$authkey" ]             && run_args+=(-e "TS_AUTHKEY=${authkey}")
+[ -n "$hostname" ]            && run_args+=(-e "TS_HOSTNAME=${hostname}")
+[ -n "$routes" ]             && run_args+=(-e "TS_ROUTES=${routes}")
+[ -n "$exit_node" ]          && run_args+=(-e "TS_EXIT_NODE=${exit_node}")
+[ -n "$advertise_exit_node" ] && run_args+=(-e "TS_ADVERTISE_EXIT_NODE=true")
+run_args+=(-e "SS_PORT=${port}")
+[ -n "$ss_password" ]        && run_args+=(-e "SS_PASSWORD=${ss_password}")
+[ -n "$obfs_host" ]          && run_args+=(-e "SS_OBFS_HOST=${obfs_host}")
+
+info "Starting $container (SS on ${bind_ip}:${port} tcp+udp)..."
+docker run "${run_args[@]}" "$image" >/dev/null
+
+info "Started. Follow logs with:  docker logs -f $container"
+info "The SS password (if auto-generated) is printed in those logs."

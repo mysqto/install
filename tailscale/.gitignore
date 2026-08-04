@@ -1,0 +1,5 @@
+.tailscale.env
+.tailscale.env.*
+!.tailscale.env.example
+docker-compose*.yml
+*.tmp
