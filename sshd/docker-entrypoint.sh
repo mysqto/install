@@ -88,7 +88,7 @@ chmod 644 "$KEYS_DIR"/ssh_host_*_key.pub 2>/dev/null || true
 # ---------------------------------------------------------------------------
 config=/etc/ssh/sshd_config
 cat > "$config" <<EOF
-Port 22
+Port ${SSH_PORT:-22}
 AddressFamily any
 ListenAddress 0.0.0.0
 ListenAddress ::
@@ -129,6 +129,7 @@ EOF
 /usr/sbin/sshd -t -f "$config" || error "sshd config validation failed"
 
 info "SSH server ready:"
+info "  listen port     : ${SSH_PORT:-22}"
 info "  user            : $SSH_USER"
 info "  auth            : publickey only (passwords disabled)"
 info "  max auth tries  : ${SSH_MAX_AUTH_TRIES:-3}"

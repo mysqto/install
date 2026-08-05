@@ -41,6 +41,9 @@ The tailnet auth key is supplied externally (never baked into the image) — via
 Builds the image if missing, then `docker run -d` with `--cap-add NET_ADMIN`,
 `--device /dev/net/tun`, a named state volume (`tailscale-ss-state`), and the SS
 port published TCP+UDP. Explicit CLI flags override values from `--env-file`.
+`--host-net` switches to host networking (SS binds the host's port directly;
+`-p` publishing and `--hostname` are dropped since they conflict with host
+networking — the tailnet name still comes from `TS_HOSTNAME`).
 
 ## Key environment variables
 

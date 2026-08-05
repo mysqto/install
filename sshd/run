@@ -22,7 +22,22 @@ pubkey_inline="${SSH_AUTHORIZED_KEYS:-}"
 port=""
 bind_ip="0.0.0.0"
 sudo_flag="false"
+host_net=""
 force_build=""
+
+# Pick a probably-free high port (best-effort check where `ss` exists).
+random_free_port() {
+    local p
+    for _ in 1 2 3 4 5; do
+        p=$(( (RANDOM % 40000) + 20000 ))
+        if command -v ss >/dev/null 2>&1; then
+            ss -ltn 2>/dev/null | grep -q ":$p " || { echo "$p"; return; }
+        else
+            echo "$p"; return
+        fi
+    done
+    echo "$p"
+}
 
 usage() {
     cat <<EOF
@@ -35,8 +50,11 @@ Key source (at least one required):
 
 Options:
   --user <name>         login user (default: $ssh_user)
-  --port <port>         host port to publish (default: random)
-  --bind <ip>           host bind address (default: $bind_ip)
+  --port <port>         SSH port (default: random). In --host-net mode this is
+                        the real host port sshd binds (must not be 22).
+  --bind <ip>           host bind address, bridge mode only (default: $bind_ip)
+  --host-net            use host networking (preserves real client IPs so the
+                        per-source banning works; sshd binds --port directly)
   --sudo                grant the login user passwordless sudo
   --name <name>         container name (default: $container)
   --keys-volume <v>     host-key volume (default: $keys_volume)
@@ -47,6 +65,7 @@ Examples:
   $0 --pubkey ~/.ssh/id_ed25519.pub --port 2222
   $0 --pubkey-url https://github.com/you.keys        # random port
   $0 --key 'ssh-ed25519 AAAA... you@host' --user ops --sudo
+  $0 --pubkey ~/.ssh/id_ed25519.pub --port 2222 --host-net   # real client IPs
 EOF
     exit 1
 }
@@ -60,6 +79,7 @@ while [ $# -gt 0 ]; do
         --port)            shift; port=$1; shift ;;
         --bind)            shift; bind_ip=$1; shift ;;
         --sudo)            sudo_flag="true"; shift ;;
+        --host-net)        host_net="1"; shift ;;
         --name)            shift; container=$1; shift ;;
         --keys-volume)     shift; keys_volume=$1; shift ;;
         --build|--rebuild) force_build="1"; shift ;;
@@ -88,18 +108,27 @@ fi
 run_args=(
     -d
     --name "$container"
-    --hostname "$container"
     --restart unless-stopped
     -v "${keys_volume}:/etc/ssh/keys"
     -e "SSH_USER=${ssh_user}"
     -e "SSH_SUDO=${sudo_flag}"
 )
 
-# Publish port 22: fixed host port, or let Docker pick a random one.
-if [ -n "$port" ]; then
-    run_args+=(-p "${bind_ip}:${port}:22")
+# Networking: host mode (real client IPs, sshd binds --port directly) vs the
+# default bridge mode (container listens on 22, host maps a chosen/random port).
+host_port=""
+if [ -n "$host_net" ]; then
+    [ -z "$port" ] && port="$(random_free_port)"
+    [ "$port" = "22" ] && warn "port 22 in --host-net mode will clash with the host's own sshd"
+    run_args+=(--network host -e "SSH_PORT=${port}")
+    host_port="$port"
 else
-    run_args+=(-p "${bind_ip}::22")
+    run_args+=(--hostname "$container")
+    if [ -n "$port" ]; then
+        run_args+=(-p "${bind_ip}:${port}:22")
+    else
+        run_args+=(-p "${bind_ip}::22")
+    fi
 fi
 
 [ -n "$pubkey_inline" ] && run_args+=(-e "SSH_AUTHORIZED_KEYS=${pubkey_inline}")
@@ -109,9 +138,11 @@ fi
 info "Starting $container..."
 docker run "${run_args[@]}" "$image" >/dev/null
 
-# Report the actual published port.
-mapped="$(docker port "$container" 22/tcp 2>/dev/null | head -n1)"
-host_port="${mapped##*:}"
-info "Started. SSH server listening on ${bind_ip}:${host_port:-?}"
+# In bridge mode, discover the Docker-assigned port.
+if [ -z "$host_net" ]; then
+    mapped="$(docker port "$container" 22/tcp 2>/dev/null | head -n1)"
+    host_port="${mapped##*:}"
+fi
+info "Started. SSH server listening on port ${host_port:-?}${host_net:+ (host networking)}"
 info "  ssh -p ${host_port:-<port>} ${ssh_user}@<host>"
 info "Follow logs (host-key fingerprint prints here):  docker logs -f $container"

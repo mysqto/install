@@ -61,6 +61,7 @@ ss_password="${SS_PASSWORD:-}"
 obfs_host=""
 bind_ip="0.0.0.0"
 env_file=""
+host_net=""
 force_build=""
 
 usage() {
@@ -81,6 +82,8 @@ Shadowsocks options:
 
 Runtime options:
   --bind <ip>           Host bind for the published SS port (default 0.0.0.0)
+  --host-net            Use host networking (SS binds the host's SS port directly;
+                        preserves real client IPs, avoids double-NAT)
   --env-file <file>     KEY=VALUE file (TS_*, SS_*) passed to the container
   --name <name>         Container name (default: $container)
   --state-volume <v>    tailscaled state volume (default: $state_volume)
@@ -101,6 +104,7 @@ while [ $# -gt 0 ]; do
         --ss-password)          shift; ss_password="${1:-}"; shift ;;
         --obfs-host)            shift; obfs_host="${1:-}"; shift ;;
         --bind)                 shift; bind_ip="${1:-}"; shift ;;
+        --host-net)             host_net="1"; shift ;;
         --env-file)             shift; env_file="${1:-}"; shift ;;
         --name)                 shift; container="${1:-}"; shift ;;
         --state-volume)         shift; state_volume="${1:-}"; shift ;;
@@ -171,14 +175,20 @@ fi
 run_args=(
     -d
     --name "$container"
-    --hostname "${hostname:-$container}"
     --restart unless-stopped
     --cap-add NET_ADMIN
     --device /dev/net/tun
     -v "${state_volume}:/var/lib/tailscale"
-    -p "${bind_ip}:${port}:${port}/tcp"
-    -p "${bind_ip}:${port}:${port}/udp"
 )
+
+# Networking: host mode (SS binds the host's port directly; --hostname is
+# incompatible with host networking) vs the default bridge + published ports.
+if [ -n "$host_net" ]; then
+    run_args+=(--network host)
+else
+    run_args+=(--hostname "${hostname:-$container}")
+    run_args+=(-p "${bind_ip}:${port}:${port}/tcp" -p "${bind_ip}:${port}:${port}/udp")
+fi
 
 if [ -n "$routes" ] || [ -n "$advertise_exit_node" ]; then
     run_args+=(--sysctl net.ipv4.ip_forward=1 --sysctl net.ipv6.conf.all.forwarding=1)

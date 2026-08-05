@@ -61,8 +61,9 @@ docker exec sshd-box sshd -T | grep -Ei 'password|persource|maxauth'   # verify 
 ## Gotchas
 - `PerSourcePenalties` keys on the client source IP. Docker `userland-proxy=true`
   (default on Docker Desktop) SNATs published-port traffic to the bridge gateway,
-  collapsing all clients to one IP — run on Linux with `userland-proxy=false` (or
-  host networking) to preserve real client IPs.
+  collapsing all clients to one IP — use `--host-net` (host networking; sshd binds
+  `SSH_PORT` directly, must not be 22, and `--hostname` is dropped since it
+  conflicts with host networking) or run on Linux with `userland-proxy=false`.
 - `docker --env-file` does not strip inline `#` comments; keep the env file's
   comments on their own lines.
 - Login is key-only by construction (`AuthenticationMethods publickey`,

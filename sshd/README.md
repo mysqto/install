@@ -48,8 +48,9 @@ ssh -p <port> dev@<host>
 | `--pubkey-url <url>` | `SSH_AUTHORIZED_KEYS_URL` | fetch keys from a URL |
 | `--key '<ssh-...>'` | `SSH_AUTHORIZED_KEYS` | inline public key |
 | `--user <name>` | `SSH_USER` | login user (default `dev`) |
-| `--port <port>` | — | host port (default: random) |
-| `--bind <ip>` | — | host bind address (default `0.0.0.0`) |
+| `--port <port>` | — | SSH port (default: random). In `--host-net` mode this is the real host port sshd binds |
+| `--bind <ip>` | — | host bind address, bridge mode only (default `0.0.0.0`) |
+| `--host-net` | — | host networking — preserves real client IPs so per-source banning works (sshd binds `--port` directly; must not be 22) |
 | `--sudo` | `SSH_SUDO` | passwordless sudo for the user |
 | `--build`, `--rebuild` | — | force image rebuild |
 
@@ -74,10 +75,12 @@ max:30m` adds 20s of penalty per authentication failure, escalating up to 30
 minutes; `MaxAuthTries 3` drops a connection after 3 attempts. A brute-forcer is
 therefore locked out for growing intervals without any external tooling.
 
-> Note: penalties key on the client's source IP. If Docker's `userland-proxy` is
-> enabled (the default on Docker Desktop), published-port traffic is SNAT'd to
-> the bridge gateway and all clients look identical — run on Linux with
-> `userland-proxy=false` (or host networking) to preserve real client IPs.
+> Note: penalties key on the client's source IP. In the default bridge mode with
+> Docker's `userland-proxy` enabled (the default on Docker Desktop),
+> published-port traffic is SNAT'd to the bridge gateway and all clients look
+> identical — so use **`--host-net`** (host networking, sshd binds `--port`
+> directly) to preserve real client IPs, or run on Linux with
+> `userland-proxy=false`.
 
 ## Files
 

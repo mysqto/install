@@ -70,6 +70,7 @@ the first login the auth key is no longer required on restart.
 | `--ss-password` | `SS_PASSWORD` | SS password (auto-generated if blank) |
 | `--obfs-host` | `SS_OBFS_HOST` | obfs masquerade host (client-side hint) |
 | `--bind` | — | Host bind address for the published port |
+| `--host-net` | — | Host networking — SS binds the host's port directly (preserves real client IPs, avoids double-NAT) |
 | `--env-file` | — | KEY=VALUE file of the above |
 | `--build` | — | Force image rebuild |
 
