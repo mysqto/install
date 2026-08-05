@@ -644,14 +644,14 @@ EOF
     fi
 }
 
-function create_systemd_service() {
+function install_systemd_service() {
     # Check if systemctl is available
     if ! installed systemctl; then
         warn "systemctl not found, skipping systemd service creation"
         info "To run V2Ray manually: $v2ray_bin run -config $v2ray_config_file"
         return 0
     fi
-    
+
     cat > "$v2ray_service_file" <<EOF
 [Unit]
 Description=Xray Service (V2Ray Enhanced)
@@ -672,21 +672,20 @@ LimitNOFILE=1048576
 [Install]
 WantedBy=multi-user.target
 EOF
-    
+
     systemctl daemon-reload
     systemctl enable v2ray
     info "V2Ray service created and enabled"
 }
 
-function start_service() {
-    # Check if systemctl is available
+function restart_systemd_service() {
     if ! installed systemctl; then
         warn "systemctl not found, skipping service start"
         info "V2Ray installation completed. Start manually with:"
         info "  $v2ray_bin run -config $v2ray_config_file"
         return 0
     fi
-    
+
     if systemctl is-active --quiet v2ray; then
         info "Restarting V2Ray service..."
         systemctl restart v2ray
@@ -694,7 +693,7 @@ function start_service() {
         info "Starting V2Ray service..."
         systemctl start v2ray
     fi
-    
+
     sleep 1
     if systemctl is-active --quiet v2ray; then
         info "V2Ray service is running"
@@ -702,6 +701,104 @@ function start_service() {
         warn "Failed to start V2Ray service. Check: journalctl -u v2ray -n 50"
         info "You can start it manually with: systemctl start v2ray"
     fi
+}
+
+# ---------- macOS: LaunchDaemon ----------
+# Xray needs privileged capabilities (CAP_NET_ADMIN + BIND on Linux) so the
+# LaunchDaemon runs as root (no UserName key = root by default). Server-mode
+# only — TUN client mode has different platform requirements and stays behind
+# its existing systemctl guard (falls back to manual instructions on macOS).
+
+v2ray_launchd_label="com.xtls.xray"
+v2ray_launchd_plist="/Library/LaunchDaemons/${v2ray_launchd_label}.plist"
+v2ray_launchd_log="/var/log/xray.log"
+
+function install_launchd_daemon() {
+    if ! installed launchctl; then
+        warn "launchctl not found, skipping launchd daemon"
+        info "To run Xray manually: $v2ray_bin run -config $v2ray_config_file"
+        return 0
+    fi
+
+    # Pre-create the log file so launchd can redirect to it (root-owned is fine
+    # because the daemon runs as root; we just make sure it exists and is 0644).
+    : > "$v2ray_launchd_log" 2>/dev/null || touch "$v2ray_launchd_log"
+    chmod 644 "$v2ray_launchd_log" 2>/dev/null || true
+
+    cat > "$v2ray_launchd_plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>${v2ray_launchd_label}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>${v2ray_bin}</string>
+        <string>run</string>
+        <string>-config</string>
+        <string>${v2ray_config_file}</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>${v2ray_launchd_log}</string>
+    <key>StandardErrorPath</key>
+    <string>${v2ray_launchd_log}</string>
+</dict>
+</plist>
+PLIST
+
+    chmod 644 "$v2ray_launchd_plist"
+    chown root:wheel "$v2ray_launchd_plist" 2>/dev/null || true
+
+    launchctl bootout "system/${v2ray_launchd_label}" >/dev/null 2>&1 || true
+    if launchctl bootstrap system "$v2ray_launchd_plist" 2>/dev/null; then
+        launchctl enable "system/${v2ray_launchd_label}" >/dev/null 2>&1 || true
+    else
+        # fallback for older launchctl
+        launchctl unload -w "$v2ray_launchd_plist" >/dev/null 2>&1 || true
+        launchctl load -w "$v2ray_launchd_plist" \
+            || error "failed to load ${v2ray_launchd_label} via launchd"
+    fi
+    info "${v2ray_launchd_label} loaded via launchd ($v2ray_launchd_plist)"
+}
+
+function restart_launchd_daemon() {
+    installed launchctl || return 0
+    if launchctl kickstart -k "system/${v2ray_launchd_label}" 2>/dev/null; then
+        info "Xray restarted via launchd"
+    else
+        warn "could not restart ${v2ray_launchd_label} — try: sudo launchctl bootstrap system $v2ray_launchd_plist"
+        return 1
+    fi
+    sleep 1
+    if launchctl list 2>/dev/null | grep -q "${v2ray_launchd_label}"; then
+        info "Xray service is running"
+    else
+        warn "Xray does not appear in launchctl list — check $v2ray_launchd_log"
+    fi
+}
+
+# ---------- OS dispatchers ----------
+
+function install_service() {
+    case "$(uname -s)" in
+        Linux)  install_systemd_service ;;
+        Darwin) install_launchd_daemon ;;
+        *) warn "unknown OS, skipping service install"
+           info "To run Xray manually: $v2ray_bin run -config $v2ray_config_file"
+           ;;
+    esac
+}
+
+function restart_service() {
+    case "$(uname -s)" in
+        Linux)  restart_systemd_service ;;
+        Darwin) restart_launchd_daemon ;;
+    esac
 }
 
 function get_public_ip() {
@@ -929,8 +1026,8 @@ download_v2ray
 if [ "$is_server" = true ]; then
     info "Configuring Xray server..."
     create_server_config
-    create_systemd_service
-    start_service
+    install_service
+    restart_service
     display_config
 elif [ "$tun_mode" = true ]; then
     info "TUN mode requested - installing goxray/tun client..."
@@ -1059,8 +1156,8 @@ EOF
 else
     info "Configuring Xray client..."
     create_client_config
-    create_systemd_service
-    start_service
+    install_service
+    restart_service
     display_config
 fi
 
@@ -1070,11 +1167,23 @@ info "Installation prefix: $prefix"
 info "Binary location: $v2ray_bin"
 info "Config file: $v2ray_config_file"
 
-if installed systemctl; then
-    info "Service status: systemctl status v2ray"
-    info "View logs: journalctl -u v2ray -f"
-else
-    info "Start Xray: $v2ray_bin run -config $v2ray_config_file"
-    info "Test config: $v2ray_bin -test -config $v2ray_config_file"
-fi
+case "$(uname -s)" in
+    Linux)
+        if installed systemctl; then
+            info "Service status: systemctl status v2ray"
+            info "View logs: journalctl -u v2ray -f"
+        else
+            info "Start Xray: $v2ray_bin run -config $v2ray_config_file"
+        fi
+        ;;
+    Darwin)
+        info "Service status: sudo launchctl print system/${v2ray_launchd_label}"
+        info "View logs: tail -f ${v2ray_launchd_log}"
+        info "Restart:    sudo launchctl kickstart -k system/${v2ray_launchd_label}"
+        ;;
+    *)
+        info "Start Xray: $v2ray_bin run -config $v2ray_config_file"
+        info "Test config: $v2ray_bin -test -config $v2ray_config_file"
+        ;;
+esac
 
