@@ -199,12 +199,24 @@ function reload_service() {
             ;;
         Darwin)
             installed launchctl || return 0
-            local label="com.fatedier.${name}" domain
-            if [ "$user_mode" = true ]; then domain="gui/$(id -u)"; else domain="system"; fi
-            if launchctl kickstart -k "${domain}/${label}" >/dev/null 2>&1; then
-                info "${label} restarted via launchd"
+            local label="com.fatedier.${name}"
+            if [ "$user_mode" = true ]; then
+                # Try kickstart first (fast); fall back to unload/load which works
+                # even when the agent lives in the user (non-gui) domain.
+                local plist="$HOME/Library/LaunchAgents/${label}.plist"
+                if launchctl kickstart -k "gui/$(id -u)/${label}" 2>/dev/null; then
+                    info "${label} restarted"
+                elif [ -f "$plist" ] && launchctl unload "$plist" 2>/dev/null && launchctl load -w "$plist" 2>/dev/null; then
+                    info "${label} reloaded ($plist)"
+                else
+                    warn "could not restart ${label} (is the LaunchAgent loaded?)"
+                fi
             else
-                warn "could not kickstart ${domain}/${label} (is the LaunchAgent/Daemon loaded?)"
+                if launchctl kickstart -k "system/${label}" 2>/dev/null; then
+                    info "${label} restarted"
+                else
+                    warn "could not restart ${label} (is the LaunchDaemon loaded?)"
+                fi
             fi
             ;;
     esac
@@ -421,16 +433,33 @@ EOF
     chmod 644 "$plist"
     [ "$user_mode" = false ] && chown root:wheel "$plist" 2>/dev/null || true
 
-    launchctl bootout "${domain}/${label}" >/dev/null 2>&1 || true
-    if launchctl bootstrap "$domain" "$plist" 2>/dev/null; then
-        launchctl enable "${domain}/${label}" >/dev/null 2>&1 || true
-        launchctl kickstart -k "${domain}/${label}" >/dev/null 2>&1 || true
+    if [ "$user_mode" = true ]; then
+        # bootstrap gui/<uid> requires an active graphical session and typically
+        # fails from an SSH invocation; load -w works fine in any user context.
+        launchctl unload "$plist" 2>/dev/null || true
+        if launchctl load -w "$plist"; then
+            info "${label} loaded ($plist)"
+        else
+            warn "launchctl load failed for $plist"
+            warn "  the plist is in place and will load automatically on next login"
+            warn "  to load now, ensure no other process holds the label:"
+            warn "    launchctl bootout gui/\$UID/${label} 2>/dev/null"
+            warn "    sudo launchctl bootout system/${label} 2>/dev/null"
+            warn "    launchctl load -w $plist"
+            return 1
+        fi
     else
-        # fallback for older launchctl (pre-10.10)
-        launchctl unload -w "$plist" >/dev/null 2>&1 || true
-        launchctl load -w "$plist" || error "failed to load ${label} via launchd"
+        launchctl bootout "system/${label}" >/dev/null 2>&1 || true
+        if launchctl bootstrap system "$plist" 2>/dev/null; then
+            launchctl enable "system/${label}" >/dev/null 2>&1 || true
+            launchctl kickstart -k "system/${label}" >/dev/null 2>&1 || true
+        else
+            # fallback for older launchctl (pre-10.10)
+            launchctl unload -w "$plist" >/dev/null 2>&1 || true
+            launchctl load -w "$plist" || error "failed to load ${label} via launchd"
+        fi
+        info "${label} loaded via launchd ($plist)"
     fi
-    info "${label} loaded via launchd ($plist)"
 }
 
 function install_service() {
