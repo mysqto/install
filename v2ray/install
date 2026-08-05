@@ -18,6 +18,8 @@ ws_path="/v2ray"
 tun_mode=false
 connection_link=""
 dns=""
+udp_buffer=2                   # KCP read/write buffer in MB (only used with --network mkcp)
+udp_timeout=300                # UDP idle-connection timeout in seconds (v2ray policy.connIdle)
 
 # Use CURL_OPTS and WGET_OPTS from environment if set, otherwise allow local override
 [ -z "$CURL_OPTS" ] && CURL_OPTS=""
@@ -385,6 +387,30 @@ function create_server_config() {
         port=$(awk -v min=10000 -v max=65535 'BEGIN{srand(); print int(min+rand()*(max-min+1))}')
     fi
     
+    # Optional stream extras — enabled only for UDP-based transports.
+    local kcp_settings=""
+    if [ "$network" = "mkcp" ]; then
+        kcp_settings=',
+        "kcpSettings": {
+          "mtu": 1350,
+          "tti": 20,
+          "uplinkCapacity": 100,
+          "downlinkCapacity": 100,
+          "congestion": false,
+          "readBufferSize": '$udp_buffer',
+          "writeBufferSize": '$udp_buffer',
+          "header": { "type": "none" }
+        }'
+    fi
+
+    # Sniffing lets the routing engine peek into TLS/QUIC/HTTP payloads,
+    # which matters for UDP passthrough (HTTP/3, DNS-over-QUIC).
+    local sniffing_block=',
+      "sniffing": {
+        "enabled": true,
+        "destOverride": ["http", "tls", "quic"]
+      }'
+
     local inbound_config=""
     if [ "$tls" = true ]; then
         inbound_config='{
@@ -408,8 +434,8 @@ function create_server_config() {
               "keyFile": "/path/to/private.key"
             }
           ]
-        }
-      }
+        }'$kcp_settings'
+      }'$sniffing_block'
     }'
     else
         inbound_config='{
@@ -424,11 +450,23 @@ function create_server_config() {
         ]
       },
       "streamSettings": {
-        "network": "'$network'"
-      }
+        "network": "'$network'"'$kcp_settings'
+      }'$sniffing_block'
     }'
     fi
-    
+
+    # Idle-connection cleanup — UDP streams don't have close signals so v2ray
+    # keeps them around until connIdle expires. 300s default is v2ray's own
+    # default; expose --udp-timeout so users can shrink it for game traffic.
+    local policy_block=',
+  "policy": {
+    "levels": {
+      "0": {
+        "connIdle": '$udp_timeout'
+      }
+    }
+  }'
+
     resolve_dns
     local dns_json
     dns_json=$(csv_to_json_array "$dns")
@@ -449,7 +487,7 @@ function create_server_config() {
       "protocol": "freedom",
       "settings": {}
     }
-  ]
+  ]${policy_block}
 }
 EOF
 
@@ -475,7 +513,24 @@ function create_client_config() {
     [ -z "$port" ] && error "Port is required for client config"
     
     [ ! -d "$v2ray_config_dir" ] && mkdir -p "$v2ray_config_dir"
-    
+
+    # Symmetric to the server: mkcp needs matching kcpSettings on the client
+    # outbound or the streams won't line up.
+    local kcp_settings=""
+    if [ "$network" = "mkcp" ]; then
+        kcp_settings=',
+        "kcpSettings": {
+          "mtu": 1350,
+          "tti": 20,
+          "uplinkCapacity": 100,
+          "downlinkCapacity": 100,
+          "congestion": false,
+          "readBufferSize": '$udp_buffer',
+          "writeBufferSize": '$udp_buffer',
+          "header": { "type": "none" }
+        }'
+    fi
+
     local outbound_config=""
     if [ "$tls" = true ]; then
         outbound_config='{
@@ -496,7 +551,7 @@ function create_client_config() {
       },
       "streamSettings": {
         "network": "'$network'",
-        "security": "tls"
+        "security": "tls"'$kcp_settings'
       }
     }'
     else
@@ -517,7 +572,7 @@ function create_client_config() {
         ]
       },
       "streamSettings": {
-        "network": "'$network'"
+        "network": "'$network'"'$kcp_settings'
       }
     }'
     fi
@@ -878,15 +933,24 @@ OPTIONS:
   -6, --ipv6                Force IPv6 for downloads
   --prefix PATH             Installation prefix (default: /usr/local)
   --protocol PROTO          Protocol: vmess, vless (default: vmess)
-  --network NET             Network type: tcp, ws, http, quic (default: tcp)
+  --network NET             Network type: tcp, ws, http, quic, mkcp (default: tcp)
+                            quic and mkcp use UDP as the transport layer.
   --tls                     Enable TLS
   --ws-path PATH            WebSocket path (default: /v2ray)
+  --udp-buffer MB           KCP read/write buffer in MB (default: 2, only for --network mkcp)
+  --udp-timeout SEC         UDP idle-connection timeout in seconds (default: 300)
   --tun                     Install goxray/tun for TUN mode (transparent VPN)
   --link LINK               Connection link for TUN mode (vmess://... or vless://...)
   -h, --help                Show this help message
 
 NOTE: Using Xray-core (enhanced V2Ray fork) for better performance
       TUN mode uses goxray/tun client: https://github.com/goxray/tun
+
+UDP: VMess/VLESS natively carry UDP payloads (DNS, HTTP/3, WebRTC) even
+     over a TCP tunnel — the server inbound has "sniffing" enabled so
+     the router can identify QUIC/TLS destinations. For arbitrary-app
+     UDP capture on the client (games, browsers doing HTTP/3), use
+     --tun; SOCKS5 UDP-ASSOCIATE only works with a handful of clients.
 
 EXAMPLES:
   # Install server
@@ -974,6 +1038,14 @@ while [ $# -gt 0 ]; do
             ws_path="$2"
             shift 2
             ;;
+        --udp-buffer)
+            udp_buffer="$2"
+            shift 2
+            ;;
+        --udp-timeout)
+            udp_timeout="$2"
+            shift 2
+            ;;
         --tun)
             tun_mode=true
             shift
@@ -994,6 +1066,14 @@ while [ $# -gt 0 ]; do
 done
 
 set -- "${POSITIONAL[@]}"
+
+# Validate --network (xray transport). tcp/ws/http/grpc/h2 are TCP-based;
+# quic/mkcp are UDP-based. Rejecting unknown values early beats a cryptic
+# "invalid streamSettings.network" out of xray -test later.
+case "$network" in
+    tcp|ws|http|quic|mkcp|grpc|h2) ;;
+    *) error "--network must be one of: tcp, ws, http, quic, mkcp, grpc, h2 (got: $network)" ;;
+esac
 
 # Set paths based on prefix
 v2ray_bin="$prefix/bin/v2ray"
