@@ -394,6 +394,7 @@ function install_launchd_unit() {
         return 0
     fi
 
+    local runas=""
     if [ "$user_mode" = true ]; then
         mkdir -p "$HOME/Library/LaunchAgents" "$HOME/Library/Logs"
         plist="$HOME/Library/LaunchAgents/${label}.plist"
@@ -403,6 +404,15 @@ function install_launchd_unit() {
         plist="/Library/LaunchDaemons/${label}.plist"
         domain="system"
         log_path="/var/log/${name}.log"
+        runas="${SUDO_USER:-nobody}"
+        # Pre-create the log file with $runas ownership. /var/log is
+        # root:wheel 755 on macOS, so the daemon running as $runas can't
+        # otherwise open its own log for append and launchd silently
+        # abandons the redirect (in some macOS builds the whole service
+        # fails to spawn).
+        : > "$log_path" 2>/dev/null || touch "$log_path"
+        chown "$runas" "$log_path" 2>/dev/null || true
+        chmod 644 "$log_path" 2>/dev/null || true
     fi
 
     {
@@ -429,11 +439,7 @@ EOF
     <string>Background</string>
 EOF
         else
-            # For a system-wide LaunchDaemon we want persistence across reboot
-            # AND to run as the invoking user (so frpc can reach whatever it
-            # needs in that user's context). Fall back to nobody when the
-            # invoker is a bare root shell with no SUDO_USER set.
-            local runas="${SUDO_USER:-nobody}"
+            # $runas was resolved above so we can also chown the log file.
             cat <<EOF
     <key>UserName</key>
     <string>${runas}</string>
