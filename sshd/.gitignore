@@ -1,0 +1,6 @@
+.sshd.env
+.sshd.env.*
+!.sshd.env.example
+docker-compose*.yml
+authorized_keys
+*.tmp

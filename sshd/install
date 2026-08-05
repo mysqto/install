@@ -1,0 +1,162 @@
+#!/bin/bash
+# sshd installer — Docker setup for a hardened SSH server container. Meant to be
+# curl-piped from im:
+#
+#   curl -sL https://debian.lol/sshd/install | bash -s -- --pubkey-url https://github.com/you.keys --port 2222
+#
+# Docker-based: fetches the Dockerfile + entrypoint from base_url, builds the
+# image, and runs the container. Docker is installed (as root) only if missing;
+# the build and run happen as the INVOKING user (the docker-group member).
+set -euo pipefail
+
+function info()  { echo -e "\033[1;32m${*}\033[0m"; }
+function warn()  { echo -e "\033[1;33m${*}\033[0m" >&2; }
+function error() { echo -e "\033[1;31m${*}\033[0m" >&2; exit 1; }
+function installed() { command -v "$1" >/dev/null 2>&1; }
+
+[ -z "${CURL_OPTS:-}" ] && CURL_OPTS=""
+
+# base_url resolution (debian.lol, github raw fallback) — mirrors im.
+base_url="https://debian.lol"
+github_base="https://raw.githubusercontent.com/mysqto/install/gh-pages"
+if ! curl ${CURL_OPTS} -sL --connect-timeout 5 "$base_url" >/dev/null 2>&1; then
+    warn "Failed to connect to $base_url, trying $github_base"
+    base_url="$github_base"
+    curl ${CURL_OPTS} -sL --connect-timeout 5 "$base_url" >/dev/null 2>&1 \
+        || error "Failed to connect to $base_url"
+fi
+
+# Run docker as the invoking (non-root) user via the docker group.
+target_user="${SUDO_USER:-$(id -un)}"
+[ "$target_user" = "root" ] && target_user=""
+as_user() {
+    if [ -n "$target_user" ] && [ "$(id -u)" -eq 0 ]; then
+        sudo -u "$target_user" "$@"
+    else
+        "$@"
+    fi
+}
+
+image="sshd-box"
+container="sshd-box"
+keys_volume="sshd-box-keys"
+
+ssh_user="dev"
+pubkey_file=""
+pubkey_url=""
+pubkey_inline="${SSH_AUTHORIZED_KEYS:-}"
+port=""
+bind_ip="0.0.0.0"
+sudo_flag="false"
+force_build=""
+
+usage() {
+    cat <<EOF
+Usage: sshd/install [options]
+
+Key source (at least one required):
+  --pubkey <file>       authorized_keys file to install
+  --pubkey-url <url>    fetch authorized_keys from a URL (e.g. https://github.com/you.keys)
+  --key '<ssh-...>'     an inline public key
+
+Options:
+  --user <name>         login user (default: $ssh_user)
+  --port <port>         host port to publish (default: random)
+  --bind <ip>           host bind address (default: $bind_ip)
+  --sudo                grant the login user passwordless sudo
+  --name <name>         container name (default: $container)
+  --keys-volume <v>     host-key volume (default: $keys_volume)
+  --build, --rebuild    force image rebuild
+  --help                Show this help
+EOF
+    exit 1
+}
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --pubkey)          shift; pubkey_file="${1:-}"; shift ;;
+        --pubkey-url)      shift; pubkey_url="${1:-}"; shift ;;
+        --key)             shift; pubkey_inline="${pubkey_inline:+$pubkey_inline\n}${1:-}"; shift ;;
+        --user)            shift; ssh_user="${1:-}"; shift ;;
+        --port)            shift; port="${1:-}"; shift ;;
+        --bind)            shift; bind_ip="${1:-}"; shift ;;
+        --sudo)            sudo_flag="true"; shift ;;
+        --name)            shift; container="${1:-}"; shift ;;
+        --keys-volume)     shift; keys_volume="${1:-}"; shift ;;
+        --build|--rebuild) force_build="1"; shift ;;
+        --help|-h)         usage ;;
+        *)                 warn "unknown option: $1"; shift ;;
+    esac
+done
+
+[ -n "$pubkey_file" ] && [ ! -f "$pubkey_file" ] && error "pubkey file not found: $pubkey_file"
+if [ -z "$pubkey_file" ] && [ -z "$pubkey_url" ] && [ -z "$pubkey_inline" ]; then
+    error "provide a key: --pubkey <file>, --pubkey-url <url>, or --key '<ssh-...>'"
+fi
+
+# Ensure docker; install (root) + add the user to the docker group only if missing.
+if ! installed docker; then
+    warn "docker not found, installing it..."
+    [ "$(id -u)" -ne 0 ] && error "docker is not installed and this is not root — install docker first (e.g. sudo im --docker)"
+    curl ${CURL_OPTS} -sL "$base_url/docker" | bash || error "docker installation failed"
+    installed docker || error "docker installation failed"
+    if [ -n "$target_user" ]; then
+        usermod -aG docker "$target_user" || warn "failed to add $target_user to docker group"
+        info "added $target_user to the docker group"
+    fi
+fi
+if ! as_user docker version >/dev/null 2>&1; then
+    [ -n "$target_user" ] && error "user '$target_user' cannot access the docker daemon (not in the docker group?)"
+    error "cannot access the docker daemon"
+fi
+info "running docker as: ${target_user:-$(id -un)}"
+
+# Fetch build context and build.
+build_dir="$(mktemp -d -t sshd-box-XXXXXXXX)"
+trap 'rm -rf "$build_dir"' EXIT
+info "fetching build context from $base_url/sshd ..."
+curl ${CURL_OPTS} -fsSL "$base_url/sshd/Dockerfile"           -o "$build_dir/Dockerfile"          || error "failed to fetch Dockerfile"
+curl ${CURL_OPTS} -fsSL "$base_url/sshd/docker-entrypoint.sh" -o "$build_dir/docker-entrypoint.sh" || error "failed to fetch docker-entrypoint.sh"
+[ -n "$target_user" ] && [ "$(id -u)" -eq 0 ] && chown -R "$target_user" "$build_dir"
+
+if [ -n "$force_build" ] || ! as_user docker image inspect "$image" >/dev/null 2>&1; then
+    info "building $image image..."
+    as_user docker build -t "$image" "$build_dir" || error "docker build failed"
+fi
+
+if as_user docker ps -a --format '{{.Names}}' | grep -qx "$container"; then
+    info "removing existing container: $container"
+    as_user docker rm -f "$container" >/dev/null
+fi
+
+run_args=(
+    -d
+    --name "$container"
+    --hostname "$container"
+    --restart unless-stopped
+    -v "${keys_volume}:/etc/ssh/keys"
+    -e "SSH_USER=${ssh_user}"
+    -e "SSH_SUDO=${sudo_flag}"
+)
+
+if [ -n "$port" ]; then
+    run_args+=(-p "${bind_ip}:${port}:22")
+else
+    run_args+=(-p "${bind_ip}::22")
+fi
+
+[ -n "$pubkey_inline" ] && run_args+=(-e "SSH_AUTHORIZED_KEYS=${pubkey_inline}")
+[ -n "$pubkey_url" ]    && run_args+=(-e "SSH_AUTHORIZED_KEYS_URL=${pubkey_url}")
+if [ -n "$pubkey_file" ]; then
+    abs="$(cd "$(dirname "$pubkey_file")" && pwd)/$(basename "$pubkey_file")"
+    run_args+=(-v "${abs}:/config/authorized_keys:ro")
+fi
+
+info "starting $container..."
+as_user docker run "${run_args[@]}" "$image" >/dev/null || error "failed to start $container"
+
+mapped="$(as_user docker port "$container" 22/tcp 2>/dev/null | head -n1)"
+host_port="${mapped##*:}"
+info "started. SSH server listening on ${bind_ip}:${host_port:-?}"
+info "  ssh -p ${host_port:-<port>} ${ssh_user}@<host>"
+info "follow logs (host-key fingerprint prints here):  docker logs -f $container"

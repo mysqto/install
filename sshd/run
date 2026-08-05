@@ -1,0 +1,117 @@
+#!/bin/bash
+# sshd host-side launcher.
+#
+# Builds the image if missing, then runs a hardened SSH server container:
+# key-only login, native brute-force banning, persistent host key. The
+# container's port 22 is published on a chosen (--port) or random host port.
+set -euo pipefail
+
+info()  { echo -e "\033[1;32m${*}\033[0m" >&2; }
+warn()  { echo -e "\033[1;33m${*}\033[0m" >&2; }
+error() { echo -e "\033[1;31m${*}\033[0m" >&2; exit 1; }
+
+script_dir="$(cd "$(dirname "$0")" && pwd)"
+image="sshd-box"
+container="sshd-box"
+keys_volume="sshd-box-keys"
+
+ssh_user="dev"
+pubkey_file=""
+pubkey_url=""
+pubkey_inline="${SSH_AUTHORIZED_KEYS:-}"
+port=""
+bind_ip="0.0.0.0"
+sudo_flag="false"
+force_build=""
+
+usage() {
+    cat <<EOF
+Usage: $0 [options]
+
+Key source (at least one required):
+  --pubkey <file>       authorized_keys file to install
+  --pubkey-url <url>    fetch authorized_keys from a URL
+  --key '<ssh-...>'     an inline public key (repeatable via SSH_AUTHORIZED_KEYS)
+
+Options:
+  --user <name>         login user (default: $ssh_user)
+  --port <port>         host port to publish (default: random)
+  --bind <ip>           host bind address (default: $bind_ip)
+  --sudo                grant the login user passwordless sudo
+  --name <name>         container name (default: $container)
+  --keys-volume <v>     host-key volume (default: $keys_volume)
+  --build, --rebuild    force image rebuild
+  --help                Show this help
+
+Examples:
+  $0 --pubkey ~/.ssh/id_ed25519.pub --port 2222
+  $0 --pubkey-url https://github.com/you.keys        # random port
+  $0 --key 'ssh-ed25519 AAAA... you@host' --user ops --sudo
+EOF
+    exit 1
+}
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --pubkey)          shift; pubkey_file=$1; shift ;;
+        --pubkey-url)      shift; pubkey_url=$1; shift ;;
+        --key)             shift; pubkey_inline="${pubkey_inline:+$pubkey_inline\n}$1"; shift ;;
+        --user)            shift; ssh_user=$1; shift ;;
+        --port)            shift; port=$1; shift ;;
+        --bind)            shift; bind_ip=$1; shift ;;
+        --sudo)            sudo_flag="true"; shift ;;
+        --name)            shift; container=$1; shift ;;
+        --keys-volume)     shift; keys_volume=$1; shift ;;
+        --build|--rebuild) force_build="1"; shift ;;
+        --help|-h)         usage ;;
+        *)                 warn "unknown option: $1"; shift ;;
+    esac
+done
+
+# Validate key source.
+[ -n "$pubkey_file" ] && [ ! -f "$pubkey_file" ] && error "pubkey file not found: $pubkey_file"
+if [ -z "$pubkey_file" ] && [ -z "$pubkey_url" ] && [ -z "$pubkey_inline" ]; then
+    error "provide a key: --pubkey <file>, --pubkey-url <url>, or --key '<ssh-...>'"
+fi
+
+cd "$script_dir"
+if [ -n "$force_build" ] || ! docker image inspect "$image" >/dev/null 2>&1; then
+    info "Building $image image..."
+    docker build -t "$image" .
+fi
+
+if docker ps -a --format '{{.Names}}' | grep -qx "$container"; then
+    info "Removing existing container: $container"
+    docker rm -f "$container" >/dev/null
+fi
+
+run_args=(
+    -d
+    --name "$container"
+    --hostname "$container"
+    --restart unless-stopped
+    -v "${keys_volume}:/etc/ssh/keys"
+    -e "SSH_USER=${ssh_user}"
+    -e "SSH_SUDO=${sudo_flag}"
+)
+
+# Publish port 22: fixed host port, or let Docker pick a random one.
+if [ -n "$port" ]; then
+    run_args+=(-p "${bind_ip}:${port}:22")
+else
+    run_args+=(-p "${bind_ip}::22")
+fi
+
+[ -n "$pubkey_inline" ] && run_args+=(-e "SSH_AUTHORIZED_KEYS=${pubkey_inline}")
+[ -n "$pubkey_url" ]    && run_args+=(-e "SSH_AUTHORIZED_KEYS_URL=${pubkey_url}")
+[ -n "$pubkey_file" ]   && run_args+=(-v "$(cd "$(dirname "$pubkey_file")" && pwd)/$(basename "$pubkey_file"):/config/authorized_keys:ro")
+
+info "Starting $container..."
+docker run "${run_args[@]}" "$image" >/dev/null
+
+# Report the actual published port.
+mapped="$(docker port "$container" 22/tcp 2>/dev/null | head -n1)"
+host_port="${mapped##*:}"
+info "Started. SSH server listening on ${bind_ip}:${host_port:-?}"
+info "  ssh -p ${host_port:-<port>} ${ssh_user}@<host>"
+info "Follow logs (host-key fingerprint prints here):  docker logs -f $container"

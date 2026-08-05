@@ -563,6 +563,11 @@ function install_tailscale() {
     curl ${CURL_OPTS} -sL "$base_url/tailscale/install" | bash -s -- "$@"
 }
 
+function install_sshd() {
+    info "Installing hardened SSH server (Docker)"
+    curl ${CURL_OPTS} -sL "$base_url/sshd/install" | bash -s -- "$@"
+}
+
 function set_hostname() {
     local new_hostname="$1"
     [ -z "$new_hostname" ] && error "hostname is required when setting hostname"
@@ -619,6 +624,7 @@ _install_ddns=false
 _install_frp=false
 _install_ss2any=false
 _install_tailscale=false
+_install_sshd=false
 _set_hostname=false
 _hostname_value=""
 v2ray_mode=""
@@ -628,6 +634,7 @@ ddns_args=()
 frp_args=()
 ss2any_args=()
 tailscale_args=()
+sshd_args=()
 shadow_tls_args=()
 wg_client=()
 username=""
@@ -660,6 +667,7 @@ function usage() {
     info "  -frp  | --frp [options]                  install FRP (server/client/gen-client)"
     info "  -s2a  | --ss2any [options]               install ss2any (SS inbound -> any-protocol outbound)"
     info "  -ts   | --tailscale [options]            install tailscale node + SS entry point (Docker)"
+    info "  -sshd | --sshd [options]                 install hardened SSH server (Docker, key-only)"
     info ""
     info "  V2Ray (Xray) Examples:"
     info "    im -4 -v2s --port 10086                 # server with IPv4 and custom port"
@@ -697,6 +705,11 @@ function usage() {
     info "    im -ts --authkey tskey-auth-xxxx --routes 192.168.1.0/24           # also act as subnet router"
     info "    im -ts --env-file /path/.tailscale.env                             # all TS_*/SS_* from an env file"
     info "    im -ts --rebuild --env-file /path/.tailscale.env                   # force image rebuild (pick up updated Dockerfile/entrypoint)"
+    info ""
+    info "  SSH server Examples (Docker; key-only, ban after failed tries):"
+    info "    im -sshd --pubkey-url https://github.com/you.keys --port 2222      # keys from GitHub, fixed port"
+    info "    im -sshd --pubkey ~/.ssh/id_ed25519.pub                            # key from file, random port"
+    info "    im -sshd --key 'ssh-ed25519 AAAA... you@host' --user ops --sudo    # inline key, custom user + sudo"
     info "System Updates & Maintenance:"
     info "  -uu   | --update                         update the server"
     info "  -uuu  | --upgrade                        upgrade the server if needed"
@@ -945,6 +958,15 @@ while [ $# -gt 0 ]; do
                 shift
             done
             ;;
+        -sshd | --sshd)
+            _install_sshd=true
+            shift
+            # Collect all remaining arguments for sshd
+            while [[ $# -gt 0 ]]; do
+                sshd_args+=("$1")
+                shift
+            done
+            ;;
         -hn | --hostname)
             _set_hostname=true
             _hostname_value="$2"
@@ -1038,6 +1060,8 @@ action() {
         install_ss2any "${ss2any_args[@]}"
     elif [ "$_install_tailscale" == true ]; then
         install_tailscale "${tailscale_args[@]}"
+    elif [ "$_install_sshd" == true ]; then
+        install_sshd "${sshd_args[@]}"
     elif [ "$_set_hostname" == true ]; then
         set_hostname "$_hostname_value"
     elif [ "$_auto" == true ]; then
