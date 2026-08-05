@@ -78,6 +78,32 @@ Extra tailnet knobs are env-only: `TS_ACCEPT_ROUTES` (default `true`),
 `TS_ACCEPT_DNS` (default `false`), `TS_EXTRA_ARGS`, `SS_METHOD`, `SS_MODE`,
 `SS_OBFS`. See `.tailscale.env.example`.
 
+## Embedded SSH server (optional)
+
+Add `--ssh` to also run the same hardened sshd as the [`sshd`](../sshd)
+container **inside** this node — key-only login, no passwords, native
+`PerSourcePenalties` banning. It's reachable at the node's tailnet IP (port 22)
+and, with `--ssh-port`, on a host port too:
+
+```bash
+# reachable at the tailnet IP: ssh dev@100.x.y.z
+./run --authkey tskey-... --ssh --pubkey ~/.ssh/id_ed25519.pub
+
+# also expose it on host port 2222
+./run --authkey tskey-... --ssh --pubkey-url https://github.com/you.keys --ssh-port 2222
+```
+
+| Flag | Purpose |
+|------|---------|
+| `--ssh` | enable the embedded sshd (`SSH_ENABLE=true`) |
+| `--pubkey` / `--pubkey-url` / `--key` | authorized_keys source (one required) |
+| `--ssh-user` | login user (default `dev`) |
+| `--ssh-port` | also expose on a host port (bridge: `host:port→22`; host-net: sshd binds `port` directly, not 22) |
+| `--ssh-sudo` | passwordless sudo for the user |
+
+Host keys persist in the `<state-volume>-keys` volume. Banning/hardening tunables
+are the same `SSH_*` env vars as the `sshd` container.
+
 ## Client configuration
 
 Any Shadowsocks client works. Match what the container logs at startup:

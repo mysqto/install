@@ -26,6 +26,16 @@ The tailnet auth key is supplied externally (never baked into the image) — via
 - **Application** (Alpine): runtime with `tini`, `libev`, `iptables`,
   `iproute2`, `jq`, `pwgen`, and the four copied binaries.
 
+### Optional embedded SSH server (`SSH_ENABLE=true`)
+`start_sshd()` in the entrypoint runs the same hardened sshd as the `../sshd`
+container (key-only, `AuthenticationMethods publickey`, `PerSourcePenalties`,
+non-root user, persistent host keys in the `/etc/ssh/keys` volume), backgrounded
+and added to the supervise loop. Reachable at the node's tailnet IP (port 22)
+and, via `--ssh-port`, a host port. The `SSH_*` env vars mirror the `sshd`
+container; the hardening logic is duplicated (each container is self-contained).
+`run`/`install` expose `--ssh`, `--pubkey[-url]`, `--key`, `--ssh-user`,
+`--ssh-port`, `--ssh-sudo`.
+
 ### Entry point (`docker-entrypoint.sh`)
 1. `ensure_tun` — use `/dev/net/tun`, create it, or fall back to
    `userspace-networking`.

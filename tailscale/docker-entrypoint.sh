@@ -19,10 +19,12 @@ TS_PORT="${TS_PORT:-41641}"
 
 TAILSCALED_PID=""
 SS_PID=""
+SSHD_PID=""
 
 shutdown() {
     info "shutting down..."
     [ -n "$SS_PID" ]         && kill -TERM "$SS_PID"         2>/dev/null || true
+    [ -n "$SSHD_PID" ]       && kill -TERM "$SSHD_PID"       2>/dev/null || true
     [ -n "$TAILSCALED_PID" ] && kill -TERM "$TAILSCALED_PID" 2>/dev/null || true
     wait 2>/dev/null || true
 }
@@ -173,20 +175,117 @@ start_shadowsocks() {
 }
 
 # ---------------------------------------------------------------------------
+# Optional hardened SSH server (SSH_ENABLE=true) — same key-only + PerSource-
+# Penalties hardening as the standalone `sshd` container. Reachable at the node's
+# tailnet IP (100.x) and, if published, a host port. Runs in the background.
+# ---------------------------------------------------------------------------
+start_sshd() {
+    local ssh_user="${SSH_USER:-dev}"
+    local keys_dir=/etc/ssh/keys
+
+    case "$ssh_user" in
+        root|"" ) error "SSH_USER must be a non-root name (got '${ssh_user}')" ;;
+        *[!a-z0-9_-]* ) error "SSH_USER '${ssh_user}' has invalid characters" ;;
+    esac
+
+    if ! id "$ssh_user" >/dev/null 2>&1; then
+        info "creating ssh user '$ssh_user'"
+        adduser -D -s /bin/bash "$ssh_user" || error "failed to create user $ssh_user"
+        passwd -u "$ssh_user" >/dev/null 2>&1 || true
+    fi
+    if [ "${SSH_SUDO:-false}" = "true" ]; then
+        echo "$ssh_user ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/"$ssh_user"
+        chmod 440 /etc/sudoers.d/"$ssh_user"
+    fi
+
+    # authorized_keys from env / mounted file / URL
+    local home_dir ssh_dir auth_file
+    home_dir="$(getent passwd "$ssh_user" | cut -d: -f6)"
+    ssh_dir="${home_dir}/.ssh"; auth_file="${ssh_dir}/authorized_keys"
+    mkdir -p "$ssh_dir"; : > "$auth_file"
+    [ -n "${SSH_AUTHORIZED_KEYS:-}" ] && printf '%b\n' "$SSH_AUTHORIZED_KEYS" >> "$auth_file"
+    [ -f /config/authorized_keys ]    && cat /config/authorized_keys >> "$auth_file"
+    if [ -n "${SSH_AUTHORIZED_KEYS_URL:-}" ]; then
+        curl -fsSL "$SSH_AUTHORIZED_KEYS_URL" >> "$auth_file" || warn "failed to fetch SSH_AUTHORIZED_KEYS_URL"
+    fi
+    sed -i '/^[[:space:]]*$/d' "$auth_file"
+    if ! grep -qE '^(ssh-|ecdsa-|sk-)' "$auth_file"; then
+        error "SSH_ENABLE=true but no valid public keys (set SSH_AUTHORIZED_KEYS, mount /config/authorized_keys, or set SSH_AUTHORIZED_KEYS_URL)"
+    fi
+    chmod 700 "$ssh_dir"; chmod 600 "$auth_file"; chown -R "$ssh_user":"$ssh_user" "$ssh_dir"
+
+    # persistent host keys
+    mkdir -p "$keys_dir"
+    if ! ls "$keys_dir"/ssh_host_*_key >/dev/null 2>&1; then
+        info "generating ssh host keys in $keys_dir"
+        ssh-keygen -t ed25519 -f "$keys_dir/ssh_host_ed25519_key" -N '' -q
+        ssh-keygen -t rsa -b 4096 -f "$keys_dir/ssh_host_rsa_key" -N '' -q
+    fi
+    chmod 600 "$keys_dir"/ssh_host_*_key
+    chmod 644 "$keys_dir"/ssh_host_*_key.pub 2>/dev/null || true
+
+    local config=/etc/ssh/sshd_config
+    cat > "$config" <<EOF
+Port ${SSH_PORT:-22}
+AddressFamily any
+ListenAddress 0.0.0.0
+ListenAddress ::
+
+HostKey ${keys_dir}/ssh_host_ed25519_key
+HostKey ${keys_dir}/ssh_host_rsa_key
+
+PubkeyAuthentication yes
+AuthenticationMethods publickey
+PasswordAuthentication no
+PermitEmptyPasswords no
+KbdInteractiveAuthentication no
+ChallengeResponseAuthentication no
+PermitRootLogin no
+AllowUsers ${ssh_user}
+AuthorizedKeysFile .ssh/authorized_keys
+
+MaxAuthTries ${SSH_MAX_AUTH_TRIES:-3}
+LoginGraceTime ${SSH_LOGIN_GRACE:-20}
+PerSourcePenalties authfail:${SSH_PENALTY_AUTHFAIL:-20s} max:${SSH_PENALTY_MAX:-30m}
+MaxStartups 10:30:60
+
+X11Forwarding no
+AllowTcpForwarding ${SSH_ALLOW_TCP_FORWARDING:-no}
+AllowAgentForwarding no
+PermitTunnel no
+PrintMotd no
+ClientAliveInterval 120
+ClientAliveCountMax 2
+LogLevel VERBOSE
+Subsystem sftp internal-sftp
+EOF
+    /usr/sbin/sshd -t -f "$config" || error "sshd config validation failed"
+
+    info "SSH server enabled: user=$ssh_user port=${SSH_PORT:-22} (publickey only, MaxAuthTries=${SSH_MAX_AUTH_TRIES:-3})"
+    ssh-keygen -lf "$keys_dir/ssh_host_ed25519_key.pub" 2>/dev/null | sed 's/^/[ssh] host key: /'
+    /usr/sbin/sshd -D -e -f "$config" &
+    SSHD_PID=$!
+}
+
+# ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
 start_tailscaled
 tailscale_up
 start_shadowsocks
+[ "${SSH_ENABLE:-false}" = "true" ] && start_sshd
 
-# Supervise both children; if either dies, tear everything down so Docker's
-# restart policy brings the container back cleanly.
+# Supervise children; if any dies, tear everything down so Docker's restart
+# policy brings the container back cleanly.
 while true; do
     if ! kill -0 "$TAILSCALED_PID" 2>/dev/null; then
         warn "tailscaled exited"; break
     fi
     if ! kill -0 "$SS_PID" 2>/dev/null; then
         warn "ss-server exited"; break
+    fi
+    if [ -n "$SSHD_PID" ] && ! kill -0 "$SSHD_PID" 2>/dev/null; then
+        warn "sshd exited"; break
     fi
     sleep 5
 done

@@ -69,13 +69,16 @@ COPY --from=builder /usr/local/bin/tailscale    /usr/local/bin/tailscale
 COPY --from=builder /usr/local/bin/tailscaled   /usr/local/bin/tailscaled
 
 # libev: simple-obfs runtime dep. iptables/iproute2: tailscale subnet routing.
+# openssh-server/keygen + sudo: optional embedded SSH server (SSH_ENABLE=true).
 RUN apk add --no-cache \
     bash ca-certificates tzdata tini libev \
-    iptables ip6tables iproute2 curl jq pwgen
+    iptables ip6tables iproute2 curl jq pwgen \
+    openssh-server openssh-keygen sudo
 
-# tailscaled state (persist across restarts) and ss-server config.
-RUN mkdir -p /var/lib/tailscale /var/run/tailscale /etc/shadowsocks
+# tailscaled state, ss-server config, and (optional) persistent ssh host keys.
+RUN mkdir -p /var/lib/tailscale /var/run/tailscale /etc/shadowsocks /etc/ssh/keys /config
 VOLUME /var/lib/tailscale
+VOLUME /etc/ssh/keys
 
 # --- Tailscale ---
 # Secrets (TS_AUTHKEY) are supplied at runtime with -e, never declared here.

@@ -64,6 +64,15 @@ env_file=""
 host_net=""
 force_build=""
 
+# Embedded hardened SSH server (optional).
+ssh_enable=""
+ssh_user=""
+ssh_port=""
+ssh_sudo=""
+pubkey_file=""
+pubkey_url=""
+pubkey_inline="${SSH_AUTHORIZED_KEYS:-}"
+
 usage() {
     cat <<EOF
 Usage: tailscale/install [options]
@@ -80,11 +89,21 @@ Shadowsocks options:
   --ss-password <pw>    SS password (auto-generated + logged if omitted)
   --obfs-host <host>    obfs masquerade host (client-side hint)
 
+Embedded SSH server (optional — key-only, PerSourcePenalties banning):
+  --ssh                 Run a hardened sshd; reachable at the node's tailnet IP
+  --pubkey <file>       authorized_keys file (required unless --key/--pubkey-url)
+  --pubkey-url <url>    fetch authorized_keys from a URL
+  --key '<ssh-...>'     an inline public key
+  --ssh-user <name>     login user (default: dev)
+  --ssh-port <port>     also expose sshd on a host port (bridge: host<port>->22;
+                        host-net: sshd binds <port> directly, must not be 22)
+  --ssh-sudo            grant the login user passwordless sudo
+
 Runtime options:
   --bind <ip>           Host bind for the published SS port (default 0.0.0.0)
   --host-net            Use host networking (SS binds the host's SS port directly;
                         preserves real client IPs, avoids double-NAT)
-  --env-file <file>     KEY=VALUE file (TS_*, SS_*) passed to the container
+  --env-file <file>     KEY=VALUE file (TS_*, SS_*, SSH_*) passed to the container
   --name <name>         Container name (default: $container)
   --state-volume <v>    tailscaled state volume (default: $state_volume)
   --build, --rebuild    Force image rebuild (otherwise a cached image is reused)
@@ -105,6 +124,13 @@ while [ $# -gt 0 ]; do
         --obfs-host)            shift; obfs_host="${1:-}"; shift ;;
         --bind)                 shift; bind_ip="${1:-}"; shift ;;
         --host-net)             host_net="1"; shift ;;
+        --ssh)                  ssh_enable="1"; shift ;;
+        --ssh-user)             shift; ssh_user="${1:-}"; shift ;;
+        --ssh-port)             shift; ssh_port="${1:-}"; shift ;;
+        --ssh-sudo)             ssh_sudo="1"; shift ;;
+        --pubkey)               shift; pubkey_file="${1:-}"; shift ;;
+        --pubkey-url)           shift; pubkey_url="${1:-}"; shift ;;
+        --key)                  shift; pubkey_inline="${pubkey_inline:+$pubkey_inline\n}${1:-}"; shift ;;
         --env-file)             shift; env_file="${1:-}"; shift ;;
         --name)                 shift; container="${1:-}"; shift ;;
         --state-volume)         shift; state_volume="${1:-}"; shift ;;
@@ -115,6 +141,18 @@ while [ $# -gt 0 ]; do
 done
 
 [ -n "$env_file" ] && [ ! -f "$env_file" ] && error "env file not found: $env_file"
+
+# Validate embedded-SSH options.
+if [ -n "$ssh_enable" ]; then
+    [ -n "$pubkey_file" ] && [ ! -f "$pubkey_file" ] && error "pubkey file not found: $pubkey_file"
+    if [ -z "$pubkey_file" ] && [ -z "$pubkey_url" ] && [ -z "$pubkey_inline" ] && [ -z "$env_file" ]; then
+        error "--ssh needs a key: --pubkey <file>, --pubkey-url <url>, or --key '<ssh-...>'"
+    fi
+    if [ -n "$host_net" ]; then
+        [ -z "$ssh_port" ] && error "--ssh with --host-net requires --ssh-port (port 22 clashes with the host sshd)"
+        [ "$ssh_port" = "22" ] && warn "--ssh-port 22 in --host-net mode will clash with the host's own sshd"
+    fi
+fi
 
 # ---------------------------------------------------------------------------
 # Ensure docker is available; install it (root) + add the user to the docker
@@ -205,8 +243,27 @@ run_args+=(-e "SS_PORT=${port}")
 [ -n "$ss_password" ]        && run_args+=(-e "SS_PASSWORD=${ss_password}")
 [ -n "$obfs_host" ]          && run_args+=(-e "SS_OBFS_HOST=${obfs_host}")
 
+# Embedded SSH server.
+if [ -n "$ssh_enable" ]; then
+    run_args+=(-e "SSH_ENABLE=true" -v "${state_volume}-keys:/etc/ssh/keys")
+    [ -n "$ssh_user" ]     && run_args+=(-e "SSH_USER=${ssh_user}")
+    [ -n "$ssh_sudo" ]     && run_args+=(-e "SSH_SUDO=true")
+    [ -n "$pubkey_inline" ] && run_args+=(-e "SSH_AUTHORIZED_KEYS=${pubkey_inline}")
+    [ -n "$pubkey_url" ]    && run_args+=(-e "SSH_AUTHORIZED_KEYS_URL=${pubkey_url}")
+    if [ -n "$pubkey_file" ]; then
+        pk_abs="$(cd "$(dirname "$pubkey_file")" && pwd)/$(basename "$pubkey_file")"
+        run_args+=(-v "${pk_abs}:/config/authorized_keys:ro")
+    fi
+    if [ -n "$host_net" ]; then
+        run_args+=(-e "SSH_PORT=${ssh_port}")
+    elif [ -n "$ssh_port" ]; then
+        run_args+=(-p "${bind_ip}:${ssh_port}:22/tcp")
+    fi
+fi
+
 info "starting $container (SS on ${bind_ip}:${port} tcp+udp)..."
 as_user docker run "${run_args[@]}" "$image" >/dev/null || error "failed to start $container"
 
 info "started. follow logs with:  docker logs -f $container"
 info "the SS password (if auto-generated) is printed in those logs."
+[ -n "$ssh_enable" ] && info "SSH enabled: ssh ${ssh_user:-dev}@<tailnet-ip>${ssh_port:+  (or ssh -p $ssh_port ${ssh_user:-dev}@<host>)}"
