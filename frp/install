@@ -372,6 +372,18 @@ EOF
 }
 
 function install_launchd_unit() {
+    # macOS persistence model, per Apple's launchd docs + community consensus:
+    #   * gui/<uid>      only exists during an active Aqua login. Bootstrap
+    #                    into it from an SSH shell → "Input/output error".
+    #   * user/<uid>     available in any user session (SSH included), but
+    #                    only if the plist declares LimitLoadToSessionType
+    #                    = Background. Downside: does NOT auto-load at boot
+    #                    unless the user logs in.
+    #   * system         loads at boot; add UserName=<user> in the plist so
+    #                    it runs as that user, not as root.
+    #
+    # We use `user/<uid>` in user-mode (installable over SSH, no sudo), and
+    # `system` in root-mode (persistent across reboots, runs as $SUDO_USER).
     local name="$1" exec_path="$2" config_path="$3"
     local label="com.fatedier.${name}"
     local plist domain log_path
@@ -408,12 +420,23 @@ function install_launchd_unit() {
         <string>${config_path}</string>
     </array>
 EOF
-        if [ "$user_mode" = false ]; then
+        if [ "$user_mode" = true ]; then
+            # LimitLoadToSessionType=Background is required for the user/<uid>
+            # domain (SSH-friendly). Without it launchd defaults to Aqua and
+            # `launchctl load -w` errors with "Input/output error" from SSH.
+            cat <<EOF
+    <key>LimitLoadToSessionType</key>
+    <string>Background</string>
+EOF
+        else
+            # For a system-wide LaunchDaemon we want persistence across reboot
+            # AND to run as the invoking user (so frpc can reach whatever it
+            # needs in that user's context). Fall back to nobody when the
+            # invoker is a bare root shell with no SUDO_USER set.
+            local runas="${SUDO_USER:-nobody}"
             cat <<EOF
     <key>UserName</key>
-    <string>nobody</string>
-    <key>GroupName</key>
-    <string>nobody</string>
+    <string>${runas}</string>
 EOF
         fi
         cat <<EOF
@@ -758,8 +781,12 @@ Common:
   Note: on macOS, client-side modes (--client / --from-config) auto-switch to
   user-mode when run without sudo: binary in \$HOME/.local/bin, config in
   \$HOME/.config/frp, service registered as a per-user LaunchAgent in
-  \$HOME/Library/LaunchAgents (stops at logout). Run with sudo to get a
-  system-wide LaunchDaemon instead. Server mode (frps) always needs sudo.
+  \$HOME/Library/LaunchAgents. The user-mode LaunchAgent uses the "Background"
+  session type so it loads over SSH, but it does NOT auto-start at boot —
+  it only reloads when the user next logs in. If you want reboot persistence,
+  run with sudo: that installs a system-wide LaunchDaemon in
+  /Library/LaunchDaemons that runs as \$SUDO_USER (falls back to nobody).
+  Server mode (frps) always needs sudo.
   --version VERSION       pin a specific FRP version (e.g. 0.62.1); default: latest
   -4 | --ipv4             force IPv4 for downloads
   -6 | --ipv6             force IPv6 for downloads
