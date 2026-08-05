@@ -1,4 +1,15 @@
 #!/usr/bin/env bash
+#
+# Linux-only installer for snell-server (+ optional shadow-tls).
+#
+# Upstream nssurge only ships snell-server as linux-{amd64,aarch64,armv7l,i386}
+# — there is no darwin/macOS binary — so this script targets Linux boxes
+# only. On macOS you'd need to run snell in a Linux container (Docker with a
+# restart policy) instead of natively.
+#
+# Service registration is systemd-only (/lib/systemd/system) and the script
+# assumes systemctl is available and root is required.
+#
 snell_homepage="https://kb.nssurge.com/surge-knowledge-base/release-notes/snell"
 snell_bin="/usr/local/bin/snell-server"
 snell_config_file="/etc/snell/snell-server.conf"
@@ -270,6 +281,9 @@ EOF
     systemctl enable shadow-tls
     systemctl restart shadow-tls
 }
+
+# Linux-only (no darwin snell-server binary exists upstream; see header)
+[ "$(uname -s)" != "Linux" ] && error "Snell/install is Linux-only — no macOS binary exists upstream. Use Docker on macOS if you need snell there."
 
 # run as root
 [ $EUID -ne 0 ] && echo "Error: This script must be run as root!" && exit 1
