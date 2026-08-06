@@ -1,0 +1,334 @@
+#!/usr/bin/env bash
+#
+# Colima installer for macOS.
+#
+# Modes:
+#   default:              install colima + docker CLI via brew. No service —
+#                         user runs `colima start` themselves. Idempotent:
+#                         re-runs are cheap.
+#
+#   --setup:              default + write a per-user LaunchAgent to
+#                         ~/Library/LaunchAgents/. VM starts at login and can
+#                         be loaded over SSH via LimitLoadToSessionType=Background.
+#                         No sudo. Dies when the user logs out.
+#
+#   --shared:             install + system-wide shared instance:
+#                           * colima group (created if missing)
+#                           * /opt/colima + /opt/lima owned by --user, setgid
+#                             colima so files under the tree inherit the group
+#                           * LaunchDaemon at /Library/LaunchDaemons/*.plist,
+#                             UserName=--user, GroupName=colima
+#                           * socket at /opt/colima/default/docker.sock,
+#                             mode 0660, group=colima (via Umask=7 in plist)
+#                         Requires sudo. Survives reboot and logout.
+#
+# Additional flags:
+#   --user NAME           (--shared only) user the shared daemon runs as
+#                         (default: $SUDO_USER)
+#   --members u1,u2,u3    (--shared only) users to add to the colima group
+#   -h | --help
+#
+# Companion for clients (both users on the same Mac in --shared mode):
+#   export DOCKER_HOST=unix:///opt/colima/default/docker.sock
+
+function warn()  { echo -e "\033[1;33m${*}\033[0m"; }
+function error() { echo -e "\033[1;31m${*}\033[0m"; exit 1; }
+function info()  { echo -e "\033[1;32m${*}\033[0m"; }
+function installed() { command -v "$1" >/dev/null 2>&1; }
+
+# ---------- OS gate ----------
+
+[ "$(uname -s)" != "Darwin" ] && error "colima/install is macOS-only (Linux users: just apt/dnf install docker)"
+
+# ---------- defaults + argument parsing ----------
+
+setup=false
+shared=false
+owner_user=""
+members=""
+
+usage() {
+    sed -n '3,32p' "$0" | sed 's/^# //; s/^#//'
+    exit 0
+}
+
+POSITIONAL=()
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --setup)   setup=true; shift ;;
+        --shared)  shared=true; shift ;;
+        --user)    owner_user="$2"; shift 2 ;;
+        --members) members="$2"; shift 2 ;;
+        -h|--help) usage ;;
+        *) warn "unknown option: $1"; POSITIONAL+=("$1"); shift ;;
+    esac
+done
+set -- "${POSITIONAL[@]}"
+
+# --setup and --shared are mutually exclusive: shared is heavier, wins.
+if [ "$setup" = true ] && [ "$shared" = true ]; then
+    warn "--setup is redundant with --shared, ignoring --setup"
+    setup=false
+fi
+
+# ---------- root policy ----------
+
+if [ "$shared" = true ]; then
+    [ "$(id -u)" -ne 0 ] && error "--shared requires sudo. Re-run with: sudo bash $(basename "$0") --shared ..."
+    # We need SUDO_USER (or explicit --user) so brew can run as a real user.
+    [ -z "$owner_user" ] && owner_user="${SUDO_USER:-}"
+    [ -z "$owner_user" ] && error "cannot determine daemon user — pass --user NAME or run via sudo (not as root directly)"
+    id -u "$owner_user" >/dev/null 2>&1 || error "user '$owner_user' does not exist"
+    invoking_user="$owner_user"
+else
+    [ "$(id -u)" -eq 0 ] && error "default/--setup must be run as your normal user (brew refuses to run as root)"
+    invoking_user="$(whoami)"
+fi
+
+# ---------- locate brew ----------
+
+brew_bin=""
+if [ -x /opt/homebrew/bin/brew ]; then
+    brew_bin=/opt/homebrew/bin/brew         # Apple Silicon
+elif [ -x /usr/local/bin/brew ]; then
+    brew_bin=/usr/local/bin/brew            # Intel
+elif installed brew; then
+    brew_bin="$(command -v brew)"
+else
+    error "homebrew not installed — install it first from https://brew.sh"
+fi
+brew_prefix="$("$brew_bin" --prefix 2>/dev/null)"
+[ -z "$brew_prefix" ] && error "could not resolve brew prefix"
+
+# ---------- brew install helper ----------
+# brew refuses to run as root, so shell out via `sudo -u` when we're currently
+# root. When we're not root, just call directly.
+
+brew_run() {
+    if [ "$(id -u)" -eq 0 ]; then
+        sudo -u "$invoking_user" "$brew_bin" "$@"
+    else
+        "$brew_bin" "$@"
+    fi
+}
+
+brew_ensure() {
+    local pkg="$1"
+    if brew_run list --formula "$pkg" >/dev/null 2>&1; then
+        info "  $pkg already installed"
+    else
+        info "  installing $pkg via brew..."
+        brew_run install "$pkg" || error "brew install $pkg failed"
+    fi
+}
+
+# ---------- 1. ensure colima + docker CLI ----------
+
+info "checking / installing colima + docker CLI..."
+brew_ensure colima
+brew_ensure docker
+brew_ensure docker-compose
+
+colima_bin="$brew_prefix/bin/colima"
+[ -x "$colima_bin" ] || error "colima binary not found at $colima_bin after install"
+
+info "colima $($colima_bin version 2>&1 | head -n1)"
+
+# If neither --setup nor --shared, we're done.
+if [ "$setup" = false ] && [ "$shared" = false ]; then
+    info ""
+    info "colima installed. Start manually with:"
+    info "  $colima_bin start"
+    info ""
+    info "Optional next steps:"
+    info "  $(basename "$0") --setup      # per-user LaunchAgent (starts at login)"
+    info "  sudo bash $(basename "$0") --shared --members u1,u2   # system-wide shared VM"
+    exit 0
+fi
+
+# ---------- 2a. --setup: per-user LaunchAgent ----------
+
+if [ "$setup" = true ]; then
+    label="net.abiosoft.colima.${invoking_user}"
+    plist="$HOME/Library/LaunchAgents/${label}.plist"
+    log_path="$HOME/Library/Logs/colima.log"
+
+    mkdir -p "$HOME/Library/LaunchAgents" "$HOME/Library/Logs"
+
+    cat > "$plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>${label}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>${colima_bin}</string>
+        <string>start</string>
+        <string>--foreground</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>${brew_prefix}/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+    <key>LimitLoadToSessionType</key>
+    <string>Background</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>${log_path}</string>
+    <key>StandardErrorPath</key>
+    <string>${log_path}</string>
+</dict>
+</plist>
+PLIST
+
+    chmod 644 "$plist"
+
+    # load -w works from any user context (SSH included) because we set the
+    # Background session type. bootstrap gui/<uid> would need an Aqua session.
+    launchctl unload "$plist" 2>/dev/null || true
+    if launchctl load -w "$plist"; then
+        info "${label} loaded ($plist)"
+    else
+        warn "launchctl load failed. The plist is in place and will load on next login."
+        warn "To load now: launchctl load -w $plist"
+    fi
+
+    info ""
+    info "Per-user Colima LaunchAgent installed for $invoking_user:"
+    info "  plist  : $plist"
+    info "  log    : $log_path"
+    info "  ⚠ dies when $invoking_user logs out. Use --shared for reboot persistence."
+    exit 0
+fi
+
+# ---------- 2b. --shared: system-wide LaunchDaemon ----------
+
+info ""
+info "configuring shared Colima instance (owner: $owner_user)..."
+
+# Create the colima group (idempotent).
+if ! dseditgroup -o read colima >/dev/null 2>&1; then
+    dseditgroup -o create colima || error "failed to create colima group"
+    info "  created group: colima"
+fi
+
+# Owner must be in the group.
+dseditgroup -o edit -a "$owner_user" -t user colima 2>/dev/null || true
+
+# Add additional members.
+if [ -n "$members" ]; then
+    IFS=,
+    for m in $members; do
+        [ -z "$m" ] && continue
+        if ! id -u "$m" >/dev/null 2>&1; then
+            warn "  member '$m' does not exist, skipping"
+            continue
+        fi
+        dseditgroup -o edit -a "$m" -t user colima 2>/dev/null || true
+        info "  added $m to colima group"
+    done
+    unset IFS
+fi
+
+# Shared data dirs. Setgid so all descendants inherit the colima group.
+for d in /opt/colima /opt/lima; do
+    mkdir -p "$d"
+    chown "$owner_user:colima" "$d"
+    chmod 2775 "$d"
+done
+
+# Pre-create the log file — /var/log is root:wheel 755, and the daemon runs as
+# a non-root user, so it can't otherwise create its own log for append.
+log_path="/var/log/colima-shared.log"
+: > "$log_path" 2>/dev/null || touch "$log_path"
+chown "$owner_user:colima" "$log_path"
+chmod 664 "$log_path"
+
+# Write the LaunchDaemon plist.
+label="net.abiosoft.colima.shared"
+plist="/Library/LaunchDaemons/${label}.plist"
+owner_home="$(dscl . -read "/Users/$owner_user" NFSHomeDirectory 2>/dev/null | awk '{print $2}')"
+[ -z "$owner_home" ] && owner_home="/Users/$owner_user"
+
+cat > "$plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>${label}</string>
+    <key>UserName</key>
+    <string>${owner_user}</string>
+    <key>GroupName</key>
+    <string>colima</string>
+    <key>WorkingDirectory</key>
+    <string>/opt/colima</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>${colima_bin}</string>
+        <string>start</string>
+        <string>--foreground</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>${owner_home}</string>
+        <key>COLIMA_HOME</key>
+        <string>/opt/colima</string>
+        <key>LIMA_HOME</key>
+        <string>/opt/lima</string>
+        <key>PATH</key>
+        <string>${brew_prefix}/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+    <key>Umask</key>
+    <integer>7</integer>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>${log_path}</string>
+    <key>StandardErrorPath</key>
+    <string>${log_path}</string>
+</dict>
+</plist>
+PLIST
+
+chown root:wheel "$plist"
+chmod 644 "$plist"
+
+# Bootstrap into the system domain.
+launchctl bootout "system/${label}" >/dev/null 2>&1 || true
+if launchctl bootstrap system "$plist" 2>/dev/null; then
+    launchctl enable "system/${label}" >/dev/null 2>&1 || true
+else
+    launchctl unload -w "$plist" >/dev/null 2>&1 || true
+    launchctl load -w "$plist" || error "failed to load ${label} via launchd"
+fi
+
+info ""
+info "Shared Colima LaunchDaemon installed:"
+info "  plist       : $plist"
+info "  data dir    : /opt/colima  (COLIMA_HOME)"
+info "  lima dir    : /opt/lima    (LIMA_HOME)"
+info "  socket      : /opt/colima/default/docker.sock"
+info "  log         : $log_path"
+info "  daemon user : $owner_user"
+info "  group       : colima"
+info ""
+info "Each member of the colima group can now do:"
+info "  export DOCKER_HOST=unix:///opt/colima/default/docker.sock"
+info "  docker ps"
+info ""
+info "For fish users:"
+info "  set -Ux DOCKER_HOST unix:///opt/colima/default/docker.sock"
+info ""
+info "Group membership takes effect on next login. To refresh the current"
+info "shell without logging out: id -Gn should list 'colima'; if it doesn't,"
+info "run 'newgrp colima' (bash/zsh) or start a new fish session."
