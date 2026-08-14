@@ -189,21 +189,45 @@ PLIST
 
     chmod 644 "$plist"
 
-    # load -w works from any user context (SSH included) because we set the
-    # Background session type. bootstrap gui/<uid> would need an Aqua session.
-    launchctl unload "$plist" 2>/dev/null || true
-    if launchctl load -w "$plist"; then
-        info "${label} loaded ($plist)"
+    # Target user/<uid> explicitly. `launchctl load -w` is legacy and unreliable
+    # from SSH (it exits 0 while printing "Load failed: 5: Input/output error"),
+    # `bootstrap gui/<uid>` needs an Aqua session that SSH doesn't have. The
+    # modern `bootstrap user/<uid>` pairs cleanly with LimitLoadToSessionType
+    # = Background in the plist and works over SSH.
+    local uid_domain="user/$(id -u)"
+    launchctl bootout "${uid_domain}/${label}" >/dev/null 2>&1 || true
+    if ! launchctl bootstrap "$uid_domain" "$plist" 2>&1; then
+        # Older launchctl fallback — mostly for pre-macOS-11 hosts.
+        launchctl load -w "$plist" >/dev/null 2>&1 || true
+    fi
+    launchctl enable "${uid_domain}/${label}" >/dev/null 2>&1 || true
+
+    # Verify — `bootstrap` exits 0 for many failure modes, so trust
+    # `launchctl list` as the source of truth.
+    if launchctl list "${label}" >/dev/null 2>&1; then
+        info "${label} loaded in ${uid_domain}"
+        launchctl kickstart -k "${uid_domain}/${label}" >/dev/null 2>&1 || true
     else
-        warn "launchctl load failed. The plist is in place and will load on next login."
-        warn "To load now: launchctl load -w $plist"
+        warn "load did not stick — service not in launchctl list."
+        warn "  plist is in place at $plist"
+        warn "  retry manually:  launchctl bootstrap ${uid_domain} $plist"
+        warn "  or run colima directly this session:  colima start"
     fi
 
     info ""
     info "Per-user Colima LaunchAgent installed for $invoking_user:"
     info "  plist  : $plist"
     info "  log    : $log_path"
-    info "  ⚠ dies when $invoking_user logs out. Use --shared for reboot persistence."
+    info ""
+    info "First launch downloads a Lima base image (~500MB) — the VM can take"
+    info "up to 60s to be ready. Watch progress with:"
+    info "  tail -f $log_path"
+    info ""
+    info "Once the VM is up, point your docker CLI at colima:"
+    info "  docker context use colima"
+    info "  docker ps"
+    info ""
+    info "⚠ Agent dies when $invoking_user logs out. Use --shared for reboot persistence."
     exit 0
 fi
 
