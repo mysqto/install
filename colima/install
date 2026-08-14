@@ -199,23 +199,36 @@ PLIST
     # `local` outside a function is a soft error and drops the assignment,
     # which then breaks the launchctl call downstream.
     uid_domain="user/$(id -u)"
-    launchctl bootout "${uid_domain}/${label}" >/dev/null 2>&1 || true
-    if ! launchctl bootstrap "$uid_domain" "$plist" 2>&1; then
-        # Older launchctl fallback — mostly for pre-macOS-11 hosts.
-        launchctl load -w "$plist" >/dev/null 2>&1 || true
-    fi
-    launchctl enable "${uid_domain}/${label}" >/dev/null 2>&1 || true
 
-    # Verify — `bootstrap` exits 0 for many failure modes, so trust
-    # `launchctl list` as the source of truth.
+    # Defensive bootout across every domain macOS might have registered the
+    # label in. On Sequoia a stale gui/<uid> or system registration can block
+    # a fresh bootstrap into user/<uid> with "Input/output error", even though
+    # the plist itself is perfectly valid.
+    for d in "system" "gui/$(id -u)" "$uid_domain"; do
+        launchctl bootout "${d}/${label}" >/dev/null 2>&1 || true
+    done
+
+    # Try bootstrap; show the real error if it fails (previous versions
+    # swallowed stderr and reported a stale "loaded" state).
+    bootstrap_err="$(launchctl bootstrap "$uid_domain" "$plist" 2>&1)"
+    launchctl enable "${uid_domain}/${label}" >/dev/null 2>&1 || true
+    launchctl kickstart -k "${uid_domain}/${label}" >/dev/null 2>&1 || true
+
+    # Trust `launchctl list` as the source of truth — bootstrap can exit 0
+    # even when the service didn't actually land.
     if launchctl list "${label}" >/dev/null 2>&1; then
         info "${label} loaded in ${uid_domain}"
-        launchctl kickstart -k "${uid_domain}/${label}" >/dev/null 2>&1 || true
     else
-        warn "load did not stick — service not in launchctl list."
-        warn "  plist is in place at $plist"
-        warn "  retry manually:  launchctl bootstrap ${uid_domain} $plist"
-        warn "  or run colima directly this session:  colima start"
+        [ -n "$bootstrap_err" ] && warn "launchctl bootstrap: $bootstrap_err"
+        warn "LaunchAgent didn't stick — falling back to plain 'colima start'."
+        warn "The VM will run for this session but won't auto-start on next login."
+        warn "To retry the LaunchAgent later:"
+        warn "  launchctl bootstrap ${uid_domain} $plist"
+        # Boot colima directly so the socket exists and the docker context
+        # gets registered. Runs synchronously.
+        if command -v colima >/dev/null 2>&1; then
+            "$colima_bin" start || warn "colima start failed too — check: colima status"
+        fi
     fi
 
     info ""
@@ -224,48 +237,71 @@ PLIST
     info "  log    : $log_path"
     info ""
 
-    # Wait for the VM to actually come up, then switch docker context. First
-    # launch pulls a ~500MB Lima image over the network so it can be genuinely
-    # slow; bound the wait at 3 minutes and let the user Ctrl+C if they want to
-    # come back later.
+    # Wait for the VM to actually come up. First launch pulls a ~500MB Lima
+    # image; bound the wait at 3 minutes with heartbeats so Ctrl+C is viable.
     colima_sock="$HOME/.colima/default/docker.sock"
     info "Waiting for colima socket at $colima_sock (up to 3min, Ctrl+C to skip)..."
     waited=0
     while [ ! -S "$colima_sock" ] && [ $waited -lt 180 ]; do
         sleep 2
         waited=$((waited + 2))
-        # a heartbeat every ~10s so the user knows we're alive
         [ $((waited % 10)) -eq 0 ] && printf '  ...%ds\n' "$waited" >&2
     done
 
     if [ -S "$colima_sock" ]; then
         info "✓ colima ready after ${waited}s"
 
-        # Switch docker CLI context to colima if it's pointing elsewhere.
-        # Docker Desktop leaves 'desktop-linux' as active; Colima adds 'colima'
-        # on start but doesn't force-switch. Do it explicitly.
+        # Point docker CLI at colima. Two mechanisms, in order of preference:
+        #   1) `docker context use colima` — clean, portable, requires the
+        #      colima context to be registered (colima does this on start,
+        #      but a botched previous run may have left it missing).
+        #   2) Manually create the colima context.
+        #   3) Fall back to a DOCKER_HOST hint if the context store is broken.
         if command -v docker >/dev/null 2>&1; then
-            current_ctx="$(docker context show 2>/dev/null || echo unknown)"
-            if [ "$current_ctx" != "colima" ]; then
-                if docker context use colima >/dev/null 2>&1; then
-                    info "✓ docker context: $current_ctx → colima"
+            has_colima_ctx=false
+            if docker context ls --format '{{.Name}}' 2>/dev/null | grep -qx colima; then
+                has_colima_ctx=true
+            else
+                # Register it ourselves.
+                if docker context create colima \
+                    --docker "host=unix://$colima_sock" \
+                    --description "Colima (created by colima/install)" \
+                    >/dev/null 2>&1; then
+                    has_colima_ctx=true
+                    info "✓ registered docker context 'colima' → unix://$colima_sock"
+                fi
+            fi
+
+            if [ "$has_colima_ctx" = true ]; then
+                current_ctx="$(docker context show 2>/dev/null || echo unknown)"
+                if [ "$current_ctx" != "colima" ]; then
+                    ctx_err="$(docker context use colima 2>&1 >/dev/null)"
+                    if [ $? -eq 0 ]; then
+                        info "✓ docker context: $current_ctx → colima"
+                    else
+                        warn "docker context use colima failed: $ctx_err"
+                        warn "  fall back to env var:  set -Ux DOCKER_HOST unix://$colima_sock"
+                    fi
                 else
-                    warn "docker context use colima failed — run it manually"
+                    info "✓ docker context already 'colima'"
                 fi
             else
-                info "✓ docker context already 'colima'"
+                warn "could not register/find docker context; use DOCKER_HOST instead:"
+                warn "  set -Ux DOCKER_HOST unix://$colima_sock   # fish"
+                warn "  export DOCKER_HOST=unix://$colima_sock   # bash/zsh"
             fi
-            # Prove it works.
+
             if docker ps >/dev/null 2>&1; then
                 info "✓ docker ps succeeds — you're good to go"
             else
-                warn "docker ps still failing; try DOCKER_HOST=unix://$colima_sock docker ps"
+                warn "docker ps still failing. Fastest fallback:"
+                warn "  set -Ux DOCKER_HOST unix://$colima_sock   # fish"
             fi
         fi
     else
         warn "colima socket didn't appear after 3min."
         warn "  Check the log:  tail $log_path"
-        warn "  Once socket exists, run:  docker context use colima && docker ps"
+        warn "  Once socket exists:  set -Ux DOCKER_HOST unix://$colima_sock  (fish)"
     fi
 
     info ""
