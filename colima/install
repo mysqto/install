@@ -46,6 +46,12 @@ setup=false
 shared=false
 owner_user=""
 members=""
+# DNS servers baked into the LaunchAgent/LaunchDaemon ProgramArguments as
+# `--dns X --dns Y`, so the VM never falls back to `::1` (which fails with
+# "connection refused" because there's no DNS server inside the guest).
+# Cloudflare + Google as safe defaults; override with --dns 1.1.1.1,8.8.8.8
+# or repeat --dns.
+dns_servers="1.1.1.1,8.8.8.8"
 
 usage() {
     sed -n '3,32p' "$0" | sed 's/^# //; s/^#//'
@@ -59,6 +65,15 @@ while [ $# -gt 0 ]; do
         --shared)  shared=true; shift ;;
         --user)    owner_user="$2"; shift 2 ;;
         --members) members="$2"; shift 2 ;;
+        --dns)
+            # accept either comma-separated or repeated
+            if [ "$dns_servers" = "1.1.1.1,8.8.8.8" ]; then
+                dns_servers="$2"      # first --dns replaces the default
+            else
+                dns_servers="${dns_servers},$2"
+            fi
+            shift 2
+            ;;
         -h|--help) usage ;;
         *) warn "unknown option: $1"; POSITIONAL+=("$1"); shift ;;
     esac
@@ -120,6 +135,23 @@ brew_ensure() {
         info "  installing $pkg via brew..."
         brew_run install "$pkg" || error "brew install $pkg failed"
     fi
+}
+
+# Render "1.1.1.1,8.8.8.8" as plist array entries, correctly indented for the
+# ProgramArguments block. Emits one <string>--dns</string> / <string>ADDR</string>
+# pair per DNS server, no trailing newline.
+dns_plist_args() {
+    local out="" ifs_save=$IFS
+    IFS=,
+    local first=true
+    for d in $dns_servers; do
+        d="${d// /}"        # strip whitespace
+        [ -z "$d" ] && continue
+        if $first; then first=false; else out+=$'\n'; fi
+        out+="        <string>--dns</string>"$'\n'"        <string>$d</string>"
+    done
+    IFS=$ifs_save
+    printf '%s' "$out"
 }
 
 # ---------- 1. ensure colima + docker CLI ----------
@@ -204,6 +236,8 @@ if [ "$setup" = true ]; then
 
     mkdir -p "$HOME/Library/LaunchAgents" "$HOME/Library/Logs"
 
+    dns_xml="$(dns_plist_args)"
+
     cat > "$plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -216,6 +250,7 @@ if [ "$setup" = true ]; then
         <string>${colima_bin}</string>
         <string>start</string>
         <string>--foreground</string>
+${dns_xml}
     </array>
     <key>EnvironmentVariables</key>
     <dict>
@@ -406,6 +441,7 @@ label="net.abiosoft.colima.shared"
 plist="/Library/LaunchDaemons/${label}.plist"
 owner_home="$(dscl . -read "/Users/$owner_user" NFSHomeDirectory 2>/dev/null | awk '{print $2}')"
 [ -z "$owner_home" ] && owner_home="/Users/$owner_user"
+dns_xml="$(dns_plist_args)"
 
 cat > "$plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -425,6 +461,7 @@ cat > "$plist" <<PLIST
         <string>${colima_bin}</string>
         <string>start</string>
         <string>--foreground</string>
+${dns_xml}
     </array>
     <key>EnvironmentVariables</key>
     <dict>
