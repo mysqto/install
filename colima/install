@@ -194,7 +194,11 @@ PLIST
     # `bootstrap gui/<uid>` needs an Aqua session that SSH doesn't have. The
     # modern `bootstrap user/<uid>` pairs cleanly with LimitLoadToSessionType
     # = Background in the plist and works over SSH.
-    local uid_domain="user/$(id -u)"
+    #
+    # NB: no `local` here — this block runs at top-level, not inside a function.
+    # `local` outside a function is a soft error and drops the assignment,
+    # which then breaks the launchctl call downstream.
+    uid_domain="user/$(id -u)"
     launchctl bootout "${uid_domain}/${label}" >/dev/null 2>&1 || true
     if ! launchctl bootstrap "$uid_domain" "$plist" 2>&1; then
         # Older launchctl fallback — mostly for pre-macOS-11 hosts.
