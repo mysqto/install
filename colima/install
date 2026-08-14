@@ -134,6 +134,55 @@ colima_bin="$brew_prefix/bin/colima"
 
 info "colima $($colima_bin version 2>&1 | head -n1)"
 
+# ---------- 1a. clean up Docker Desktop leftovers in ~/.docker/config.json ----------
+# If the user previously had Docker Desktop, this file will still reference
+# docker-credential-desktop (which uninstalled with DD), so every `docker pull`
+# fails with "docker-credential-desktop: executable file not found" — even for
+# anonymous images. Rewrite credsStore to osxkeychain (bundled with brew's
+# docker formula) and drop credHelpers pointing at 'desktop'.
+cleanup_docker_desktop_leftovers() {
+    local user_home="$1"
+    local cfg="$user_home/.docker/config.json"
+    [ -f "$cfg" ] || return 0
+    grep -q '"desktop"' "$cfg" 2>/dev/null || return 0
+
+    local osxkc="$brew_prefix/bin/docker-credential-osxkeychain"
+    local new_helper=""
+    [ -x "$osxkc" ] && new_helper=osxkeychain
+
+    python3 - "$cfg" "$new_helper" <<'PY' || warn "  docker config cleanup skipped (python3 issue)"
+import json, sys
+path, new_helper = sys.argv[1], (sys.argv[2] or None)
+with open(path) as f:
+    cfg = json.load(f)
+changed = False
+if cfg.get('credsStore') == 'desktop':
+    if new_helper:
+        cfg['credsStore'] = new_helper
+    else:
+        cfg.pop('credsStore', None)
+    changed = True
+if isinstance(cfg.get('credHelpers'), dict):
+    remaining = {k: v for k, v in cfg['credHelpers'].items() if v != 'desktop'}
+    if remaining != cfg['credHelpers']:
+        if remaining:
+            cfg['credHelpers'] = remaining
+        else:
+            cfg.pop('credHelpers')
+        changed = True
+if changed:
+    with open(path, 'w') as f:
+        json.dump(cfg, f, indent=2)
+    print(f"  cleaned Docker Desktop credential helpers in {path}")
+PY
+}
+
+# Only run this in non-root modes (--shared is root and shouldn't touch the
+# invoking user's docker config — the setgid/HOME dance is separate).
+if [ "$(id -u)" -ne 0 ]; then
+    cleanup_docker_desktop_leftovers "$HOME"
+fi
+
 # If neither --setup nor --shared, we're done.
 if [ "$setup" = false ] && [ "$shared" = false ]; then
     info ""
