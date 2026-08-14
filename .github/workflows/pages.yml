@@ -1,0 +1,53 @@
+name: Deploy to GitHub Pages
+
+# Deploys the gh-pages branch (which IS the site root) via the modern
+# Actions-based Pages pipeline instead of the legacy Jekyll builder. Motivation:
+# the legacy builder fails silently — its API only surfaces "Page build failed"
+# with no log — and leaves the last-good content served, so a bad push can
+# stealth-404 for days. This workflow shows the actual error in the Actions
+# tab if a deploy fails.
+
+on:
+  push:
+    branches: [gh-pages]
+  # Manual re-trigger from the Actions tab, useful when we suspect a transient
+  # upstream failure and want to redeploy the current HEAD without an empty
+  # commit.
+  workflow_dispatch:
+
+# Least-privilege token — write only what Pages needs.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deploy at a time. Queue overlapping pushes rather than cancelling in
+# flight, so we always end up serving the tip of the branch.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      # Upload the whole repo as the site artifact. No Jekyll — .nojekyll at
+      # the root tells the deploy path to skip processing, so shell scripts
+      # (colima/install, frp/install, …) are served verbatim.
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: .
+
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4
