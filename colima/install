@@ -292,6 +292,19 @@ PLIST
         launchctl bootout "${d}/${label}" >/dev/null 2>&1 || true
     done
 
+    # Stop the running VM so the plist's new args (esp. --dns) actually take
+    # effect on the next start. Without this step, colima's `start --dns X`
+    # under the launchd-driven ExecStart hits an already-running VM, treats
+    # it as a no-op, and the guest keeps its stale /etc/resolv.conf from the
+    # previous cloud-init run. Order: bootout first (so launchd doesn't
+    # re-spawn --foreground under us), then stop.
+    if "$colima_bin" status 2>/dev/null | grep -qi running; then
+        info "Stopping running colima VM to apply new plist args..."
+        "$colima_bin" stop >/dev/null 2>&1 || true
+        # Give Lima a beat to release the VM state file before we bootstrap.
+        sleep 2
+    fi
+
     # Try bootstrap; show the real error if it fails (previous versions
     # swallowed stderr and reported a stale "loaded" state).
     bootstrap_err="$(launchctl bootstrap "$uid_domain" "$plist" 2>&1)"
@@ -490,6 +503,20 @@ PLIST
 
 chown root:wheel "$plist"
 chmod 644 "$plist"
+
+# Same reasoning as in --setup: stop the VM so the daemon's new plist args
+# (esp. --dns) take effect on the next start. Runs as the owner user because
+# colima's state and lockfiles live in COLIMA_HOME=/opt/colima. bootout below
+# will kill the launchd-driven process; this stops the underlying VM cleanly.
+if sudo -u "$owner_user" \
+    COLIMA_HOME=/opt/colima LIMA_HOME=/opt/lima \
+    "$colima_bin" status 2>/dev/null | grep -qi running; then
+    info "Stopping running shared colima VM to apply new plist args..."
+    sudo -u "$owner_user" \
+        COLIMA_HOME=/opt/colima LIMA_HOME=/opt/lima \
+        "$colima_bin" stop >/dev/null 2>&1 || true
+    sleep 2
+fi
 
 # Bootstrap into the system domain.
 launchctl bootout "system/${label}" >/dev/null 2>&1 || true
