@@ -46,6 +46,7 @@ setup=false
 shared=false
 owner_user=""
 members=""
+recreate_vm=false
 # DNS servers baked into the LaunchAgent/LaunchDaemon ProgramArguments as
 # `--dns X --dns Y`, so the VM never falls back to `::1` (which fails with
 # "connection refused" because there's no DNS server inside the guest).
@@ -74,6 +75,13 @@ while [ $# -gt 0 ]; do
             fi
             shift 2
             ;;
+        --recreate-vm)
+            # Destroy the VM disk (colima delete) before restart. Necessary
+            # when changing DNS on an existing setup: cloud-init only writes
+            # /etc/resolv.conf on the VM's first boot, so subsequent stops
+            # and starts don't re-provision it. Nuclear — loses local
+            # images/containers/volumes.
+            recreate_vm=true; shift ;;
         -h|--help) usage ;;
         *) warn "unknown option: $1"; POSITIONAL+=("$1"); shift ;;
     esac
@@ -292,15 +300,21 @@ PLIST
         launchctl bootout "${d}/${label}" >/dev/null 2>&1 || true
     done
 
-    # Stop the running VM so the plist's new args (esp. --dns) actually take
-    # effect on the next start. Without this step, colima's `start --dns X`
-    # under the launchd-driven ExecStart hits an already-running VM, treats
-    # it as a no-op, and the guest keeps its stale /etc/resolv.conf from the
-    # previous cloud-init run. Order: bootout first (so launchd doesn't
-    # re-spawn --foreground under us), then stop.
-    if "$colima_bin" status 2>/dev/null | grep -qi running; then
-        info "Stopping running colima VM to apply new plist args..."
-        "$colima_bin" stop >/dev/null 2>&1 || true
+    # Stop (or destroy) the running VM so the plist's new args (esp. --dns)
+    # actually take effect. Without this step, colima's `start --dns X` under
+    # the launchd-driven ExecStart hits an already-running VM, treats it as a
+    # no-op, and the guest keeps its stale /etc/resolv.conf.
+    #
+    # `colima status` writes its status line to stderr via logrus INFO, so we
+    # 2>&1 it before grep or the check silently misses a running VM.
+    if "$colima_bin" status 2>&1 | grep -qi running; then
+        if [ "$recreate_vm" = true ]; then
+            warn "Destroying existing colima VM (--recreate-vm) — loses local images/volumes."
+            "$colima_bin" delete --force >/dev/null 2>&1 || true
+        else
+            info "Stopping running colima VM to apply new plist args..."
+            "$colima_bin" stop >/dev/null 2>&1 || true
+        fi
         # Give Lima a beat to release the VM state file before we bootstrap.
         sleep 2
     fi
@@ -504,17 +518,24 @@ PLIST
 chown root:wheel "$plist"
 chmod 644 "$plist"
 
-# Same reasoning as in --setup: stop the VM so the daemon's new plist args
-# (esp. --dns) take effect on the next start. Runs as the owner user because
-# colima's state and lockfiles live in COLIMA_HOME=/opt/colima. bootout below
-# will kill the launchd-driven process; this stops the underlying VM cleanly.
+# Same reasoning as in --setup: stop (or delete) the VM so the daemon's new
+# plist args take effect. Runs as the owner user because colima's state and
+# lockfiles live in COLIMA_HOME=/opt/colima. `colima status` -> stderr so
+# 2>&1 before grep.
 if sudo -u "$owner_user" \
     COLIMA_HOME=/opt/colima LIMA_HOME=/opt/lima \
-    "$colima_bin" status 2>/dev/null | grep -qi running; then
-    info "Stopping running shared colima VM to apply new plist args..."
-    sudo -u "$owner_user" \
-        COLIMA_HOME=/opt/colima LIMA_HOME=/opt/lima \
-        "$colima_bin" stop >/dev/null 2>&1 || true
+    "$colima_bin" status 2>&1 | grep -qi running; then
+    if [ "$recreate_vm" = true ]; then
+        warn "Destroying existing shared colima VM (--recreate-vm) — loses local images/volumes."
+        sudo -u "$owner_user" \
+            COLIMA_HOME=/opt/colima LIMA_HOME=/opt/lima \
+            "$colima_bin" delete --force >/dev/null 2>&1 || true
+    else
+        info "Stopping running shared colima VM to apply new plist args..."
+        sudo -u "$owner_user" \
+            COLIMA_HOME=/opt/colima LIMA_HOME=/opt/lima \
+            "$colima_bin" stop >/dev/null 2>&1 || true
+    fi
     sleep 2
 fi
 
