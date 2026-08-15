@@ -300,24 +300,48 @@ PLIST
         launchctl bootout "${d}/${label}" >/dev/null 2>&1 || true
     done
 
-    # Stop (or destroy) the running VM so the plist's new args (esp. --dns)
-    # actually take effect. Without this step, colima's `start --dns X` under
-    # the launchd-driven ExecStart hits an already-running VM, treats it as a
-    # no-op, and the guest keeps its stale /etc/resolv.conf.
+    # Deal with any pre-existing colima state before we bootstrap the fresh
+    # plist. Three real cases we've hit on macOS Sequoia:
+    #   (a) VM is genuinely running          → stop, or delete on --recreate-vm
+    #   (b) State is corrupt (colima status  → delete forcefully; only way to
+    #       fatals with 'error retrieving      unblock. `colima start` would
+    #       runtime' etc)                      otherwise say "already running,
+    #                                          ignoring" and no-op forever.
+    #   (c) Dead socket file lying around    → rm the file, otherwise our
+    #       from a prior crash but no daemon    downstream socket-existence
+    #       or VM behind it                     check gives a false positive.
     #
-    # `colima status` writes its status line to stderr via logrus INFO, so we
-    # 2>&1 it before grep or the check silently misses a running VM.
-    if "$colima_bin" status 2>&1 | grep -qi running; then
-        if [ "$recreate_vm" = true ]; then
-            warn "Destroying existing colima VM (--recreate-vm) — loses local images/volumes."
-            "$colima_bin" delete --force >/dev/null 2>&1 || true
-        else
-            info "Stopping running colima VM to apply new plist args..."
-            "$colima_bin" stop >/dev/null 2>&1 || true
-        fi
-        # Give Lima a beat to release the VM state file before we bootstrap.
-        sleep 2
+    # Use colima's own exit code (not grep on stderr — the msg=running text
+    # matches both "colima is running" and "colima not running").
+    colima_state=unknown
+    if "$colima_bin" status >/dev/null 2>&1; then
+        colima_state=running
+    elif "$colima_bin" status 2>&1 | grep -q 'error retrieving current runtime\|already running, ignoring'; then
+        colima_state=corrupt
     fi
+
+    case "$colima_state" in
+        running)
+            if [ "$recreate_vm" = true ]; then
+                warn "Destroying existing colima VM (--recreate-vm) — loses local images/volumes."
+                "$colima_bin" delete --force >/dev/null 2>&1 || true
+            else
+                info "Stopping running colima VM to apply new plist args..."
+                "$colima_bin" stop >/dev/null 2>&1 || true
+            fi
+            sleep 2
+            ;;
+        corrupt)
+            warn "colima state is corrupt (status fataled) — forcing 'colima delete --force' to recover."
+            "$colima_bin" delete --force >/dev/null 2>&1 || true
+            sleep 2
+            ;;
+    esac
+
+    # Remove any stale socket files that survived. Downstream code checks
+    # `[ -S "$sock" ]`, which returns true even for a 0-byte orphan from a
+    # crashed daemon; that gives a "colima ready after 0s" lie.
+    rm -f "$HOME/.colima/default/docker.sock" "$HOME/.colima/default/containerd.sock" 2>/dev/null || true
 
     # Try bootstrap; show the real error if it fails (previous versions
     # swallowed stderr and reported a stale "loaded" state).
@@ -350,16 +374,26 @@ PLIST
 
     # Wait for the VM to actually come up. First launch pulls a ~500MB Lima
     # image; bound the wait at 3 minutes with heartbeats so Ctrl+C is viable.
+    #
+    # Probe with a real docker call against an explicit --host, not just the
+    # `[ -S "$colima_sock" ]` file-type check. A dead socket file (0 bytes,
+    # no daemon) from a prior crashed VM will pass -S and lie about readiness.
+    # `docker version` actually talks the protocol and returns non-zero if
+    # nothing's listening.
     colima_sock="$HOME/.colima/default/docker.sock"
+    docker_alive() {
+        [ -S "$colima_sock" ] || return 1
+        docker --host "unix://$colima_sock" version --format '{{.Server.Version}}' >/dev/null 2>&1
+    }
     info "Waiting for colima socket at $colima_sock (up to 3min, Ctrl+C to skip)..."
     waited=0
-    while [ ! -S "$colima_sock" ] && [ $waited -lt 180 ]; do
+    while ! docker_alive && [ $waited -lt 180 ]; do
         sleep 2
         waited=$((waited + 2))
         [ $((waited % 10)) -eq 0 ] && printf '  ...%ds\n' "$waited" >&2
     done
 
-    if [ -S "$colima_sock" ]; then
+    if docker_alive; then
         info "✓ colima ready after ${waited}s"
 
         # Point docker CLI at colima. Two mechanisms, in order of preference:
@@ -518,26 +552,43 @@ PLIST
 chown root:wheel "$plist"
 chmod 644 "$plist"
 
-# Same reasoning as in --setup: stop (or delete) the VM so the daemon's new
-# plist args take effect. Runs as the owner user because colima's state and
-# lockfiles live in COLIMA_HOME=/opt/colima. `colima status` -> stderr so
-# 2>&1 before grep.
-if sudo -u "$owner_user" \
-    COLIMA_HOME=/opt/colima LIMA_HOME=/opt/lima \
-    "$colima_bin" status 2>&1 | grep -qi running; then
-    if [ "$recreate_vm" = true ]; then
-        warn "Destroying existing shared colima VM (--recreate-vm) — loses local images/volumes."
-        sudo -u "$owner_user" \
-            COLIMA_HOME=/opt/colima LIMA_HOME=/opt/lima \
-            "$colima_bin" delete --force >/dev/null 2>&1 || true
-    else
-        info "Stopping running shared colima VM to apply new plist args..."
-        sudo -u "$owner_user" \
-            COLIMA_HOME=/opt/colima LIMA_HOME=/opt/lima \
-            "$colima_bin" stop >/dev/null 2>&1 || true
-    fi
-    sleep 2
+# Same tri-state handling as --setup — running / corrupt / clean. Runs as
+# the owner user because colima's state and lockfiles live in
+# COLIMA_HOME=/opt/colima. Use colima's exit code (not grep on stderr,
+# which false-positives on "not running").
+shared_status_run() {
+    sudo -u "$owner_user" \
+        COLIMA_HOME=/opt/colima LIMA_HOME=/opt/lima \
+        "$colima_bin" "$@"
+}
+shared_state=unknown
+if shared_status_run status >/dev/null 2>&1; then
+    shared_state=running
+elif shared_status_run status 2>&1 | grep -q 'error retrieving current runtime\|already running, ignoring'; then
+    shared_state=corrupt
 fi
+
+case "$shared_state" in
+    running)
+        if [ "$recreate_vm" = true ]; then
+            warn "Destroying existing shared colima VM (--recreate-vm) — loses local images/volumes."
+            shared_status_run delete --force >/dev/null 2>&1 || true
+        else
+            info "Stopping running shared colima VM to apply new plist args..."
+            shared_status_run stop >/dev/null 2>&1 || true
+        fi
+        sleep 2
+        ;;
+    corrupt)
+        warn "shared colima state is corrupt — forcing 'colima delete --force' to recover."
+        shared_status_run delete --force >/dev/null 2>&1 || true
+        sleep 2
+        ;;
+esac
+
+# Nuke any stale socket files that survived a crash; -S returns true on
+# 0-byte orphans, so we can't trust it downstream unless we clear them.
+rm -f /opt/colima/default/docker.sock /opt/colima/default/containerd.sock 2>/dev/null || true
 
 # Bootstrap into the system domain.
 launchctl bootout "system/${label}" >/dev/null 2>&1 || true
@@ -550,20 +601,26 @@ else
 fi
 
 # Wait for the shared socket to come up (first launch pulls the Lima image).
+# Same rationale as --setup: don't trust `[ -S ]` on a dead socket file;
+# actually probe the docker daemon.
 shared_sock="/opt/colima/default/docker.sock"
+shared_docker_alive() {
+    [ -S "$shared_sock" ] || return 1
+    docker --host "unix://$shared_sock" version --format '{{.Server.Version}}' >/dev/null 2>&1
+}
 info ""
 info "Waiting for shared colima socket at $shared_sock (up to 3min, Ctrl+C to skip)..."
 waited=0
-while [ ! -S "$shared_sock" ] && [ $waited -lt 180 ]; do
+while ! shared_docker_alive && [ $waited -lt 180 ]; do
     sleep 2
     waited=$((waited + 2))
     [ $((waited % 10)) -eq 0 ] && printf '  ...%ds\n' "$waited" >&2
 done
 
-if [ -S "$shared_sock" ]; then
+if shared_docker_alive; then
     info "✓ shared colima ready after ${waited}s"
 else
-    warn "socket didn't appear after 3min — check $log_path"
+    warn "socket didn't appear (or is stale) after 3min — check $log_path"
 fi
 
 info ""
