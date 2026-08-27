@@ -146,8 +146,24 @@ if [ -n "$force_build" ] || ! docker image inspect "$image" >/dev/null 2>&1; the
     docker build -t "$image" .
 fi
 
-# SS port must be known on the host to publish it.
-port="${ss_port:-8388}"
+# The launcher has to know the SS port in order to publish it, so resolve it the
+# same way the container will: --ss-port wins, then SS_PORT from the env file,
+# then the default. Without the env-file lookup the -e below would silently
+# override an SS_PORT set in the env file (docker takes the last value), and the
+# published port would not match what ss-server binds.
+env_ss_port=""
+if [ -z "$ss_port" ] && [ -n "$env_file" ]; then
+    # docker --env-file keeps inline comments literal, so strip them here too
+    env_ss_port="$(sed -n 's/^[[:space:]]*SS_PORT[[:space:]]*=//p' "$env_file" \
+                    | tail -n1 | sed 's/#.*//' | tr -d '[:space:]')"
+    if [ -n "$env_ss_port" ]; then
+        case "$env_ss_port" in
+            *[!0-9]*) error "SS_PORT in $env_file is not a number: '$env_ss_port'" ;;
+        esac
+        info "using SS_PORT=$env_ss_port from $env_file"
+    fi
+fi
+port="${ss_port:-${env_ss_port:-8388}}"
 
 # Replace an existing container of the same name.
 if docker ps -a --format '{{.Names}}' | grep -qx "$container"; then
