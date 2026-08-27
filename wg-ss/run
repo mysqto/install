@@ -1,0 +1,204 @@
+#!/bin/bash
+# wg-ss host-side launcher.
+#
+# Builds the image if missing, then runs a long-lived container that joins a
+# WireGuard peer as a CLIENT and publishes a shadowsocks-rust server. External
+# SS clients tunnel through it and egress wherever the WireGuard peer routes
+# them — the tunnel-side network, or the whole internet for a full tunnel.
+#
+# Credentials (the WireGuard private key) are provided externally — via
+# --conf, --private-key, an --env-file, or the WG_* environment variables —
+# never baked into the image.
+set -euo pipefail
+
+info()  { echo -e "\033[1;32m${*}\033[0m" >&2; }
+warn()  { echo -e "\033[1;33m${*}\033[0m" >&2; }
+error() { echo -e "\033[1;31m${*}\033[0m" >&2; exit 1; }
+
+script_dir="$(cd "$(dirname "$0")" && pwd)"
+image="wg-ss"
+container="wg-ss"
+state_volume="wg-ss-state"
+
+conf_file=""
+private_key="${WG_PRIVATE_KEY:-}"
+address=""
+peer_key=""
+endpoint=""
+psk="${WG_PRESHARED_KEY:-}"
+allowed_ips=""
+dns=""
+no_dns=""
+mtu=""
+keepalive=""
+table=""
+probe_target=""
+no_probe=""
+ss_port=""
+ss_password="${SS_PASSWORD:-}"
+obfs_host=""
+bind_ip="0.0.0.0"
+env_file=""
+force_build=""
+
+usage() {
+    cat <<EOF
+Usage: $0 [options]
+
+Tunnel options (one config source is required on first run):
+  --conf <file>        A WireGuard .conf to use as-is (provider config, or one
+                       from ../wireguard/wg-client). Mounted read-only.
+  --private-key <key>  Client private key (or WG_PRIVATE_KEY)
+  --address <cidr>     This peer's tunnel address, e.g. 10.0.0.2/32
+  --peer-key <key>     Server's public key
+  --endpoint <h:port>  Server endpoint, e.g. vpn.example.com:51820
+  --psk <key>          Pre-shared key (optional)
+  --allowed-ips <c>    What to route into the tunnel (default 0.0.0.0/0,::/0 —
+                       a full tunnel; narrow it for split tunneling)
+  --dns <servers>      Resolver to use inside the container (comma-separated).
+                       A DNS= line in --conf is picked up automatically.
+  --no-dns             Ignore tunnel DNS; keep docker's resolver
+  --mtu <n>            Tunnel MTU (default 1420)
+  --keepalive <n>      PersistentKeepalive seconds (default 25)
+  --table <name|off>   Hand routing to wg-quick's table, or 'off' to manage it
+                       yourself (advanced)
+
+Liveness probe (repairs a dead tunnel in place):
+  --probe-target <ip>  Ping this through the tunnel (default: 1.1.1.1 for a full
+                       tunnel, else the first AllowedIPs host)
+  --no-probe           Disable probing entirely
+
+Shadowsocks options:
+  --ss-port <port>     SS server port (default: 8388)
+  --ss-password <pw>   SS password (auto-generated + logged if omitted)
+  --obfs-host <host>   obfs-host clients should masquerade as (e.g. microsoft.com).
+                       Logged for client config; simple-obfs server ignores it.
+
+Runtime options:
+  --bind <ip>          Host bind address for the published SS port (default: 0.0.0.0)
+  --env-file <file>    KEY=VALUE file (WG_*, SS_*) passed to the container
+  --name <name>        Container name (default: $container)
+  --state-volume <v>   Named volume for /etc/wireguard (default: $state_volume)
+  --build, --rebuild   Force rebuild of the image (otherwise a cached image is reused)
+  --help               Show this help
+
+There is deliberately no --host-net: a full-tunnel AllowedIPs in the host's
+network namespace would reroute the entire host. Use ../wireguard for that.
+
+Examples:
+  # Provider / wg-client config, SS on 8388
+  $0 --conf ~/wg0.conf --ss-port 8388
+
+  # Discrete values, split tunnel to one subnet only
+  $0 --private-key "\$(cat client.key)" --address 10.0.0.2/32 \\
+     --peer-key SERVER_PUBKEY --endpoint vpn.example.com:51820 \\
+     --allowed-ips 10.0.0.0/24,192.168.1.0/24
+
+  # Everything from an env file
+  $0 --env-file .wg-ss.env
+EOF
+    exit 1
+}
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --conf|--config)   shift; conf_file=$1; shift ;;
+        --private-key)     shift; private_key=$1; shift ;;
+        --address)         shift; address=$1; shift ;;
+        --peer-key)        shift; peer_key=$1; shift ;;
+        --endpoint)        shift; endpoint=$1; shift ;;
+        --psk)             shift; psk=$1; shift ;;
+        --allowed-ips)     shift; allowed_ips=$1; shift ;;
+        --dns)             shift; dns=$1; shift ;;
+        --no-dns)          no_dns="1"; shift ;;
+        --mtu)             shift; mtu=$1; shift ;;
+        --keepalive)       shift; keepalive=$1; shift ;;
+        --table)           shift; table=$1; shift ;;
+        --probe-target)    shift; probe_target=$1; shift ;;
+        --no-probe)        no_probe="1"; shift ;;
+        --ss-port)         shift; ss_port=$1; shift ;;
+        --ss-password)     shift; ss_password=$1; shift ;;
+        --obfs-host)       shift; obfs_host=$1; shift ;;
+        --bind)            shift; bind_ip=$1; shift ;;
+        --env-file)        shift; env_file=$1; shift ;;
+        --name)            shift; container=$1; shift ;;
+        --state-volume)    shift; state_volume=$1; shift ;;
+        --build|--rebuild) force_build="1"; shift ;;
+        --help|-h)         usage ;;
+        *)                 warn "unknown option: $1"; shift ;;
+    esac
+done
+
+[ -n "$env_file" ] && [ ! -f "$env_file" ] && error "env file not found: $env_file"
+[ -n "$conf_file" ] && [ ! -f "$conf_file" ] && error "config file not found: $conf_file"
+
+# One config source has to be present, unless a previous run persisted one in
+# the state volume (the entrypoint reuses it and says so).
+if [ -z "$conf_file" ] && [ -z "$private_key" ] && [ -z "$env_file" ] && [ -z "${WG_CONFIG:-}" ]; then
+    if ! docker volume inspect "$state_volume" >/dev/null 2>&1; then
+        error "no WireGuard config: pass --conf <file>, or --private-key/--address/--peer-key/--endpoint, or --env-file"
+    fi
+    warn "no config passed — relying on the one persisted in volume '$state_volume'"
+fi
+
+# Build the image if missing (or forced).
+cd "$script_dir"
+if [ -n "$force_build" ] || ! docker image inspect "$image" >/dev/null 2>&1; then
+    info "Building $image image..."
+    docker build -t "$image" .
+fi
+
+# SS port must be known on the host to publish it.
+port="${ss_port:-8388}"
+
+# Replace an existing container of the same name.
+if docker ps -a --format '{{.Names}}' | grep -qx "$container"; then
+    info "Removing existing container: $container"
+    docker rm -f "$container" >/dev/null
+fi
+
+run_args=(
+    -d
+    --name "$container"
+    --hostname "$container"
+    --restart unless-stopped
+    --cap-add NET_ADMIN
+    --device /dev/net/tun
+    # /proc/sys is read-only in the container, so wg-quick cannot set this
+    # itself — a full-tunnel AllowedIPs needs it (see the sysctl shim).
+    --sysctl net.ipv4.conf.all.src_valid_mark=1
+    -v "${state_volume}:/etc/wireguard"
+    -p "${bind_ip}:${port}:${port}/tcp"
+    -p "${bind_ip}:${port}:${port}/udp"
+)
+
+if [ -n "$conf_file" ]; then
+    conf_abs="$(cd "$(dirname "$conf_file")" && pwd)/$(basename "$conf_file")"
+    run_args+=(-v "${conf_abs}:/config/wg0.conf:ro")
+fi
+
+[ -n "$env_file" ] && run_args+=(--env-file "$env_file")
+
+# Explicit flags override anything in the env file.
+[ -n "$private_key" ] && run_args+=(-e "WG_PRIVATE_KEY=${private_key}")
+[ -n "$address" ]     && run_args+=(-e "WG_ADDRESS=${address}")
+[ -n "$peer_key" ]    && run_args+=(-e "WG_PEER_PUBLIC_KEY=${peer_key}")
+[ -n "$endpoint" ]    && run_args+=(-e "WG_ENDPOINT=${endpoint}")
+[ -n "$psk" ]         && run_args+=(-e "WG_PRESHARED_KEY=${psk}")
+[ -n "$allowed_ips" ] && run_args+=(-e "WG_ALLOWED_IPS=${allowed_ips}")
+[ -n "$dns" ]         && run_args+=(-e "WG_DNS=${dns}")
+[ -n "$no_dns" ]      && run_args+=(-e "WG_USE_DNS=false")
+[ -n "$mtu" ]         && run_args+=(-e "WG_MTU=${mtu}")
+[ -n "$keepalive" ]   && run_args+=(-e "WG_KEEPALIVE=${keepalive}")
+[ -n "$table" ]       && run_args+=(-e "WG_TABLE=${table}")
+[ -n "$probe_target" ] && run_args+=(-e "WG_PROBE_TARGET=${probe_target}")
+[ -n "$no_probe" ]    && run_args+=(-e "WG_PROBE=false")
+run_args+=(-e "SS_PORT=${port}")
+[ -n "$ss_password" ] && run_args+=(-e "SS_PASSWORD=${ss_password}")
+[ -n "$obfs_host" ]   && run_args+=(-e "SS_OBFS_HOST=${obfs_host}")
+
+info "Starting $container (SS on ${bind_ip}:${port} tcp+udp)..."
+docker run "${run_args[@]}" "$image" >/dev/null
+
+info "Started. Follow logs with:  docker logs -f $container"
+info "The SS password (if auto-generated) is printed in those logs."

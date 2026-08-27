@@ -1,0 +1,7 @@
+.wg-ss.env
+.wg-ss.env.*
+!.wg-ss.env.example
+docker-compose*.yml
+*.conf
+*.key
+*.tmp
