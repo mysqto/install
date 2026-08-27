@@ -107,7 +107,7 @@ host's network namespace would reroute the entire host.
 | `WG_DNS` | — | Override the resolver used in the container |
 | `WG_USE_DNS` | `true` | Adopt tunnel DNS at all |
 | `WG_PROBE` | `true` | Enable the liveness probe |
-| `WG_PROBE_TARGET` | derived | Ping target through the tunnel |
+| `WG_PROBE_TARGET` | tunnel gw | Ping target through the tunnel (else network+1 of `WG_ADDRESS`, else `1.1.1.1` for a full tunnel, else first `AllowedIPs` host) |
 | `WG_PROBE_INTERVAL` | `30` | Seconds between probes |
 | `WG_PROBE_FAILURES` | `3` | Misses before bouncing `wg0` |
 | `WG_MAX_RESTARTS` | `5` | Bounces before exiting the container |

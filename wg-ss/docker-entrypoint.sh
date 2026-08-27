@@ -261,16 +261,45 @@ handshake_age() {
     if [ "$newest" -le 0 ]; then echo -1; else echo $(( now - newest )); fi
 }
 
+# The peer's own address inside the tunnel — network+1 of our tunnel address.
+# Pinging that tests the tunnel and nothing else; a public target like 1.1.1.1
+# additionally depends on the peer routing egress for us and answering ICMP from
+# a third party, so it reports a healthy tunnel as dead.
+derive_tunnel_gateway() {
+    local cidr base prefix gw
+    cidr="$(ip -o -4 addr show dev "$WG_IFACE" scope global 2>/dev/null | awk '{print $4}' | head -n1)"
+    [ -z "$cidr" ] && return 1
+    base="${cidr%/*}"; prefix="${cidr#*/}"
+    case "$prefix" in ''|*[!0-9]*) return 1 ;; esac
+    # /31 and /32 carry no usable gateway; very short prefixes are not a LAN
+    [ "$prefix" -lt 8 ] && return 1
+    [ "$prefix" -gt 30 ] && return 1
+    # awk has no portable bitwise AND: net = ip - (ip mod hostcount)
+    gw="$(printf '%s' "$base" | awk -F. -v p="$prefix" '
+        {
+            ip = ($1 * 16777216) + ($2 * 65536) + ($3 * 256) + $4
+            size = 2 ^ (32 - p)
+            g = (ip - (ip % size)) + 1
+            printf "%d.%d.%d.%d", int(g/16777216)%256, int(g/65536)%256, int(g/256)%256, g%256
+        }')"
+    # if that is us, pinging it would always succeed and prove nothing
+    [ -z "$gw" ] || [ "$gw" = "$base" ] && return 1
+    printf '%s' "$gw"
+}
+
 # A ping through the tunnel is the only signal that distinguishes "idle" from
 # "dead": WireGuard only rekeys when data flows, so an idle tunnel's handshake
 # ages out even though it is perfectly healthy.
 resolve_probe_target() {
-    local t cidr base prefix
+    local t cidr base prefix gw
     [ "$(_clean "${WG_PROBE:-true}")" = "true" ] || { info "liveness probe disabled (WG_PROBE=false)"; return; }
 
     t="$(_clean "${WG_PROBE_TARGET:-}")"
+    gw="$(derive_tunnel_gateway)"
     if [ -n "$t" ]; then
         PROBE_TARGET="$t"
+    elif [ -n "$gw" ]; then
+        PROBE_TARGET="$gw"
     elif [ -n "$WG_FULL_TUNNEL" ]; then
         PROBE_TARGET="1.1.1.1"
     else

@@ -115,10 +115,16 @@ bounces the interface in place (re-applying routing and DNS), and after
 `WG_MAX_RESTARTS` failed rounds it exits so docker's restart policy takes over.
 `ss-server` dying always ends the container.
 
-The default target is `1.1.1.1` for a full tunnel, otherwise the first host of
-`AllowedIPs`. That is a guess, so it is verified once at startup: if it never
-answers, the probe is disabled rather than bouncing a working tunnel forever
-(both outcomes are logged).
+The target is picked in this order: `WG_PROBE_TARGET`, else the peer's address
+inside the tunnel (network+1 of your tunnel address, when the prefix leaves room
+for one), else `1.1.1.1` for a full tunnel, else the first host of `AllowedIPs`.
+The tunnel gateway is preferred because it tests the tunnel and nothing else — a
+public target additionally depends on the peer routing egress for you *and*
+answering ICMP from a third party, so it reports a healthy tunnel as dead.
+
+Any derived target is still a guess, so it is verified once at startup: if it
+never answers, the probe is disabled rather than bouncing a working tunnel
+forever (both outcomes are logged).
 
 ## Client configuration
 
