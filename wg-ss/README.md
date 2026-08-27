@@ -130,6 +130,19 @@ Any Shadowsocks client works. Match what the container logs at startup:
 - **method**: `chacha20-ietf-poly1305`
 - **plugin**: `obfs-local` with `obfs=http;obfs-host=<SS_OBFS_HOST>` (omit if `SS_OBFS=none`)
 
+## Testing
+
+`test-docker.sh` stands up a real WireGuard server container and an nginx target
+on a network `wg-ss` is *not* attached to, then fetches it through the
+Shadowsocks proxy — so a pass can only mean the traffic crossed the tunnel.
+
+```bash
+./test-docker.sh              # topology + data path + routing checks
+./test-docker.sh --recovery   # also kill the peer and wait for self-repair (~90s)
+./test-docker.sh --keep       # leave it running to poke at
+./test-docker.sh --cleanup    # tear down
+```
+
 ## Gotchas
 
 - **No `--host-net`.** A full-tunnel `AllowedIPs` in the host's network
@@ -174,3 +187,4 @@ Any Shadowsocks client works. Match what the container logs at startup:
 | `Dockerfile` | Multi-stage build (ss-rust + wireguard-go → Alpine runtime) |
 | `docker-entrypoint.sh` | Renders the config, `wg-quick up`, fixes routing/DNS, runs ss-server, supervises both |
 | `.wg-ss.env.example` | Documented env template |
+| `test-docker.sh` | End-to-end test: builds a real WireGuard server + a target reachable only through the tunnel |

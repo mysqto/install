@@ -135,6 +135,9 @@ host's network namespace would reroute the entire host.
 ./run --build ...
 docker build --build-arg WIREGUARD_GO_VERSION=v0.0.0-20260522210424-ecfc5a8d5446 -t wg-ss .
 
+# End-to-end test (real wg server + a target only reachable via the tunnel)
+./test-docker.sh --recovery
+
 # Logs (SS password prints here) / tunnel status
 docker logs -f wg-ss
 docker exec wg-ss wg show
