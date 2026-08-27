@@ -23,6 +23,7 @@ WG_UP=""
 WG_DNS_SERVERS=""
 WG_FULL_TUNNEL=""
 PROBE_TARGET=""
+CONFIG_SOURCE=""
 
 shutdown() {
     info "shutting down..."
@@ -46,6 +47,20 @@ _clean() {
 # ---------------------------------------------------------------------------
 # config: mounted file > WG_CONFIG > discrete WG_* variables
 # ---------------------------------------------------------------------------
+# A rejected config is almost always a mangled paste — or a base64 of one, where
+# the damage is invisible until someone decodes it by hand. Show what actually
+# landed in the file instead of only what was missing.
+config_invalid() {
+    warn "$WG_CONF is not a valid WireGuard config: $1"
+    warn "  source      : ${CONFIG_SOURCE:-unknown}"
+    warn "  size        : $(wc -c <"$WG_CONF" | tr -d ' ') bytes, $(wc -l <"$WG_CONF" | tr -d ' ') lines"
+    warn "  first line  : \"$(head -n1 "$WG_CONF" | cut -c1-60)\""
+    warn "  sections    : $(grep -oE '^[[:space:]]*\[[A-Za-z]+\]' "$WG_CONF" 2>/dev/null | tr -d ' ' | tr '\n' ' ')"
+    warn "  directives  : $(grep -oiE '^[[:space:]]*[A-Za-z]+[[:space:]]*=' "$WG_CONF" 2>/dev/null | tr -d ' =' | tr '\n' ' ')"
+    warn "  a valid config starts with the literal line: [Interface]"
+    error "fix the config source, then recreate the container (a restart reuses the old environment)"
+}
+
 render_from_env() {
     local addr key peer endpoint allowed mtu keepalive psk
     addr="$(_clean "${WG_ADDRESS:-}")"
@@ -82,13 +97,16 @@ render_wg_config() {
     mkdir -p "$WG_DIR"
     if [ -f "$MOUNTED_CONF" ]; then
         info "using mounted config: $MOUNTED_CONF"
+        CONFIG_SOURCE="mounted file $MOUNTED_CONF"
         cat "$MOUNTED_CONF" > "$WG_CONF" || error "could not read $MOUNTED_CONF"
     elif [ -n "${WG_CONFIG:-}" ]; then
         info "using WG_CONFIG from the environment"
+        CONFIG_SOURCE="WG_CONFIG environment variable"
         if printf '%s' "$WG_CONFIG" | grep -q '\['; then
             # raw config; "\n" escapes are expanded so it survives a single -e
             printf '%b\n' "$WG_CONFIG" > "$WG_CONF"
         else
+            CONFIG_SOURCE="WG_CONFIG environment variable (base64)"
             printf '%s' "$WG_CONFIG" | tr -d ' \n' | base64 -d > "$WG_CONF" \
                 || error "WG_CONFIG is neither a WireGuard config nor valid base64"
         fi
@@ -98,14 +116,15 @@ render_wg_config() {
         # the /etc/wireguard volume persists the last config, so a restart or a
         # re-create does not need the key passed in again
         info "reusing the config persisted at $WG_CONF (nothing supplied this run)"
+        CONFIG_SOURCE="$WG_CONF persisted in the volume"
     else
         error "no WireGuard config: mount $MOUNTED_CONF, set WG_CONFIG, or set WG_PRIVATE_KEY + WG_ADDRESS + WG_PEER_PUBLIC_KEY + WG_ENDPOINT"
     fi
     chmod 600 "$WG_CONF"
 
-    grep -qiE '^[[:space:]]*\[Interface\]' "$WG_CONF" || error "$WG_CONF has no [Interface] section"
-    grep -qiE '^[[:space:]]*PrivateKey[[:space:]]*=' "$WG_CONF" || error "$WG_CONF has no PrivateKey"
-    grep -qiE '^[[:space:]]*\[Peer\]' "$WG_CONF" || error "$WG_CONF has no [Peer] section"
+    grep -qiE '^[[:space:]]*\[Interface\]' "$WG_CONF" || config_invalid "no [Interface] section"
+    grep -qiE '^[[:space:]]*PrivateKey[[:space:]]*=' "$WG_CONF" || config_invalid "no PrivateKey"
+    grep -qiE '^[[:space:]]*\[Peer\]' "$WG_CONF" || config_invalid "no [Peer] section"
     grep -qiE '^[[:space:]]*Endpoint[[:space:]]*=' "$WG_CONF" || warn "$WG_CONF has no Endpoint — this peer can only be reached if it dials us"
 }
 
