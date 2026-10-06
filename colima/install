@@ -26,6 +26,9 @@
 #   --user NAME           (--shared only) user the shared daemon runs as
 #                         (default: $SUDO_USER)
 #   --members u1,u2,u3    (--shared only) users to add to the colima group
+#   --ecr R1,R2           ECR registries to log in to through
+#                         docker-credential-ecr-login, for example
+#                         123456789012.dkr.ecr.ap-southeast-1.amazonaws.com
 #   -h | --help
 #
 # Companion for clients (both users on the same Mac in --shared mode):
@@ -46,6 +49,7 @@ setup=false
 shared=false
 owner_user=""
 members=""
+ecr_registries=""
 recreate_vm=false
 # DNS servers baked into the LaunchAgent/LaunchDaemon ProgramArguments as
 # `--dns X --dns Y`, so the VM never falls back to `::1` (which fails with
@@ -55,7 +59,7 @@ recreate_vm=false
 dns_servers="1.1.1.1,8.8.8.8"
 
 usage() {
-    sed -n '3,32p' "$0" | sed 's/^# //; s/^#//'
+    sed -n '3,35p' "$0" | sed 's/^# //; s/^#//'
     exit 0
 }
 
@@ -66,6 +70,7 @@ while [ $# -gt 0 ]; do
         --shared)  shared=true; shift ;;
         --user)    owner_user="$2"; shift 2 ;;
         --members) members="$2"; shift 2 ;;
+        --ecr)     ecr_registries="${ecr_registries:+$ecr_registries,}$2"; shift 2 ;;
         --dns)
             # accept either comma-separated or repeated
             if [ "$dns_servers" = "1.1.1.1,8.8.8.8" ]; then
@@ -170,6 +175,7 @@ brew_ensure docker
 brew_ensure docker-compose
 brew_ensure docker-buildx
 brew_ensure docker-credential-helper
+brew_ensure docker-credential-helper-ecr
 
 colima_bin="$brew_prefix/bin/colima"
 [ -x "$colima_bin" ] || error "colima binary not found at $colima_bin after install"
@@ -231,7 +237,11 @@ fi
 # by default, so `docker compose` fails with "unknown command" and `docker
 # build` falls back to the classic builder. Add that dir
 # to cliPluginsExtraDirs in each user's ~/.docker/config.json.
-register_cli_plugins_dir() {
+#
+# The docker CLI uses the ECR helper only for registries listed in
+# credHelpers, and the keys must be exact hostnames (no wildcards), so map
+# each --ecr registry to "ecr-login".
+configure_docker_cli() {
     local user="$1" user_home
     user_home="$(dscl . -read "/Users/$user" NFSHomeDirectory 2>/dev/null | awk '{print $2}')"
     [ -z "$user_home" ] && user_home="/Users/$user"
@@ -239,30 +249,41 @@ register_cli_plugins_dir() {
     local plugins_dir="$brew_prefix/lib/docker/cli-plugins"
 
     mkdir -p "$user_home/.docker"
-    python3 - "$cfg" "$plugins_dir" <<'PY' || warn "  could not register $plugins_dir in $cfg (python3 issue)"
+    python3 - "$cfg" "$plugins_dir" "$ecr_registries" <<'PY' || warn "  could not update $cfg (python3 issue)"
 import json, os, sys
-path, plugins_dir = sys.argv[1], sys.argv[2]
+path, plugins_dir, ecr = sys.argv[1], sys.argv[2], sys.argv[3]
 cfg = {}
 if os.path.exists(path):
     with open(path) as f:
         cfg = json.load(f)
+changed = False
 dirs = cfg.get('cliPluginsExtraDirs') or []
 if plugins_dir not in dirs:
     cfg['cliPluginsExtraDirs'] = dirs + [plugins_dir]
+    changed = True
+    print(f"  added {plugins_dir} to cliPluginsExtraDirs in {path}")
+helpers = cfg.get('credHelpers') or {}
+for reg in filter(None, (r.strip() for r in ecr.split(','))):
+    if helpers.get(reg) != 'ecr-login':
+        helpers[reg] = 'ecr-login'
+        changed = True
+        print(f"  {reg} now uses ecr-login in {path}")
+if helpers:
+    cfg['credHelpers'] = helpers
+if changed:
     with open(path, 'w') as f:
         json.dump(cfg, f, indent=2)
-    print(f"  added {plugins_dir} to cliPluginsExtraDirs in {path}")
 PY
     # When we run as root (--shared), hand the files back to the user.
     [ "$(id -u)" -eq 0 ] && chown -R "$user" "$user_home/.docker" 2>/dev/null
     return 0
 }
 
-register_cli_plugins_dir "$invoking_user"
+configure_docker_cli "$invoking_user"
 if [ "$shared" = true ] && [ -n "$members" ]; then
     for m in ${members//,/ }; do
         [ "$m" = "$invoking_user" ] && continue
-        id -u "$m" >/dev/null 2>&1 && register_cli_plugins_dir "$m"
+        id -u "$m" >/dev/null 2>&1 && configure_docker_cli "$m"
     done
 fi
 
