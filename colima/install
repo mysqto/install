@@ -169,6 +169,7 @@ brew_ensure colima
 brew_ensure docker
 brew_ensure docker-compose
 brew_ensure docker-buildx
+brew_ensure docker-credential-helper
 
 colima_bin="$brew_prefix/bin/colima"
 [ -x "$colima_bin" ] || error "colima binary not found at $colima_bin after install"
@@ -179,8 +180,8 @@ info "colima $($colima_bin version 2>&1 | head -n1)"
 # If the user previously had Docker Desktop, this file will still reference
 # docker-credential-desktop (which uninstalled with DD), so every `docker pull`
 # fails with "docker-credential-desktop: executable file not found" — even for
-# anonymous images. Rewrite credsStore to osxkeychain (bundled with brew's
-# docker formula) and drop credHelpers pointing at 'desktop'.
+# anonymous images. Rewrite credsStore to osxkeychain (from brew's
+# docker-credential-helper formula) and drop credHelpers pointing at 'desktop'.
 cleanup_docker_desktop_leftovers() {
     local user_home="$1"
     local cfg="$user_home/.docker/config.json"
