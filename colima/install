@@ -223,6 +223,46 @@ if [ "$(id -u)" -ne 0 ]; then
     cleanup_docker_desktop_leftovers "$HOME"
 fi
 
+# ---------- 1b. let the docker CLI find brew's compose plugin ----------
+# brew's docker-compose formula installs the plugin into
+# $brew_prefix/lib/docker/cli-plugins, which the docker CLI does not search
+# by default, so `docker compose` fails with "unknown command". Add that dir
+# to cliPluginsExtraDirs in each user's ~/.docker/config.json.
+register_cli_plugins_dir() {
+    local user="$1" user_home
+    user_home="$(dscl . -read "/Users/$user" NFSHomeDirectory 2>/dev/null | awk '{print $2}')"
+    [ -z "$user_home" ] && user_home="/Users/$user"
+    local cfg="$user_home/.docker/config.json"
+    local plugins_dir="$brew_prefix/lib/docker/cli-plugins"
+
+    mkdir -p "$user_home/.docker"
+    python3 - "$cfg" "$plugins_dir" <<'PY' || warn "  could not register $plugins_dir in $cfg (python3 issue)"
+import json, os, sys
+path, plugins_dir = sys.argv[1], sys.argv[2]
+cfg = {}
+if os.path.exists(path):
+    with open(path) as f:
+        cfg = json.load(f)
+dirs = cfg.get('cliPluginsExtraDirs') or []
+if plugins_dir not in dirs:
+    cfg['cliPluginsExtraDirs'] = dirs + [plugins_dir]
+    with open(path, 'w') as f:
+        json.dump(cfg, f, indent=2)
+    print(f"  added {plugins_dir} to cliPluginsExtraDirs in {path}")
+PY
+    # When we run as root (--shared), hand the files back to the user.
+    [ "$(id -u)" -eq 0 ] && chown -R "$user" "$user_home/.docker" 2>/dev/null
+    return 0
+}
+
+register_cli_plugins_dir "$invoking_user"
+if [ "$shared" = true ] && [ -n "$members" ]; then
+    for m in ${members//,/ }; do
+        [ "$m" = "$invoking_user" ] && continue
+        id -u "$m" >/dev/null 2>&1 && register_cli_plugins_dir "$m"
+    done
+fi
+
 # If neither --setup nor --shared, we're done.
 if [ "$setup" = false ] && [ "$shared" = false ]; then
     info ""
