@@ -168,6 +168,7 @@ info "checking / installing colima + docker CLI..."
 brew_ensure colima
 brew_ensure docker
 brew_ensure docker-compose
+brew_ensure docker-buildx
 
 colima_bin="$brew_prefix/bin/colima"
 [ -x "$colima_bin" ] || error "colima binary not found at $colima_bin after install"
@@ -223,10 +224,11 @@ if [ "$(id -u)" -ne 0 ]; then
     cleanup_docker_desktop_leftovers "$HOME"
 fi
 
-# ---------- 1b. let the docker CLI find brew's compose plugin ----------
-# brew's docker-compose formula installs the plugin into
+# ---------- 1b. let the docker CLI find brew's compose + buildx plugins ----------
+# brew's docker-compose and docker-buildx formulae install their plugins into
 # $brew_prefix/lib/docker/cli-plugins, which the docker CLI does not search
-# by default, so `docker compose` fails with "unknown command". Add that dir
+# by default, so `docker compose` fails with "unknown command" and `docker
+# build` falls back to the classic builder. Add that dir
 # to cliPluginsExtraDirs in each user's ~/.docker/config.json.
 register_cli_plugins_dir() {
     local user="$1" user_home
