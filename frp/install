@@ -201,13 +201,16 @@ function reload_service() {
             installed launchctl || return 0
             local label="com.fatedier.${name}"
             if [ "$user_mode" = true ]; then
-                # Try kickstart first (fast); fall back to unload/load which works
-                # even when the agent lives in the user (non-gui) domain.
+                # The agent lives in user/<uid> (see install_launchd_unit).
+                # Kickstart it there; if it is not loaded, bootstrap the plist.
+                # unload/load is not a fallback: it exits 0 on failure.
                 local plist="$HOME/Library/LaunchAgents/${label}.plist"
-                if launchctl kickstart -k "gui/$(id -u)/${label}" 2>/dev/null; then
+                local uid_domain="user/$(id -u)"
+                if launchctl kickstart -k "${uid_domain}/${label}" 2>/dev/null; then
                     info "${label} restarted"
-                elif [ -f "$plist" ] && launchctl unload "$plist" 2>/dev/null && launchctl load -w "$plist" 2>/dev/null; then
-                    info "${label} reloaded ($plist)"
+                elif [ -f "$plist" ] && launchctl bootstrap "$uid_domain" "$plist" 2>/dev/null \
+                        && launchctl list "${label}" >/dev/null 2>&1; then
+                    info "${label} loaded ($plist)"
                 else
                     warn "could not restart ${label} (is the LaunchAgent loaded?)"
                 fi
@@ -463,18 +466,32 @@ EOF
     [ "$user_mode" = false ] && chown root:wheel "$plist" 2>/dev/null || true
 
     if [ "$user_mode" = true ]; then
-        # bootstrap gui/<uid> requires an active graphical session and typically
-        # fails from an SSH invocation; load -w works fine in any user context.
-        launchctl unload "$plist" 2>/dev/null || true
-        if launchctl load -w "$plist"; then
-            info "${label} loaded ($plist)"
+        # Target user/<uid> explicitly. `launchctl load -w` exits 0 while
+        # printing "Load failed: 5: Input/output error" (seen from both SSH and
+        # Terminal), so it reported "loaded" when nothing was. `bootstrap
+        # gui/<uid>` needs an Aqua session that SSH doesn't have. `bootstrap
+        # user/<uid>` pairs with LimitLoadToSessionType = Background and works
+        # from both.
+        local uid_domain="user/$(id -u)" d bootstrap_err
+        # A stale registration in another domain can block a fresh bootstrap.
+        for d in "system" "gui/$(id -u)" "$uid_domain"; do
+            launchctl bootout "${d}/${label}" >/dev/null 2>&1 || true
+        done
+        bootstrap_err="$(launchctl bootstrap "$uid_domain" "$plist" 2>&1)"
+        launchctl enable "${uid_domain}/${label}" >/dev/null 2>&1 || true
+        launchctl kickstart -k "${uid_domain}/${label}" >/dev/null 2>&1 || true
+
+        # Trust `launchctl list`, not exit codes: both load and bootstrap can
+        # exit 0 without the job landing.
+        if launchctl list "${label}" >/dev/null 2>&1; then
+            info "${label} loaded in ${uid_domain} ($plist)"
         else
-            warn "launchctl load failed for $plist"
+            [ -n "$bootstrap_err" ] && warn "launchctl bootstrap: $bootstrap_err"
+            warn "LaunchAgent did not load: $plist"
             warn "  the plist is in place and will load automatically on next login"
             warn "  to load now, ensure no other process holds the label:"
-            warn "    launchctl bootout gui/\$UID/${label} 2>/dev/null"
             warn "    sudo launchctl bootout system/${label} 2>/dev/null"
-            warn "    launchctl load -w $plist"
+            warn "    launchctl bootstrap ${uid_domain} $plist"
             return 1
         fi
     else
