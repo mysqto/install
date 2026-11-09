@@ -20,7 +20,8 @@
 #                           * LaunchDaemon at /Library/LaunchDaemons/*.plist,
 #                             UserName=--user, GroupName=colima
 #                           * socket at /opt/colima/default/docker.sock,
-#                             mode 0660, group=colima (via Umask=7 in plist)
+#                             mode 0660, group=colima (kept so by a second
+#                             LaunchDaemon, see "group access to the sockets")
 #                         Requires sudo. Survives reboot and logout.
 #
 # Additional flags:
@@ -839,7 +840,7 @@ esac
 
 # Nuke any stale socket files that survived a crash; -S returns true on
 # 0-byte orphans, so we can't trust it downstream unless we clear them.
-rm -f /opt/colima/default/docker.sock /opt/colima/default/containerd.sock 2>/dev/null || true
+rm -f /opt/colima/default/docker.sock /opt/colima/default/containerd.sock /opt/colima/docker.sock 2>/dev/null || true
 
 # Bootstrap into the system domain.
 launchctl bootout "system/${label}" >/dev/null 2>&1 || true
@@ -849,6 +850,56 @@ if launchctl bootstrap system "$plist" 2>/dev/null; then
 else
     launchctl unload -w "$plist" >/dev/null 2>&1 || true
     launchctl load -w "$plist" || error "failed to load ${label} via launchd"
+fi
+
+# ---------- group access to the sockets ----------
+# Umask=7 above does not reach the docker/containerd sockets. Lima forwards
+# them from the guest with `ssh -F /dev/null -O forward -L host.sock:guest.sock`,
+# and OpenSSH creates the host socket with its StreamLocalBindMask (default
+# 0177), so they come out 0600 and only the owner can connect. -F /dev/null
+# means no ssh_config can change that, and lima has no knob for it.
+#
+# So a second LaunchDaemon keeps them 0660: a tiny sh loop that checks every
+# 2s and chmods a socket that is not 0660. That covers every VM restart
+# (KeepAlive recreates the sockets), not just this one. It runs as the owner,
+# who owns the sockets. Tried and rejected: WatchPaths missed the socket's
+# creation in testing (Apple documents it as race-prone), and StartInterval
+# is throttled to one run per 10s.
+perms_label="${label}.sockperms"
+perms_plist="/Library/LaunchDaemons/${perms_label}.plist"
+shared_socks="/opt/colima/default/docker.sock /opt/colima/default/containerd.sock /opt/colima/docker.sock"
+
+cat > "$perms_plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>${perms_label}</string>
+    <key>UserName</key>
+    <string>${owner_user}</string>
+    <key>GroupName</key>
+    <string>colima</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/sh</string>
+        <string>-c</string>
+        <string>while :; do for s in ${shared_socks}; do [ -S "\$s" ] &amp;&amp; [ "\$(/usr/bin/stat -f %Lp "\$s")" != 660 ] &amp;&amp; chmod 660 "\$s"; done; sleep 2; done</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+</dict>
+</plist>
+PLIST
+
+chown root:wheel "$perms_plist"
+chmod 644 "$perms_plist"
+launchctl bootout "system/${perms_label}" >/dev/null 2>&1 || true
+if ! launchctl bootstrap system "$perms_plist" 2>/dev/null; then
+    launchctl unload -w "$perms_plist" >/dev/null 2>&1 || true
+    launchctl load -w "$perms_plist" || warn "failed to load ${perms_label}; members of 'colima' may get 'permission denied' on the socket"
 fi
 
 # Wait for the shared socket to come up (first launch pulls the Lima image).
@@ -870,6 +921,18 @@ done
 
 if shared_docker_alive; then
     info "✓ shared colima ready after ${waited}s"
+    # The sockperms loop checks every 2s; give it one round, then make sure.
+    sleep 3
+    sock_mode="$(/usr/bin/stat -f %Lp "$shared_sock" 2>/dev/null)"
+    if [ "$sock_mode" != 660 ]; then
+        chmod 660 "$shared_sock" 2>/dev/null || true
+        sock_mode="$(/usr/bin/stat -f %Lp "$shared_sock" 2>/dev/null)"
+    fi
+    if [ "$sock_mode" = 660 ]; then
+        info "✓ socket mode 0660 (group colima can connect)"
+    else
+        warn "socket mode is 0${sock_mode}, not 0660; members of 'colima' may get 'permission denied'"
+    fi
 else
     warn "socket didn't appear (or is stale) after 3min — check $log_path"
 fi
@@ -877,6 +940,7 @@ fi
 info ""
 info "Shared Colima LaunchDaemon installed:"
 info "  plist       : $plist"
+info "  sock perms  : $perms_plist"
 info "  data dir    : /opt/colima  (COLIMA_HOME)"
 info "  lima dir    : /opt/lima    (LIMA_HOME)"
 info "  socket      : /opt/colima/default/docker.sock"

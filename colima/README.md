@@ -142,6 +142,7 @@ With `--shared`:
 - It writes `/Library/LaunchDaemons/net.abiosoft.colima.shared.plist` and loads it into the `system` launchd domain.
 - It logs to `/var/log/colima-shared.log`.
 - The socket is `/opt/colima/default/docker.sock`, mode `0660`, group `colima`.
+- It writes a second LaunchDaemon, `/Library/LaunchDaemons/net.abiosoft.colima.shared.sockperms.plist`. Lima forwards the sockets over SSH, and SSH creates them with mode `0600`, so only the owner can connect. This daemon runs a small loop as the owner. Every 2 seconds, it sets the docker and containerd sockets back to `0660`. After a VM restart, members of the `colima` group can connect again within about 2 seconds.
 
 ## Notes
 
