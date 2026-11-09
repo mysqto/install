@@ -3,7 +3,8 @@
 # Colima installer for macOS.
 #
 # Modes:
-#   default:              install colima + docker CLI via brew. No service —
+#   default:              install colima + docker CLI via Homebrew or MacPorts,
+#                         whichever is installed. No service —
 #                         user runs `colima start` themselves. Idempotent:
 #                         re-runs are cheap.
 #
@@ -29,6 +30,9 @@
 #   --ecr R1,R2           ECR registries to log in to through
 #                         docker-credential-ecr-login, for example
 #                         123456789012.dkr.ecr.ap-southeast-1.amazonaws.com
+#   --pkg-manager brew|port
+#                         package manager to use (default: Homebrew if it is
+#                         installed, else MacPorts)
 #   -h | --help
 #
 # Companion for clients (both users on the same Mac in --shared mode):
@@ -50,6 +54,7 @@ shared=false
 owner_user=""
 members=""
 ecr_registries=""
+pkg_manager=""
 recreate_vm=false
 # DNS servers baked into the LaunchAgent/LaunchDaemon ProgramArguments as
 # `--dns X --dns Y`, so the VM never falls back to `::1` (which fails with
@@ -59,7 +64,7 @@ recreate_vm=false
 dns_servers="1.1.1.1,8.8.8.8"
 
 usage() {
-    sed -n '3,35p' "$0" | sed 's/^# //; s/^#//'
+    sed -n '3,39p' "$0" | sed 's/^# //; s/^#//'
     exit 0
 }
 
@@ -71,6 +76,7 @@ while [ $# -gt 0 ]; do
         --user)    owner_user="$2"; shift 2 ;;
         --members) members="$2"; shift 2 ;;
         --ecr)     ecr_registries="${ecr_registries:+$ecr_registries,}$2"; shift 2 ;;
+        --pkg-manager) pkg_manager="$2"; shift 2 ;;
         --dns)
             # accept either comma-separated or repeated
             if [ "$dns_servers" = "1.1.1.1,8.8.8.8" ]; then
@@ -103,34 +109,108 @@ fi
 
 if [ "$shared" = true ]; then
     [ "$(id -u)" -ne 0 ] && error "--shared requires sudo. Re-run with: sudo bash $(basename "$0") --shared ..."
-    # We need SUDO_USER (or explicit --user) so brew can run as a real user.
+    # We need SUDO_USER (or explicit --user) so brew can run as a real user
+    # and the daemon has an owner.
     [ -z "$owner_user" ] && owner_user="${SUDO_USER:-}"
     [ -z "$owner_user" ] && error "cannot determine daemon user — pass --user NAME or run via sudo (not as root directly)"
     id -u "$owner_user" >/dev/null 2>&1 || error "user '$owner_user' does not exist"
     invoking_user="$owner_user"
 else
-    [ "$(id -u)" -eq 0 ] && error "default/--setup must be run as your normal user (brew refuses to run as root)"
+    [ "$(id -u)" -eq 0 ] && error "default/--setup must be run as your normal user (brew refuses to run as root; MacPorts asks for sudo itself)"
     invoking_user="$(whoami)"
 fi
 
-# ---------- locate brew ----------
+# ---------- locate the package manager ----------
+# Homebrew or MacPorts, whichever is installed. If both are, Homebrew wins
+# (the historic default); --pkg-manager picks one explicitly.
 
-brew_bin=""
-if [ -x /opt/homebrew/bin/brew ]; then
-    brew_bin=/opt/homebrew/bin/brew         # Apple Silicon
-elif [ -x /usr/local/bin/brew ]; then
-    brew_bin=/usr/local/bin/brew            # Intel
-elif installed brew; then
-    brew_bin="$(command -v brew)"
+find_brew() {
+    if [ -x /opt/homebrew/bin/brew ]; then
+        echo /opt/homebrew/bin/brew         # Apple Silicon
+    elif [ -x /usr/local/bin/brew ]; then
+        echo /usr/local/bin/brew            # Intel
+    elif installed brew; then
+        command -v brew
+    fi
+}
+
+# MacPorts can also be built for one user (configure --prefix=$HOME/...
+# --with-no-root-privileges). That prefix is only on the user's own PATH, and
+# sudo resets PATH, so under sudo (--shared) also ask the user's login shell.
+find_port() {
+    local p
+    if [ -x /opt/local/bin/port ]; then
+        echo /opt/local/bin/port            # default MacPorts prefix
+    elif installed port; then
+        command -v port
+    elif [ "$(id -u)" -eq 0 ] && [ -n "$invoking_user" ]; then
+        p="$(sudo -u "$invoking_user" -i command -v port 2>/dev/null | tail -n1)"
+        [ -x "$p" ] && echo "$p"
+    fi
+}
+
+brew_bin="$(find_brew)"
+port_bin="$(find_port)"
+case "$pkg_manager" in
+    "")
+        if [ -n "$brew_bin" ]; then
+            pkg_manager=brew
+        elif [ -n "$port_bin" ]; then
+            pkg_manager=port
+        else
+            error "neither Homebrew nor MacPorts is installed — install one first (https://brew.sh or https://www.macports.org)"
+        fi
+        ;;
+    brew) [ -n "$brew_bin" ] || error "--pkg-manager brew: Homebrew not found" ;;
+    port) [ -n "$port_bin" ] || error "--pkg-manager port: MacPorts not found" ;;
+    *)    error "--pkg-manager must be 'brew' or 'port', not '$pkg_manager'" ;;
+esac
+
+# pkg_prefix is where the binaries land (<prefix>/bin). plugins_dir is where
+# the compose/buildx plugins land, which differs between the two.
+if [ "$pkg_manager" = brew ]; then
+    pkg_prefix="$("$brew_bin" --prefix 2>/dev/null)"
+    [ -z "$pkg_prefix" ] && error "could not resolve brew prefix"
+    plugins_dir="$pkg_prefix/lib/docker/cli-plugins"
 else
-    error "homebrew not installed — install it first from https://brew.sh"
+    # <prefix>/bin/port -> <prefix>: /opt/local unless MacPorts was built
+    # with a custom prefix.
+    pkg_prefix="$(dirname "$(dirname "$port_bin")")"
+    plugins_dir="$pkg_prefix/libexec/docker/cli-plugins"
+    # Whoever owns the port binary owns the prefix: root for a normal install,
+    # a user for a per-user one. Run port as that owner so files under the
+    # prefix keep their owner. /usr/bin/stat: GNU stat (coreutils) on PATH
+    # does not take -f.
+    port_owner="$(/usr/bin/stat -f %Su "$port_bin" 2>/dev/null)"
+    [ -z "$port_owner" ] && error "could not read the owner of $port_bin"
+    if [ "$port_owner" != root ] && [ "$(id -u)" -ne 0 ] && [ "$port_owner" != "$(whoami)" ]; then
+        error "MacPorts at $pkg_prefix belongs to '$port_owner'; run this script as $port_owner"
+    fi
 fi
-brew_prefix="$("$brew_bin" --prefix 2>/dev/null)"
-[ -z "$brew_prefix" ] && error "could not resolve brew prefix"
+info "package manager: $pkg_manager ($pkg_prefix)"
 
-# ---------- brew install helper ----------
+# ---------- package install helper ----------
 # brew refuses to run as root, so shell out via `sudo -u` when we're currently
-# root. When we're not root, just call directly.
+# root. A root-owned MacPorts is the reverse: `port install` needs root, so go
+# through sudo when we're not root (prompts for the password once). A per-user
+# MacPorts runs as its owner, never as root.
+
+# Callers use Homebrew formula names; map them to MacPorts port names. They
+# differ: MacPorts' docker-compose is the old Python v1, the plugin ports carry
+# a -plugin suffix, and the ECR helper port is named after its upstream repo.
+pkg_name() {
+    if [ "$pkg_manager" = brew ]; then
+        echo "$1"
+        return
+    fi
+    case "$1" in
+        docker-compose)               echo docker-compose-plugin ;;
+        docker-buildx)                echo docker-buildx-plugin ;;
+        docker-credential-helper)     echo docker-credential-helper-osxkeychain ;;
+        docker-credential-helper-ecr) echo amazon-ecr-credential-helper ;;
+        *)                            echo "$1" ;;
+    esac
+}
 
 brew_run() {
     if [ "$(id -u)" -eq 0 ]; then
@@ -140,13 +220,39 @@ brew_run() {
     fi
 }
 
-brew_ensure() {
-    local pkg="$1"
-    if brew_run list --formula "$pkg" >/dev/null 2>&1; then
-        info "  $pkg already installed"
+port_run() {
+    if [ "$port_owner" = root ]; then
+        if [ "$(id -u)" -eq 0 ]; then
+            "$port_bin" "$@"
+        else
+            sudo "$port_bin" "$@"
+        fi
+    elif [ "$(id -u)" -eq 0 ]; then
+        sudo -u "$port_owner" "$port_bin" "$@"
     else
-        info "  installing $pkg via brew..."
-        brew_run install "$pkg" || error "brew install $pkg failed"
+        "$port_bin" "$@"
+    fi
+}
+
+pkg_ensure() {
+    local pkg
+    pkg="$(pkg_name "$1")"
+    if [ "$pkg_manager" = brew ]; then
+        if brew_run list --formula "$pkg" >/dev/null 2>&1; then
+            info "  $pkg already installed"
+        else
+            info "  installing $pkg via brew..."
+            brew_run install "$pkg" || error "brew install $pkg failed"
+        fi
+    else
+        # `port installed` exits 0 even when nothing matches, so look for an
+        # active version in its output instead.
+        if "$port_bin" -q installed "$pkg" 2>/dev/null | grep -q '(active)'; then
+            info "  $pkg already installed"
+        else
+            info "  installing $pkg via MacPorts..."
+            port_run -N install "$pkg" || error "port install $pkg failed"
+        fi
     fi
 }
 
@@ -170,14 +276,14 @@ dns_plist_args() {
 # ---------- 1. ensure colima + docker CLI ----------
 
 info "checking / installing colima + docker CLI..."
-brew_ensure colima
-brew_ensure docker
-brew_ensure docker-compose
-brew_ensure docker-buildx
-brew_ensure docker-credential-helper
-brew_ensure docker-credential-helper-ecr
+pkg_ensure colima
+pkg_ensure docker
+pkg_ensure docker-compose
+pkg_ensure docker-buildx
+pkg_ensure docker-credential-helper
+pkg_ensure docker-credential-helper-ecr
 
-colima_bin="$brew_prefix/bin/colima"
+colima_bin="$pkg_prefix/bin/colima"
 [ -x "$colima_bin" ] || error "colima binary not found at $colima_bin after install"
 
 info "colima $($colima_bin version 2>&1 | head -n1)"
@@ -187,14 +293,15 @@ info "colima $($colima_bin version 2>&1 | head -n1)"
 # docker-credential-desktop (which uninstalled with DD), so every `docker pull`
 # fails with "docker-credential-desktop: executable file not found" — even for
 # anonymous images. Rewrite credsStore to osxkeychain (from brew's
-# docker-credential-helper formula) and drop credHelpers pointing at 'desktop'.
+# docker-credential-helper formula or MacPorts' docker-credential-helper-osxkeychain
+# port) and drop credHelpers pointing at 'desktop'.
 cleanup_docker_desktop_leftovers() {
     local user_home="$1"
     local cfg="$user_home/.docker/config.json"
     [ -f "$cfg" ] || return 0
     grep -q '"desktop"' "$cfg" 2>/dev/null || return 0
 
-    local osxkc="$brew_prefix/bin/docker-credential-osxkeychain"
+    local osxkc="$pkg_prefix/bin/docker-credential-osxkeychain"
     local new_helper=""
     [ -x "$osxkc" ] && new_helper=osxkeychain
 
@@ -231,12 +338,13 @@ if [ "$(id -u)" -ne 0 ]; then
     cleanup_docker_desktop_leftovers "$HOME"
 fi
 
-# ---------- 1b. let the docker CLI find brew's compose + buildx plugins ----------
-# brew's docker-compose and docker-buildx formulae install their plugins into
-# $brew_prefix/lib/docker/cli-plugins, which the docker CLI does not search
-# by default, so `docker compose` fails with "unknown command" and `docker
-# build` falls back to the classic builder. Add that dir
-# to cliPluginsExtraDirs in each user's ~/.docker/config.json.
+# ---------- 1b. let the docker CLI find the compose + buildx plugins ----------
+# brew installs the plugins into <prefix>/lib/docker/cli-plugins and MacPorts
+# into <prefix>/libexec/docker/cli-plugins ($plugins_dir). MacPorts' own docker
+# is patched to search its dir, but brew's docker and other docker CLIs (e.g.
+# OrbStack's) do not search these dirs by default, so `docker compose` fails
+# with "unknown command" and `docker build` falls back to the classic builder.
+# Add $plugins_dir to cliPluginsExtraDirs in each user's ~/.docker/config.json.
 #
 # The docker CLI uses the ECR helper only for registries listed in
 # credHelpers, and the keys must be exact hostnames (no wildcards), so map
@@ -246,7 +354,6 @@ configure_docker_cli() {
     user_home="$(dscl . -read "/Users/$user" NFSHomeDirectory 2>/dev/null | awk '{print $2}')"
     [ -z "$user_home" ] && user_home="/Users/$user"
     local cfg="$user_home/.docker/config.json"
-    local plugins_dir="$brew_prefix/lib/docker/cli-plugins"
 
     mkdir -p "$user_home/.docker"
     python3 - "$cfg" "$plugins_dir" "$ecr_registries" <<'PY' || warn "  could not update $cfg (python3 issue)"
@@ -327,7 +434,7 @@ ${dns_xml}
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
-        <string>${brew_prefix}/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <string>${pkg_prefix}/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     </dict>
     <key>LimitLoadToSessionType</key>
     <string>Background</string>
@@ -597,7 +704,7 @@ ${dns_xml}
         <key>LIMA_HOME</key>
         <string>/opt/lima</string>
         <key>PATH</key>
-        <string>${brew_prefix}/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <string>${pkg_prefix}/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     </dict>
     <key>Umask</key>
     <integer>7</integer>

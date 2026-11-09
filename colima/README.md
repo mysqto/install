@@ -1,11 +1,14 @@
 # colima
 
-`colima/install` installs Colima and the Docker CLI on macOS with Homebrew. Colima runs the Docker engine in a small Linux VM. The script has three modes. The default mode installs the tools only. `--setup` starts the VM at login for one user. `--shared` runs one VM for the whole Mac that several users can share.
+`colima/install` installs Colima and the Docker CLI on macOS with Homebrew or MacPorts. Colima runs the Docker engine in a small Linux VM. The script has three modes. The default mode installs the tools only. `--setup` starts the VM at login for one user. `--shared` runs one VM for the whole Mac that several users can share.
 
 ## Requirements
 
 - macOS. The script stops on other systems.
-- Homebrew in `/opt/homebrew` or `/usr/local`, or on the `PATH`.
+- Homebrew or MacPorts. The script looks for Homebrew in `/opt/homebrew` or `/usr/local`, and for MacPorts in `/opt/local`. It also searches the `PATH`.
+- If both are installed, the script uses Homebrew. To use MacPorts, add `--pkg-manager port`.
+- With MacPorts, the script runs `port install` as the user that owns the `port` binary. If root owns it, the script runs `sudo port install` and asks for your password. If you own it, because you built MacPorts for your user only, the script does not use `sudo`. If another user owns it, the script stops and tells you to run it as that user.
+- Your MacPorts folder can be on your own `PATH` only, for example a prefix in your home folder. Then `sudo` does not find `port`, so `--shared` gets its path from your login shell.
 - `python3`, to edit `~/.docker/config.json`.
 - For `--shared`: `sudo`.
 
@@ -83,6 +86,7 @@ Give each ECR registry with `--ecr`. You can use `--ecr` in all three modes:
 | `--members <u1,u2>` | None | With `--shared`, users to add to the `colima` group. |
 | `--ecr <r1,r2>` | None | ECR registries that use `docker-credential-ecr-login`. You can give the flag more than once. |
 | `--dns <ip,ip>` | `1.1.1.1,8.8.8.8` | DNS servers for the VM, in `--setup` and `--shared`. You can give the flag more than once. |
+| `--pkg-manager <brew\|port>` | Homebrew. MacPorts when Homebrew is missing. | The package manager to use. |
 | `--recreate-vm` | Off | Delete the VM before the restart, in `--setup` and `--shared`. |
 | `-h`, `--help` | | Show the help text. |
 
@@ -92,8 +96,18 @@ If you give `--setup` and `--shared` together, the script uses `--shared` and ig
 
 In all modes:
 
-- Homebrew formulae: if they are missing, it installs `colima`, `docker`, `docker-compose`, `docker-buildx`, `docker-credential-helper` and `docker-credential-helper-ecr`.
-- Plugin directory: it adds `$(brew --prefix)/lib/docker/cli-plugins` to `cliPluginsExtraDirs` in `~/.docker/config.json`. Without this entry, `docker compose` fails with `unknown command`, and `docker build` uses the classic builder. With `--shared`, it does this for the owner and for each user in `--members`.
+- Packages: it installs the packages that are missing. The names differ between the two package managers:
+
+  | Homebrew formula | MacPorts port |
+  |------------------|---------------|
+  | `colima` | `colima` |
+  | `docker` | `docker` |
+  | `docker-compose` | `docker-compose-plugin` |
+  | `docker-buildx` | `docker-buildx-plugin` |
+  | `docker-credential-helper` | `docker-credential-helper-osxkeychain` |
+  | `docker-credential-helper-ecr` | `amazon-ecr-credential-helper` |
+
+- Plugin directory: it adds the plugin directory to `cliPluginsExtraDirs`. The directory is `$(brew --prefix)/lib/docker/cli-plugins` for Homebrew and `/opt/local/libexec/docker/cli-plugins` for MacPorts. It writes the entry in `~/.docker/config.json`. Without this entry, `docker compose` fails with `unknown command`, and `docker build` uses the classic builder. With `--shared`, it does this for the owner and for each user in `--members`.
 - ECR: it maps each `--ecr` registry to `ecr-login` in `credHelpers` in the same file.
 - Docker Desktop leftovers: if `~/.docker/config.json` refers to the `desktop` credential helper, it changes `credsStore` to `osxkeychain` and removes `desktop` entries from `credHelpers`. It skips this step with `--shared`.
 

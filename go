@@ -37,7 +37,10 @@ function getgo() {
         [ "$os" == "linux" ] && prefix=/opt
         [ "$os" == "darwin" ] && {
             prefix=/usr/local/opt
-            [ "$arch" == "arm64" ] && {
+            # Apple Silicon Homebrew lives in /opt/homebrew. Only use it when it
+            # is there: on a MacPorts-only (or no package manager) Mac, that dir
+            # is not on PATH, so stay with /usr/local, which /etc/paths has.
+            [ "$arch" == "arm64" ] && [ -d /opt/homebrew/bin ] && {
                 prefix=/opt/homebrew/opt
                 target=/opt/homebrew/bin
             }

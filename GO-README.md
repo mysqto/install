@@ -40,7 +40,8 @@ The install location depends on the operating system:
 |--------|---------|------------------------|
 | Linux | `/opt/go` | `/usr/bin/<tool>` through `update-alternatives` |
 | macOS on Intel | `/usr/local/opt/go` | `/usr/local/bin/<tool>` |
-| macOS on Apple Silicon | `/opt/homebrew/opt/go` | `/opt/homebrew/bin/<tool>` |
+| macOS on Apple Silicon with Homebrew | `/opt/homebrew/opt/go` | `/opt/homebrew/bin/<tool>` |
+| macOS on Apple Silicon without Homebrew | `/usr/local/opt/go` | `/usr/local/bin/<tool>` |
 
 On Linux without `update-alternatives`, the script makes the links in `/usr/local/bin` instead. The script makes one link for each file in `<go root>/bin`, for example `go` and `gofmt`.
 
