@@ -33,6 +33,9 @@
 #   --pkg-manager brew|port
 #                         package manager to use (default: Homebrew if it is
 #                         installed, else MacPorts)
+#   --mount PATH[:ro]     (--setup/--shared) extra directory to mount into the
+#                         VM, writable unless :ro. Repeat or comma-separate.
+#                         The VM owner's home stays mounted.
 #   -h | --help
 #
 # Companion for clients (both users on the same Mac in --shared mode):
@@ -55,6 +58,7 @@ owner_user=""
 members=""
 ecr_registries=""
 pkg_manager=""
+mounts=()
 recreate_vm=false
 # DNS servers baked into the LaunchAgent/LaunchDaemon ProgramArguments as
 # `--dns X --dns Y`, so the VM never falls back to `::1` (which fails with
@@ -64,7 +68,7 @@ recreate_vm=false
 dns_servers="1.1.1.1,8.8.8.8"
 
 usage() {
-    sed -n '3,39p' "$0" | sed 's/^# //; s/^#//'
+    sed -n '3,42p' "$0" | sed 's/^# //; s/^#//'
     exit 0
 }
 
@@ -77,6 +81,13 @@ while [ $# -gt 0 ]; do
         --members) members="$2"; shift 2 ;;
         --ecr)     ecr_registries="${ecr_registries:+$ecr_registries,}$2"; shift 2 ;;
         --pkg-manager) pkg_manager="$2"; shift 2 ;;
+        --mount)
+            # accept either comma-separated or repeated. colima splits
+            # --mount values on commas itself, so a path can't contain one.
+            IFS=, read -r -a _m <<< "$2"
+            mounts+=("${_m[@]}")
+            shift 2
+            ;;
         --dns)
             # accept either comma-separated or repeated
             if [ "$dns_servers" = "1.1.1.1,8.8.8.8" ]; then
@@ -118,6 +129,54 @@ if [ "$shared" = true ]; then
 else
     [ "$(id -u)" -eq 0 ] && error "default/--setup must be run as your normal user (brew refuses to run as root; MacPorts asks for sudo itself)"
     invoking_user="$(whoami)"
+fi
+
+# Home of the user the VM runs as. colima's default mount is this dir.
+vm_home="$(dscl . -read "/Users/$invoking_user" NFSHomeDirectory 2>/dev/null | awk '{print $2}')"
+[ -z "$vm_home" ] && vm_home="/Users/$invoking_user"
+
+# ---------- --mount: resolve and validate ----------
+# Each --mount becomes a `--mount PATH[:w]` arg to `colima start`. Two traps:
+#   * colima drops its default $HOME mount as soon as any mount is given, so
+#     put the VM owner's home back first (writable, colima's default).
+#   * the docker daemon resolves bind-mount paths inside the VM, where a
+#     symlink to an unmounted dir dangles (e.g. ~/iWork -> /Volumes/...:
+#     "mkdir /Users/x/iWork: file exists"). Mount the real path, so the
+#     symlink in $HOME resolves too.
+mount_specs=()
+if [ ${#mounts[@]} -gt 0 ]; then
+    home_real="$(cd "$vm_home" 2>/dev/null && pwd -P)"
+    [ -z "$home_real" ] && error "home directory $vm_home not found"
+    home_mode=":w"
+    extra_specs=()
+    for m in "${mounts[@]}"; do
+        m="${m#"${m%%[![:space:]]*}"}"; m="${m%"${m##*[![:space:]]}"}"   # trim
+        [ -z "$m" ] && continue
+        mode=":w"
+        case "$m" in
+            *:ro) mode="";   m="${m%:ro}" ;;
+            *:w)  mode=":w"; m="${m%:w}" ;;
+        esac
+        # Expand a quoted leading ~ against the VM owner's home, not root's.
+        case "$m" in
+            "~")   m="$vm_home" ;;
+            "~/"*) m="$vm_home/${m#"~/"}" ;;
+        esac
+        [ -d "$m" ] || error "--mount: '$m' is not a directory"
+        real="$(cd "$m" && pwd -P)"
+        if [ "$real" = "$home_real" ]; then
+            home_mode="$mode"       # user listed the home dir itself
+            continue
+        fi
+        # Same real path given twice (e.g. ~/iWork and /Volumes/Library/iWork):
+        # keep one mount, last mode wins.
+        kept=()
+        for e in "${extra_specs[@]}"; do
+            [ "${e%:w}" = "$real" ] || kept+=("$e")
+        done
+        extra_specs=("${kept[@]}" "${real}${mode}")
+    done
+    mount_specs=("${home_real}${home_mode}" "${extra_specs[@]}")
 fi
 
 # ---------- locate the package manager ----------
@@ -254,6 +313,18 @@ pkg_ensure() {
             port_run -N install "$pkg" || error "port install $pkg failed"
         fi
     fi
+}
+
+# Render mount_specs as plist array entries, like dns_plist_args. Paths are
+# XML-escaped; a path can hold & or <. Emits nothing when no --mount was given.
+mount_plist_args() {
+    local out="" spec first=true
+    for spec in "${mount_specs[@]}"; do
+        spec="${spec//&/&amp;}"; spec="${spec//</&lt;}"; spec="${spec//>/&gt;}"
+        if $first; then first=false; else out+=$'\n'; fi
+        out+="        <string>--mount</string>"$'\n'"        <string>$spec</string>"
+    done
+    printf '%s' "$out"
 }
 
 # Render "1.1.1.1,8.8.8.8" as plist array entries, correctly indented for the
@@ -398,7 +469,13 @@ fi
 if [ "$setup" = false ] && [ "$shared" = false ]; then
     info ""
     info "colima installed. Start manually with:"
-    info "  $colima_bin start"
+    if [ ${#mount_specs[@]} -gt 0 ]; then
+        mount_args=""
+        for spec in "${mount_specs[@]}"; do mount_args+=" --mount '$spec'"; done
+        info "  $colima_bin start$mount_args"
+    else
+        info "  $colima_bin start"
+    fi
     info ""
     info "Optional next steps:"
     info "  $(basename "$0") --setup      # per-user LaunchAgent (starts at login)"
@@ -416,6 +493,7 @@ if [ "$setup" = true ]; then
     mkdir -p "$HOME/Library/LaunchAgents" "$HOME/Library/Logs"
 
     dns_xml="$(dns_plist_args)"
+    mount_xml="$(mount_plist_args)"
 
     cat > "$plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -430,6 +508,7 @@ if [ "$setup" = true ]; then
         <string>start</string>
         <string>--foreground</string>
 ${dns_xml}
+${mount_xml}
     </array>
     <key>EnvironmentVariables</key>
     <dict>
@@ -671,9 +750,9 @@ chmod 664 "$log_path"
 # Write the LaunchDaemon plist.
 label="net.abiosoft.colima.shared"
 plist="/Library/LaunchDaemons/${label}.plist"
-owner_home="$(dscl . -read "/Users/$owner_user" NFSHomeDirectory 2>/dev/null | awk '{print $2}')"
-[ -z "$owner_home" ] && owner_home="/Users/$owner_user"
+owner_home="$vm_home"
 dns_xml="$(dns_plist_args)"
+mount_xml="$(mount_plist_args)"
 
 cat > "$plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -694,6 +773,7 @@ cat > "$plist" <<PLIST
         <string>start</string>
         <string>--foreground</string>
 ${dns_xml}
+${mount_xml}
     </array>
     <key>EnvironmentVariables</key>
     <dict>

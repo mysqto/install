@@ -66,6 +66,23 @@ docker ps
 
 A new group membership takes effect at the next login. If `id -Gn` does not show `colima`, run `newgrp colima` (bash, zsh) or open a new fish session.
 
+### Extra mounts
+
+By default, the VM can see only the home folder of the user that runs it. If a project is outside that folder, a bind mount in `docker compose` fails. An example is a folder on an external disk, or a symlink from your home folder to one. The error looks like this:
+
+```text
+error while creating mount source path '/Users/you/iWork/app/config': mkdir /Users/you/iWork: file exists
+```
+
+Give each extra folder with `--mount`. A mount is writable. To make it read-only, add `:ro`:
+
+```bash
+sudo bash ./colima-install --shared --members alice,bob --mount /Volumes/Library/iWork
+./colima-install --setup --mount ~/iWork --mount /Volumes/Data/refs:ro
+```
+
+The script mounts the real path, so a symlink in your home folder, for example `~/iWork`, also works in the VM. It keeps the home folder mounted. It writes the mounts into the LaunchAgent or LaunchDaemon and restarts the VM, so the mounts apply at once. When you give `--mount`, the new list replaces the old list. To keep a mount, give it again.
+
 ### Amazon ECR registries
 
 Give each ECR registry with `--ecr`. You can use `--ecr` in all three modes:
@@ -87,6 +104,7 @@ Give each ECR registry with `--ecr`. You can use `--ecr` in all three modes:
 | `--ecr <r1,r2>` | None | ECR registries that use `docker-credential-ecr-login`. You can give the flag more than once. |
 | `--dns <ip,ip>` | `1.1.1.1,8.8.8.8` | DNS servers for the VM, in `--setup` and `--shared`. You can give the flag more than once. |
 | `--pkg-manager <brew\|port>` | Homebrew. MacPorts when Homebrew is missing. | The package manager to use. |
+| `--mount <path>[:ro]` | None | With `--setup` and `--shared`, an extra folder to mount in the VM. It is writable unless you add `:ro`. You can give the flag more than once, or give a comma-separated list. |
 | `--recreate-vm` | Off | Delete the VM before the restart, in `--setup` and `--shared`. |
 | `-h`, `--help` | | Show the help text. |
 
