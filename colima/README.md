@@ -83,6 +83,24 @@ sudo bash ./colima-install --shared --members alice,bob --mount /Volumes/Library
 
 The script mounts the real path, so a symlink in your home folder, for example `~/iWork`, also works in the VM. It keeps the home folder mounted. It writes the mounts into the LaunchAgent or LaunchDaemon and restarts the VM, so the mounts apply at once. When you give `--mount`, the new list replaces the old list. To keep a mount, give it again.
 
+### VM size
+
+By default, the script sizes the VM from the Mac. The VM gets half of the CPUs and a quarter of the memory, with at least 2 and at most 8 of each. Colima itself uses 2 CPUs and 2 GiB, with no swap. If the containers need more memory than the VM has, the Linux kernel in the VM spends all its time to free memory. Then `docker ps` and other docker commands stop and do not return.
+
+To set the size yourself, use `--cpu` and `--memory` (in GiB):
+
+```bash
+sudo bash ./colima-install --shared --members alice,bob --cpu 8 --memory 16
+```
+
+The script writes the size into the LaunchAgent or LaunchDaemon and restarts the VM. Colima applies the new size to the existing VM, and keeps the images, containers and volumes.
+
+To see if the VM is out of memory, run `free -m` in the VM. For the shared VM, run this as the owner:
+
+```bash
+COLIMA_HOME=/opt/colima LIMA_HOME=/opt/lima colima ssh -- free -m
+```
+
 ### Amazon ECR registries
 
 Give each ECR registry with `--ecr`. You can use `--ecr` in all three modes:
@@ -105,6 +123,8 @@ Give each ECR registry with `--ecr`. You can use `--ecr` in all three modes:
 | `--dns <ip,ip>` | `1.1.1.1,8.8.8.8` | DNS servers for the VM, in `--setup` and `--shared`. You can give the flag more than once. |
 | `--pkg-manager <brew\|port>` | Homebrew. MacPorts when Homebrew is missing. | The package manager to use. |
 | `--mount <path>[:ro]` | None | With `--setup` and `--shared`, an extra folder to mount in the VM. It is writable unless you add `:ro`. You can give the flag more than once, or give a comma-separated list. |
+| `--cpu <n>` | Half the host CPUs, 2 to 8 | With `--setup` and `--shared`, the number of CPUs for the VM. |
+| `--memory <gib>` | A quarter of the host memory, 2 to 8 | With `--setup` and `--shared`, the VM memory in GiB. Use a whole number. |
 | `--recreate-vm` | Off | Delete the VM before the restart, in `--setup` and `--shared`. |
 | `-h`, `--help` | | Show the help text. |
 
@@ -141,6 +161,7 @@ With `--shared`:
 - It creates `/opt/colima` (`COLIMA_HOME`) and `/opt/lima` (`LIMA_HOME`), owned by the owner and the `colima` group, with mode `2775`.
 - It writes `/Library/LaunchDaemons/net.abiosoft.colima.shared.plist` and loads it into the `system` launchd domain.
 - It logs to `/var/log/colima-shared.log`.
+- It starts the VM with the `--cpu` and `--memory` values. The summary shows them as `vm size`.
 - The socket is `/opt/colima/default/docker.sock`, mode `0660`, group `colima`.
 - It writes a second LaunchDaemon, `/Library/LaunchDaemons/net.abiosoft.colima.shared.sockperms.plist`. Lima forwards the sockets over SSH, and SSH creates them with mode `0600`, so only the owner can connect. This daemon runs a small loop as the owner. Every 2 seconds, it sets the docker and containerd sockets back to `0660`. After a VM restart, members of the `colima` group can connect again within about 2 seconds.
 

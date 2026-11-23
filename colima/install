@@ -37,6 +37,10 @@
 #   --mount PATH[:ro]     (--setup/--shared) extra directory to mount into the
 #                         VM, writable unless :ro. Repeat or comma-separate.
 #                         The VM owner's home stays mounted.
+#   --cpu N               (--setup/--shared) VM CPUs (default: half the host
+#                         CPUs, 2 to 8)
+#   --memory GIB          (--setup/--shared) VM memory in GiB (default: a
+#                         quarter of host memory, 2 to 8)
 #   -h | --help
 #
 # Companion for clients (both users on the same Mac in --shared mode):
@@ -67,9 +71,15 @@ recreate_vm=false
 # Cloudflare + Google as safe defaults; override with --dns 1.1.1.1,8.8.8.8
 # or repeat --dns.
 dns_servers="1.1.1.1,8.8.8.8"
+# VM size. colima's own default is 2 CPUs / 2 GiB with no swap: a handful of
+# containers (node, headless chrome, ...) fill that, the guest kernel thrashes
+# in reclaim, and dockerd stops answering (`docker ps` hangs). Size from the
+# host instead; empty here means "derive below".
+vm_cpus=""
+vm_memory=""
 
 usage() {
-    sed -n '3,42p' "$0" | sed 's/^# //; s/^#//'
+    sed -n '3,46p' "$0" | sed 's/^# //; s/^#//'
     exit 0
 }
 
@@ -98,6 +108,8 @@ while [ $# -gt 0 ]; do
             fi
             shift 2
             ;;
+        --cpu|--cpus) vm_cpus="$2"; shift 2 ;;
+        --memory)     vm_memory="$2"; shift 2 ;;
         --recreate-vm)
             # Destroy the VM disk (colima delete) before restart. Necessary
             # when changing DNS on an existing setup: cloud-init only writes
@@ -131,6 +143,17 @@ else
     [ "$(id -u)" -eq 0 ] && error "default/--setup must be run as your normal user (brew refuses to run as root; MacPorts asks for sudo itself)"
     invoking_user="$(whoami)"
 fi
+
+# ---------- VM size ----------
+host_cpus="$(sysctl -n hw.ncpu 2>/dev/null || echo 4)"
+host_mem_gib="$(( $(sysctl -n hw.memsize 2>/dev/null || echo 8589934592) / 1073741824 ))"
+clamp() { local v=$1; [ "$v" -lt "$2" ] && v=$2; [ "$v" -gt "$3" ] && v=$3; echo "$v"; }
+[ -z "$vm_cpus" ]   && vm_cpus="$(clamp $(( host_cpus / 2 )) 2 8)"
+[ -z "$vm_memory" ] && vm_memory="$(clamp $(( host_mem_gib / 4 )) 2 8)"
+case "$vm_cpus" in ''|*[!0-9]*|0) error "--cpu: '$vm_cpus' is not a positive whole number" ;; esac
+case "$vm_memory" in ''|*[!0-9]*|0) error "--memory: '$vm_memory' is not a positive whole number of GiB" ;; esac
+[ "$vm_cpus" -gt "$host_cpus" ] && error "--cpu $vm_cpus: the host has only $host_cpus CPUs"
+[ "$vm_memory" -ge "$host_mem_gib" ] && error "--memory $vm_memory: the host has only $host_mem_gib GiB"
 
 # Home of the user the VM runs as. colima's default mount is this dir.
 vm_home="$(dscl . -read "/Users/$invoking_user" NFSHomeDirectory 2>/dev/null | awk '{print $2}')"
@@ -328,6 +351,12 @@ mount_plist_args() {
     printf '%s' "$out"
 }
 
+# Render the VM size as plist array entries. colima applies a changed
+# --cpu/--memory to an existing VM on its next start.
+vm_plist_args() {
+    printf '        <string>--cpu</string>\n        <string>%s</string>\n        <string>--memory</string>\n        <string>%s</string>' "$vm_cpus" "$vm_memory"
+}
+
 # Render "1.1.1.1,8.8.8.8" as plist array entries, correctly indented for the
 # ProgramArguments block. Emits one <string>--dns</string> / <string>ADDR</string>
 # pair per DNS server, no trailing newline.
@@ -470,13 +499,9 @@ fi
 if [ "$setup" = false ] && [ "$shared" = false ]; then
     info ""
     info "colima installed. Start manually with:"
-    if [ ${#mount_specs[@]} -gt 0 ]; then
-        mount_args=""
-        for spec in "${mount_specs[@]}"; do mount_args+=" --mount '$spec'"; done
-        info "  $colima_bin start$mount_args"
-    else
-        info "  $colima_bin start"
-    fi
+    mount_args=""
+    for spec in "${mount_specs[@]}"; do mount_args+=" --mount '$spec'"; done
+    info "  $colima_bin start --cpu $vm_cpus --memory $vm_memory$mount_args"
     info ""
     info "Optional next steps:"
     info "  $(basename "$0") --setup      # per-user LaunchAgent (starts at login)"
@@ -495,6 +520,7 @@ if [ "$setup" = true ]; then
 
     dns_xml="$(dns_plist_args)"
     mount_xml="$(mount_plist_args)"
+    vm_xml="$(vm_plist_args)"
 
     cat > "$plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -508,6 +534,7 @@ if [ "$setup" = true ]; then
         <string>${colima_bin}</string>
         <string>start</string>
         <string>--foreground</string>
+${vm_xml}
 ${dns_xml}
 ${mount_xml}
     </array>
@@ -754,6 +781,7 @@ plist="/Library/LaunchDaemons/${label}.plist"
 owner_home="$vm_home"
 dns_xml="$(dns_plist_args)"
 mount_xml="$(mount_plist_args)"
+vm_xml="$(vm_plist_args)"
 
 cat > "$plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -773,6 +801,7 @@ cat > "$plist" <<PLIST
         <string>${colima_bin}</string>
         <string>start</string>
         <string>--foreground</string>
+${vm_xml}
 ${dns_xml}
 ${mount_xml}
     </array>
@@ -946,6 +975,7 @@ info "  lima dir    : /opt/lima    (LIMA_HOME)"
 info "  socket      : /opt/colima/default/docker.sock"
 info "  log         : $log_path"
 info "  daemon user : $owner_user"
+info "  vm size     : $vm_cpus CPUs, $vm_memory GiB"
 info "  group       : colima"
 info ""
 info "Each member of the colima group can now do:"
